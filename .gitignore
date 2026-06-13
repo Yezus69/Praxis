@@ -12,6 +12,7 @@ env/
 
 # ML / RL artifacts
 runs/
+ckpts/
 logs/
 wandb/
 checkpoints/

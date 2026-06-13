@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "praxis"
+version = "0.0.0"
+description = "Praxis — RL navigation MVP (Phase 0: MuJoCo Playground / MJX + Brax PPO, JAX-native)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Praxis" }]
+
+# Runtime deps mirror requirements.txt. NOTE: `jax[cuda12]` is intentionally NOT a
+# hard dependency here — it must be installed SEPARATELY and LAST (after everything
+# below) so the CUDA jaxlib overrides any CPU-only jaxlib pulled in transitively.
+# There is also no native-Windows CUDA wheel for JAX; install it inside the Linux/
+# WSL2 Docker image. See requirements.txt and the Dockerfile.
+dependencies = [
+    # --- simulator ---
+    "playground",          # PyPI name; imports as `mujoco_playground`
+    "mujoco>=3.0",
+    "mujoco-mjx",
+    # --- trainer (Brax PPO; physics deprecated, training maintained — 0.14.x) ---
+    "brax>=0.12",
+    "flax",
+    "optax",
+    "orbax-checkpoint",
+    # --- config / logging / plotting ---
+    "ml_collections",
+    "matplotlib",
+    "tensorboardX",
+    # --- rollout video ---
+    "mediapy",
+    "imageio[ffmpeg]",
+    # --- test ---
+    "pytest",
+]
+
+[project.optional-dependencies]
+# Install LAST: `pip install -U "jax[cuda12]"` (CUDA 12 wheels, Linux/WSL2 only).
+cuda = ["jax[cuda12]"]
+
+[project.scripts]
+praxis-eval-render = "praxis.eval_render:main"
+praxis-plot-curves = "praxis.plot_curves:main"
+
+[tool.setuptools]
+# Explicit package list so the namespace is discoverable without auto-discovery
+# surprises. Mirrors the praxis/ layout: top package + envs + agent subpackages.
+packages = ["praxis", "praxis.envs", "praxis.agent"]
+
+[tool.setuptools.package-data]
+# Ship the MJCF scene with the env package so NavEnv can locate it after install.
+"praxis.envs" = ["*.xml"]
