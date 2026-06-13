@@ -1,12 +1,10 @@
-"""praxis.envs — the Phase-0 navigation environment package.
+"""praxis.envs — the Phase-0 COVERAGE / exploration environment package.
 
 Public surface:
-    NavEnv            — the MJX / Playground navigation env (functional State API).
-    default_config    — its default ml_collections config.
-    domain_randomize  — Brax-style continuous domain randomization fn.
+    CoverEnv         — the MJX area-coverage env (functional State API, real physics).
+    default_config   — its default ml_collections config.
 """
 
-from praxis.envs.nav_env import NavEnv, default_config
-from praxis.envs.randomize import domain_randomize
+from praxis.envs.cover_env import CoverEnv, default_config
 
-__all__ = ["NavEnv", "default_config", "domain_randomize"]
+__all__ = ["CoverEnv", "default_config"]

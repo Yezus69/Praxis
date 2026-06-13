@@ -141,15 +141,15 @@ def plot_curves(csv_path: str, out_path: str, cfg=None) -> str:
     )
     _plot_panel(
         axes[1], rows, fieldnames,
-        x_col=plot_cfg.x_column, y_col=plot_cfg.success_column,
-        title="Success rate", ylabel="eval/success_rate",
+        x_col=plot_cfg.x_column, y_col="eval/coverage",
+        title="Area coverage", ylabel="eval/coverage (fraction)",
         color="#2ca02c", expect="should rise",
     )
     _plot_panel(
         axes[2], rows, fieldnames,
         x_col=plot_cfg.x_column, y_col=plot_cfg.collision_column,
         title="Collision rate", ylabel="eval/collision_rate",
-        color="#d62728", expect="should fall",
+        color="#d62728", expect="lower is better",
     )
 
     fig.suptitle(f"Praxis training curves — {os.path.basename(os.path.dirname(csv_path)) or csv_path}")

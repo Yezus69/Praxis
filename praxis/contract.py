@@ -1,102 +1,95 @@
-"""praxis/contract.py — the FROZEN integration contract.
+"""praxis/contract.py — the FROZEN integration contract (COVERAGE task).
 
-The single source of truth for the obs/action/reward shapes that the simulator
-(``praxis/envs``) and the agent/trainer (``praxis/agent``, ``praxis/train.py``)
-must agree on EXACTLY. Everything imports these constants; nobody redefines them.
+Single source of truth for the obs/action/reward shapes shared by the simulator
+(``praxis/envs``) and the trainer/eval (``praxis/train.py``, ``praxis/eval_render.py``).
 
-Design spec: ../sim/README.md (observation space) and ../agent/README.md (reward).
+TASK: the agent EXPLORES the arena and tries to COVER the whole area, with REAL
+physics — it physically collides with (bounces off) walls and moving obstacles.
 
-This module is intentionally **pure Python** — no jax/numpy import — so it is safe
-to import from tests, the trainer, the env, and tooling without pulling in heavy
-or platform-specific deps. Keep it that way.
+Pure Python (no jax/numpy) so it is safe to import anywhere.
 """
 
 from __future__ import annotations
 
 # --------------------------------------------------------------------------- #
-# Action contract
+# Action — holonomic planar velocity command [vx, vy] in [-1, 1], scaled to
+# AGENT_MAX_SPEED inside step() and applied via velocity actuators.
 # --------------------------------------------------------------------------- #
-# Holonomic planar velocity command [vx, vy], each in [-ACTION_LIMIT, ACTION_LIMIT].
-# Applied through VELOCITY actuators inside env.step (scaled to AGENT_MAX_SPEED).
-# NEVER set qpos/position directly (tunnels through obstacles; collision never fires).
 ACT_DIM: int = 2
-ACTION_LIMIT: float = 1.0          # raw policy action range is [-1, 1]
-AGENT_MAX_SPEED: float = 1.5       # m/s that |action|==1 maps to inside step()
+ACTION_LIMIT: float = 1.0
+AGENT_MAX_SPEED: float = 2.0          # ctrl scale; effective top speed ~1.85 m/s
 
 # --------------------------------------------------------------------------- #
-# Obstacle / observation sizing
+# Arena + coverage grid
 # --------------------------------------------------------------------------- #
-# Fixed model topology under jit/vmap: the MJCF declares MAX_OBSTACLES movers.
-# Per-env, extras are disabled via a boolean `active` mask (NOT by adding/removing
-# geoms). We observe the K nearest *active* obstacles, sorted by distance every step.
-MAX_OBSTACLES: int = 4             # mocap movers declared in the scene XML
-K: int = 4                         # K nearest obstacles exposed to the policy
+ARENA_HALF: float = 3.0               # arena spans [-3, 3] in x and y
+GRID_SIZE: int = 6                    # GxG coverage cells (6x6 = 36; cell ~1.0 m)
+N_CELLS: int = GRID_SIZE * GRID_SIZE  # 36
+AGENT_RADIUS: float = 0.15
+OBSTACLE_RADIUS: float = 0.25
 
 # --------------------------------------------------------------------------- #
-# Observation layout (fixed-shape, MLP-friendly — sim/README.md)
+# Obstacles (REAL collisions). All MAX_OBSTACLES are active/colliding.
 # --------------------------------------------------------------------------- #
-#   [ goal:       dx, dy, dist, heading_err          ] -> 4
-#   [ agent vel:  vx, vy, omega                       ] -> 3
-#   [ K obstacles: (px, py, vx, vy) each, goal-relative-agnostic (agent frame) ] -> 4*K
-#   [ active mask: one bit per obstacle slot          ] -> K
-# Slots are sorted by distance EVERY step; an MLP is not permutation-invariant, so a
-# slot must always mean "the n-th nearest active obstacle". Zero-pad empty slots.
-GOAL_DIM: int = 4                  # dx, dy, dist, heading_err
-VEL_DIM: int = 3                   # vx, vy, omega
-PER_OBSTACLE_DIM: int = 4          # px, py, vx, vy (relative to agent)
-
-OBS_DIM: int = GOAL_DIM + VEL_DIM + PER_OBSTACLE_DIM * K + K   # 4 + 3 + 16 + 4 = 27
-
-# Half-open slice bounds into the flat obs vector. Index with these, never literals.
-GOAL_SLICE = (0, GOAL_DIM)                                     # [0, 4)
-VEL_SLICE = (GOAL_SLICE[1], GOAL_SLICE[1] + VEL_DIM)           # [4, 7)
-OBST_SLICE = (VEL_SLICE[1], VEL_SLICE[1] + PER_OBSTACLE_DIM * K)  # [7, 23)
-MASK_SLICE = (OBST_SLICE[1], OBST_SLICE[1] + K)                # [23, 27)
-
-assert MASK_SLICE[1] == OBS_DIM, "obs layout slices must tile [0, OBS_DIM) exactly"
+MAX_OBSTACLES: int = 4
+K: int = 4                            # K nearest obstacles exposed to the policy
 
 # --------------------------------------------------------------------------- #
-# Reward contract (agent/README.md)
+# Observation layout (fixed-shape, MLP-friendly)
+#   [ agent: x/arena, y/arena, vx, vy                 ] -> 4
+#   [ K obstacles: (px, py, vx, vy) relative          ] -> 4*K
+#   [ per-obstacle active mask                         ] -> K
+#   [ frontier: dx, dy, dist to NEAREST UNVISITED cell ] -> 3
+#   [ covered fraction so far                          ] -> 1
+# The "frontier" vector (direction to the nearest unvisited cell) is the key
+# exploration signal — an MLP can follow it directly, which is far easier to learn
+# than reasoning over a flattened occupancy grid. The visited grid itself lives in
+# state.info (it is the env's memory), not in the obs.
 # --------------------------------------------------------------------------- #
-#   reward = + K1 * (prev_dist - dist)     # dense progress toward goal
-#            - K2 * collision              # collision penalty (and TERMINATE)
-#            - K3                           # small per-step time penalty
-#            + K4 * success                # success bonus    (and TERMINATE)
-#
-# Notes that decide whether it learns at all (see agent/README.md):
-#  * collision & success are TRUE terminations (done=1, NOT bootstrapped).
-#  * timeout is a TRUNCATION (done=1 but info['truncation']=1 -> value IS bootstrapped).
-#    A terminal collision must NOT be bootstrapped like a timeout or "suicide" to
-#    escape the time penalty becomes optimal.
-#  * keep K3 small vs per-step K1*progress so a successful path nets clearly positive.
-REWARD_KEYS = ("k1", "k2", "k3", "k4")
+AGENT_DIM: int = 4
+PER_OBSTACLE_DIM: int = 4
+FRONTIER_DIM: int = 3        # dx, dy (unit) and distance to nearest unvisited cell
+COVERED_DIM: int = 1         # fraction of cells covered so far
+
+OBS_DIM: int = AGENT_DIM + PER_OBSTACLE_DIM * K + K + FRONTIER_DIM + COVERED_DIM  # 28
+
+AGENT_SLICE = (0, AGENT_DIM)                                   # [0, 4)
+OBST_SLICE = (AGENT_SLICE[1], AGENT_SLICE[1] + PER_OBSTACLE_DIM * K)  # [4, 20)
+MASK_SLICE = (OBST_SLICE[1], OBST_SLICE[1] + K)               # [20, 24)
+FRONTIER_SLICE = (MASK_SLICE[1], MASK_SLICE[1] + FRONTIER_DIM)  # [24, 27)
+COVERED_SLICE = (FRONTIER_SLICE[1], FRONTIER_SLICE[1] + COVERED_DIM)  # [27, 28)
+
+assert COVERED_SLICE[1] == OBS_DIM, "obs layout slices must tile [0, OBS_DIM)"
+
+# --------------------------------------------------------------------------- #
+# Reward
+#   reward = + K_COV  * (new cells covered this step)
+#            - K_COLL * (obstacle collision this step)   # NON-terminal
+#            - K_TIME                                     # tiny per-step nudge
+# No goal, no success bonus. Episodes run a fixed length; collisions do NOT end
+# the episode (the agent bounces off and keeps exploring).
+# --------------------------------------------------------------------------- #
+REWARD_KEYS = ("k_cov", "k_coll", "k_time")
 DEFAULT_REWARD_WEIGHTS = {
-    "k1": 1.0,    # progress-to-goal (per metre closed)
-    "k2": 1.0,    # collision penalty (terminal)
-    "k3": 0.005,  # per-step time penalty (small vs per-step progress)
-    "k4": 10.0,   # success bonus (terminal)
+    "k_cov": 1.0,     # per newly-covered cell
+    "k_coll": 0.1,    # per step in contact with an obstacle (light; don't drown coverage)
+    "k_time": 0.01,   # tiny per-step penalty (discourages dithering)
 }
 
-# --------------------------------------------------------------------------- #
-# Task geometry / episode
-# --------------------------------------------------------------------------- #
-GOAL_RADIUS: float = 0.5           # within this distance of goal site => success
-COLLISION_DIST: float = 0.0        # contact-based; <=0 means "use actual MJX contacts"
-EPISODE_LENGTH: int = 1000         # steps before timeout/truncation (env + trainer share)
-ARENA_HALF: float = 3.0            # arena spans [-ARENA_HALF, ARENA_HALF] in x and y
+COLLISION_MARGIN: float = 0.05        # contact band for the collision penalty
+EPISODE_LENGTH: int = 600             # steps per episode (env + trainer share)
 
-# Metric names emitted into state.metrics every step. Brax surfaces these as
-# eval/episode_<name>; the trainer maps them to success_rate / collision_rate curves.
-METRIC_SUCCESS = "success"
+# Metrics emitted into state.metrics every step (Brax surfaces eval/episode_<name>).
+METRIC_COVERAGE = "coverage"          # fraction of cells visited so far (0..1)
 METRIC_COLLISION = "collision"
-METRIC_REWARD_COMPONENTS = ("reward_progress", "reward_collision", "reward_time", "reward_success")
+METRIC_REWARD_COMPONENTS = ("reward_cover", "reward_collision", "reward_time")
 
 __all__ = [
     "ACT_DIM", "ACTION_LIMIT", "AGENT_MAX_SPEED",
+    "ARENA_HALF", "GRID_SIZE", "N_CELLS", "AGENT_RADIUS", "OBSTACLE_RADIUS",
     "MAX_OBSTACLES", "K",
-    "GOAL_DIM", "VEL_DIM", "PER_OBSTACLE_DIM", "OBS_DIM",
-    "GOAL_SLICE", "VEL_SLICE", "OBST_SLICE", "MASK_SLICE",
-    "REWARD_KEYS", "DEFAULT_REWARD_WEIGHTS",
-    "GOAL_RADIUS", "COLLISION_DIST", "EPISODE_LENGTH", "ARENA_HALF",
-    "METRIC_SUCCESS", "METRIC_COLLISION", "METRIC_REWARD_COMPONENTS",
+    "AGENT_DIM", "PER_OBSTACLE_DIM", "FRONTIER_DIM", "COVERED_DIM", "OBS_DIM",
+    "AGENT_SLICE", "OBST_SLICE", "MASK_SLICE", "FRONTIER_SLICE", "COVERED_SLICE",
+    "REWARD_KEYS", "DEFAULT_REWARD_WEIGHTS", "COLLISION_MARGIN", "EPISODE_LENGTH",
+    "METRIC_COVERAGE", "METRIC_COLLISION", "METRIC_REWARD_COMPONENTS",
 ]

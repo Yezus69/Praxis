@@ -216,8 +216,9 @@ def _rollout_one(
     state = jit_reset(rng)
     rollout = [state]
 
-    success = False
-    collision = False
+    import numpy as np
+    coverage = 0.0
+    collisions = 0
     steps = 0
     for _ in range(int(episode_length)):
         act_rng, rng = jax.random.split(rng)
@@ -226,18 +227,18 @@ def _rollout_one(
         rollout.append(state)
         steps += 1
 
-        # Track terminal cause from metrics/info (host-side bool OK, outside jit).
-        success = success or _flag_true(state, contract.METRIC_SUCCESS)
-        collision = collision or _flag_true(state, contract.METRIC_COLLISION)
+        # Cumulative coverage fraction (info['covered'] is the running cell count) +
+        # collision count. The 'coverage' METRIC is a per-step delta, so read info.
+        coverage = float(np.asarray(state.info["covered"])) / float(contract.N_CELLS)
+        collisions += int(float(np.asarray(state.metrics[contract.METRIC_COLLISION])) > 0)
 
         if bool(state.done):
             break
 
     summary = {
-        "success": bool(success),
-        "collision": bool(collision),
+        "coverage": float(coverage),
+        "collisions": int(collisions),
         "length": int(steps),
-        "reached_goal": bool(success),
     }
     return rollout, summary
 
@@ -324,12 +325,10 @@ def _build_nav_env(height: int, width: int, n_obstacles: Optional[int] = None) -
     env.render expects (fact #9). ``n_obstacles`` MUST match what the policy trained on
     (the obs has that many active obstacle slots), else the rollout is off-distribution.
     """
-    from praxis.envs import NavEnv, default_config
+    from praxis.envs import CoverEnv, default_config
 
     cfg = default_config()
-    if n_obstacles is not None:
-        cfg.n_active_obstacles = max(0, min(int(n_obstacles), 4))
-    return NavEnv(cfg)
+    return CoverEnv(cfg)
 
 
 def _fps_from_env(env: Any, fallback: int) -> int:
@@ -393,7 +392,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--n-obstacles",
         type=int,
         default=None,
-        help="Active obstacles (0..4) — MUST match what the policy trained on.",
+        help="(unused for coverage env) kept for CLI compatibility.",
+    )
+    p.add_argument(
+        "--camera",
+        default=None,
+        help="Scene camera: 'topdown' (whole arena) or 'track' (chase). "
+             f"Default: config ({cfg.render.camera}).",
     )
     return p
 
@@ -413,7 +418,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     from praxis.config import get_config
 
     cfg = get_config()
-    camera = cfg.render.camera
+    camera = args.camera if args.camera else cfg.render.camera
     height = int(cfg.render.height)
     width = int(cfg.render.width)
     black_std = float(cfg.render.black_frame_std_threshold)
@@ -447,18 +452,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             env, inference_fn, episode_length, seed=int(args.seed) + ep
         )
         print(
-            f"[eval] episode {ep}: success={summary['success']} "
-            f"collision={summary['collision']} length={summary['length']}"
+            f"[eval] episode {ep}: coverage={summary['coverage']:.3f} "
+            f"collisions={summary['collisions']} length={summary['length']}"
         )
-        # Prefer a goal-reaching episode; otherwise keep the longest survivor.
-        if (
-            best_summary is None
-            or (summary["reached_goal"] and not best_summary["reached_goal"])
-            or (
-                summary["reached_goal"] == best_summary["reached_goal"]
-                and summary["length"] > best_summary["length"]
-            )
-        ):
+        # Keep the highest-coverage episode for the video.
+        if best_summary is None or summary["coverage"] > best_summary["coverage"]:
             best_rollout, best_summary = rollout, summary
 
     assert best_rollout is not None and best_summary is not None
@@ -529,8 +527,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(
         f"[eval] wrote {out_path}  (fps={fps}, frames={len(frames)}, "
         f"render={status})\n"
-        f"[eval] best episode: success={best_summary['success']} "
-        f"collision={best_summary['collision']} length={best_summary['length']}"
+        f"[eval] best episode: coverage={best_summary['coverage']:.3f} "
+        f"collisions={best_summary['collisions']} length={best_summary['length']}"
     )
     return 0
 

@@ -150,9 +150,9 @@ def map_eval_metrics(metrics: Dict[str, Any]) -> Dict[str, float]:
         reward = hit[1] if hit else float("nan")
     out["eval/episode_reward"] = float(reward) if reward is not None else float("nan")
 
-    # success_rate <- eval/episode_success (mean of the 'success' metric)
-    succ = _find_metric(metrics, "success")
-    out["eval/success_rate"] = succ[1] if succ else float("nan")
+    # coverage <- eval/episode_coverage (mean fraction of cells visited at episode end)
+    cov = _find_metric(metrics, "coverage")
+    out["eval/coverage"] = cov[1] if cov else float("nan")
 
     # collision_rate <- eval/episode_collision
     coll = _find_metric(metrics, "collision")
@@ -194,7 +194,7 @@ def make_progress_fn(
         "step",
         "wall_s",
         "eval/episode_reward",
-        "eval/success_rate",
+        "eval/coverage",
         "eval/collision_rate",
     ]
     state = {"header_written": False, "extra_cols": []}
@@ -226,7 +226,7 @@ def make_progress_fn(
         mapped = map_eval_metrics(metrics)
 
         # Determine extra columns (sorted, stable) beyond the canonical three.
-        canonical = {"eval/episode_reward", "eval/success_rate", "eval/collision_rate"}
+        canonical = {"eval/episode_reward", "eval/coverage", "eval/collision_rate"}
         extras = sorted(k for k in mapped.keys() if k not in canonical)
         # Lock extra column set on first write to keep CSV rectangular.
         if not state["header_written"]:
@@ -237,7 +237,7 @@ def make_progress_fn(
             "step": int(num_steps),
             "wall_s": round(wall_s, 2),
             "eval/episode_reward": mapped.get("eval/episode_reward", float("nan")),
-            "eval/success_rate": mapped.get("eval/success_rate", float("nan")),
+            "eval/coverage": mapped.get("eval/coverage", float("nan")),
             "eval/collision_rate": mapped.get("eval/collision_rate", float("nan")),
         }
         for c in state["extra_cols"]:
@@ -267,11 +267,11 @@ def make_progress_fn(
 
         # --- human-readable line ---
         r = row["eval/episode_reward"]
-        s = row["eval/success_rate"]
+        s = row["eval/coverage"]
         c = row["eval/collision_rate"]
         print(
             f"[eval] step={int(num_steps):>10d}  "
-            f"reward={r:>9.3f}  success={s:>6.3f}  collision={c:>6.3f}  "
+            f"reward={r:>9.3f}  coverage={s:>6.3f}  collision={c:>6.3f}  "
             f"({wall_s:6.1f}s)"
         )
 
@@ -293,17 +293,14 @@ def build_env(stub: bool, episode_length: int, n_obstacles: Optional[int] = None
         print("[env] Using STUB env (praxis.agent._stub_env) — NOT the real NavEnv.")
         return make_stub_env(episode_length=episode_length)
 
-    # Real path. Pass episode_length INTO the env so its internal timeout (and thus
+    # Real coverage env. Pass episode_length INTO the env so its timeout (and thus
     # info['time_out'] for bootstrapping) fires at the SAME step the Brax EpisodeWrapper
-    # truncates. Otherwise a mismatch makes bootstrap_on_timeout incorrect.
-    from praxis.envs import NavEnv, default_config  # type: ignore
+    # truncates.
+    from praxis.envs import CoverEnv, default_config  # type: ignore
     cfg = default_config()
     cfg.episode_length = int(episode_length)
-    if n_obstacles is not None:
-        cfg.n_active_obstacles = max(0, min(int(n_obstacles), int(contract.MAX_OBSTACLES)))
-    print(f"[env] Using real praxis.envs.NavEnv (episode_length={int(episode_length)}, "
-          f"n_active_obstacles={int(cfg.n_active_obstacles)}).")
-    return NavEnv(cfg)
+    print(f"[env] Using praxis.envs.CoverEnv (coverage, episode_length={int(episode_length)}).")
+    return CoverEnv(cfg)
 
 
 def build_randomization_fn(no_randomization: bool, stub: bool):
@@ -312,17 +309,9 @@ def build_randomization_fn(no_randomization: bool, stub: bool):
     Domain randomization is toggleable. It is disabled for the stub (no model) and
     when --no-randomization is set.
     """
-    if no_randomization or stub:
-        return None
-    try:
-        from praxis.envs import domain_randomize  # type: ignore
-    except Exception as e:  # noqa: BLE001
-        print(f"[env] NOTE: domain_randomize unavailable ({e}); training without DR.")
-        return None
-    # NOTE: Agent-A's domain_randomize is a Brax-style randomization_fn(model, rng)
-    # -> (batched_model, in_axes). wrap_for_brax_training threads `rng` per call, so
-    # we pass the function itself (optionally partial'd). No args to bind here.
-    return functools.partial(domain_randomize)
+    # The coverage env randomizes the agent start + obstacle patrols inside reset(),
+    # so no model-level domain randomization is needed.
+    return None
 
 
 def wrap_env(env, randomization_fn):
@@ -557,6 +546,11 @@ def main(argv: Optional[list] = None) -> int:
     if "bootstrap_on_timeout" in train_sig_params:
         train_kwargs["bootstrap_on_timeout"] = True
 
+    # Gradient clipping — the dense coverage reward can destabilize PPO late in
+    # training (reward/coverage regressing after an early peak); clip to stabilize.
+    if "max_grad_norm" in train_sig_params:
+        train_kwargs["max_grad_norm"] = 1.0
+
     # --- Train. ppo.train returns a 3-tuple. ---
     print("[ppo] starting ppo.train(...) — expect 30-60s first-run JIT compile.")
     make_inference_fn, params, metrics = ppo.train(**train_kwargs)
@@ -576,7 +570,7 @@ def main(argv: Optional[list] = None) -> int:
     final = map_eval_metrics(metrics) if isinstance(metrics, dict) else {}
     if final:
         print(f"[done] final eval  : reward={final.get('eval/episode_reward')}, "
-              f"success={final.get('eval/success_rate')}, "
+              f"coverage={final.get('eval/coverage')}, "
               f"collision={final.get('eval/collision_rate')}")
     print("=" * 78)
 
