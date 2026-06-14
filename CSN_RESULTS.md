@@ -102,7 +102,21 @@ coeff=min(dot,0)/(||g_mem||^2+eps) & combine §9-11, ring-buffer memory §5, cri
   engages more (0.005 inert-ish → 0.003 retains 0.567). guard_lambda_mem (train.py:385, §9 combine) is
   the real gradient-strength knob. guard_policy_coef was a DEAD flag (config-only, unused) — removed.
 - sg_max (warmup1.5M, budget0.003): peak 0.83 → 0.567 @4.9M vs ablation 0.375. Tighter guard = better
-  retention. NEXT: guard_lambda_mem high + tight budget for a flatter hold.
+  retention.
+
+## HEADLINE RESULT (2026-06-14): CSN roughly HALVES catastrophic forgetting
+Clean same-version 5M comparison (csn_strong: warmup1.5M, lambda-mem8, budget0.002; vs csn_ablf: machinery off):
+| step | CSN | plain PPO | gap |
+|------|-----|-----------|-----|
+| 1.23M peak | 0.832 | 0.832 | 0 |
+| 2.5M | 0.671 | 0.551 | +0.12 |
+| 4.1M | 0.599 | 0.418 | +0.18 |
+| 4.9M | **0.567** | **0.313** | **+0.254 (+81%)** |
+CSN retains 68% of the peak (0.567/0.832) vs plain PPO's 38% (0.313/0.832); the protective gap GROWS
+monotonically. Plot: runs/csn_compare.png. NOTE: the guard benefit SATURATES (lambda-mem 8/budget 0.002 ==
+budget 0.003) — a perfectly-flat hold would need the sentinel+per-cluster-mosaic, not a stronger guard.
+The mechanism (memory hinge-KL guard + champion anchor + nullspace projection) demonstrably defeats much
+of the forgetting, with all formulas MATH_OK vs the README.
 (2) expose --learning-rate/--entropy-cost/--discounting + --[no-]holdout-early-stop in train_csn.py
 (Codex). (3) rerun csn_full vs csn_abl at the base10m operating point (lr 1.5e-4, entropy 5e-3) so
 the preserved coverage is ~0.8, not ~0.35. Baseline reference: base10m 0.82→0.23 (see WALL1_RESULTS.md).
