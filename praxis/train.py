@@ -1,12 +1,11 @@
-"""praxis/train.py — Brax PPO training entrypoint for the Praxis nav task.
+"""praxis/train.py — Brax PPO training entrypoint for the Praxis coverage task.
 
-CLI wiring around ``brax.training.agents.ppo.train`` against ``praxis.envs.NavEnv``
-(Agent-A's MJX env), wrapped with ``mujoco_playground.wrapper.wrap_for_brax_training``.
+CLI wiring around ``brax.training.agents.ppo.train`` against ``praxis.envs.CoverEnv``,
+wrapped with ``mujoco_playground.wrapper.wrap_for_brax_training``.
 
-Run (once the real env + GPU container are up):
-    python -m praxis.train --smoke      # <=5-min DoD-2 gate
-    python -m praxis.train              # full first-learnable run (num_timesteps=2e7)
-    python -m praxis.train --stub --smoke   # env-less smoke (uses praxis.agent._stub_env)
+Run (fast, ~2 min on one RTX 4090):
+    python -m praxis.train --num-timesteps 1300000 --num-envs 2048 --num-evals 9 \
+        --learning-rate 0.00015 --entropy-cost 0.005 --run-name cover
 
 Outputs per run:
     runs/<run>/metrics.csv   — one row per eval: step, eval/episode_reward,
@@ -281,61 +280,17 @@ def make_progress_fn(
 # --------------------------------------------------------------------------- #
 # Env construction
 # --------------------------------------------------------------------------- #
-def build_env(stub: bool, episode_length: int, n_obstacles: Optional[int] = None):
-    """Construct the (unwrapped) environment.
+def build_env(episode_length: int):
+    """Construct the (unwrapped) ``praxis.envs.CoverEnv``.
 
-    Default: real ``praxis.envs.NavEnv`` (Agent-A). ``--stub`` swaps in the dummy.
-    ``n_obstacles`` (0..MAX_OBSTACLES) sets how many moving obstacles are active —
-    use 0 to prove pure goal-reaching first (curriculum).
+    episode_length is threaded INTO the env so its timeout (and thus info['time_out']
+    for value bootstrapping) fires at the SAME step the Brax EpisodeWrapper truncates.
     """
-    if stub:
-        from praxis.agent._stub_env import make_stub_env
-        print("[env] Using STUB env (praxis.agent._stub_env) — NOT the real NavEnv.")
-        return make_stub_env(episode_length=episode_length)
-
-    # Real coverage env. Pass episode_length INTO the env so its timeout (and thus
-    # info['time_out'] for bootstrapping) fires at the SAME step the Brax EpisodeWrapper
-    # truncates.
     from praxis.envs import CoverEnv, default_config  # type: ignore
     cfg = default_config()
     cfg.episode_length = int(episode_length)
     print(f"[env] Using praxis.envs.CoverEnv (coverage, episode_length={int(episode_length)}).")
     return CoverEnv(cfg)
-
-
-def build_randomization_fn(no_randomization: bool, stub: bool):
-    """Return a randomization_fn (or None) for wrap_for_brax_training.
-
-    Domain randomization is toggleable. It is disabled for the stub (no model) and
-    when --no-randomization is set.
-    """
-    # The coverage env randomizes the agent start + obstacle patrols inside reset(),
-    # so no model-level domain randomization is needed.
-    return None
-
-
-def wrap_env(env, randomization_fn):
-    """Wrap an MjxEnv with Playground's Brax-training wrapper (auto-reset + vmap).
-
-    Passes randomization_fn only if the installed wrapper signature accepts it.
-    """
-    from mujoco_playground import wrapper  # type: ignore
-
-    wrap = wrapper.wrap_for_brax_training
-    # NOTE: wrap_for_brax_training signature varies across Playground versions; the
-    # current one accepts `randomization_fn=`. We inspect to stay forward/backward safe.
-    try:
-        sig = inspect.signature(wrap)
-        accepts_rand = "randomization_fn" in sig.parameters
-    except (TypeError, ValueError):
-        accepts_rand = True
-
-    if randomization_fn is not None and accepts_rand:
-        return wrap(env, randomization_fn=randomization_fn)
-    if randomization_fn is not None and not accepts_rand:
-        print("[env] NOTE: wrapper does not accept randomization_fn; "
-              "training without domain randomization.")
-    return wrap(env)
 
 
 # --------------------------------------------------------------------------- #
@@ -372,13 +327,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--restore-checkpoint-path", type=str, default=None,
                    help="Optional Orbax checkpoint to restore and continue from.")
 
-    p.add_argument("--n-obstacles", type=int, default=None,
-                   help="Active moving obstacles (0..4). 0 = pure goal-reaching (curriculum). "
-                        "Default: env default (4).")
-    p.add_argument("--no-randomization", action="store_true",
-                   help="Disable domain randomization.")
-    p.add_argument("--stub", action="store_true",
-                   help="Use the dummy stub env (smoke import / env-less runs only).")
     p.add_argument("--smoke", action="store_true",
                    help="Preset for the <=5-min DoD-2 gate "
                         "(num_timesteps=5e6, num_envs=2048, num_evals=10).")
@@ -440,8 +388,7 @@ def main(argv: Optional[list] = None) -> int:
     )
 
     print("=" * 78)
-    print(f"Praxis PPO  run={run_name}")
-    print(f"  stub={args.stub}  randomization={'off' if (args.no_randomization or args.stub) else 'on'}")
+    print(f"Praxis PPO (coverage)  run={run_name}")
     print(f"  hyperparams: {cfg}")
     print(f"  metrics.csv -> {os.path.abspath(csv_path)}")
     print(f"  tensorboard -> {os.path.abspath(tb_dir)}")
@@ -451,17 +398,10 @@ def main(argv: Optional[list] = None) -> int:
     # --- Heavy imports (jax/brax/playground) happen here, inside main() ---
     from brax.training.agents.ppo import train as ppo
 
-    # Build env (+ optional randomization fn). Pass the UNWRAPPED env and let Brax
-    # wrap it via wrap_env_fn (the official Playground+Brax pattern, verified against
-    # the installed ppo.train) so Brax threads the per-env rng into
-    # randomization_fn(model, rng). Pre-wrapping + the default wrap_env=True would
-    # DOUBLE-wrap the env and break. The stub is already a brax envs.Env; it is passed
-    # straight through and brax default-wraps it.
-    raw_env = build_env(stub=args.stub, episode_length=cfg["episode_length"],
-                        n_obstacles=args.n_obstacles)
-    randomization_fn = build_randomization_fn(
-        no_randomization=args.no_randomization, stub=args.stub
-    )
+    # Build the UNWRAPPED env and let Brax wrap it via wrap_env_fn (the official
+    # Playground+Brax pattern, verified against the installed ppo.train). Pre-wrapping +
+    # the default wrap_env=True would DOUBLE-wrap and break.
+    raw_env = build_env(episode_length=cfg["episode_length"])
 
     # Network factory (explicit 256/256/256 policy & value).
     network_factory = make_network_factory(
@@ -528,18 +468,14 @@ def main(argv: Optional[list] = None) -> int:
     # --- Env wrapping: official Playground+Brax pattern. Pass the UNWRAPPED env +
     #     wrap_env_fn so Brax wraps it (auto-reset + vmap) and threads the per-env rng
     #     into randomization_fn(model, rng). (Verified against installed ppo.train.) ---
-    if not args.stub:
-        from mujoco_playground import wrapper as mjxp_wrapper
-        if "wrap_env_fn" in train_sig_params:
-            train_kwargs["wrap_env_fn"] = mjxp_wrapper.wrap_for_brax_training
-        else:
-            # Older brax: pre-wrap and disable brax's own wrapping to avoid double-wrap.
-            train_kwargs["environment"] = mjxp_wrapper.wrap_for_brax_training(raw_env)
-            if "wrap_env" in train_sig_params:
-                train_kwargs["wrap_env"] = False
-        if randomization_fn is not None and "randomization_fn" in train_sig_params:
-            train_kwargs["randomization_fn"] = randomization_fn
-            print("[env] domain randomization ENABLED.")
+    from mujoco_playground import wrapper as mjxp_wrapper
+    if "wrap_env_fn" in train_sig_params:
+        train_kwargs["wrap_env_fn"] = mjxp_wrapper.wrap_for_brax_training
+    else:
+        # Older brax: pre-wrap and disable brax's own wrapping to avoid double-wrap.
+        train_kwargs["environment"] = mjxp_wrapper.wrap_for_brax_training(raw_env)
+        if "wrap_env" in train_sig_params:
+            train_kwargs["wrap_env"] = False
 
     # Correct truncation handling (fact #8): bootstrap value on timeout; terminate on
     # collision/success. Agent-A sets info['truncation'] accordingly.
