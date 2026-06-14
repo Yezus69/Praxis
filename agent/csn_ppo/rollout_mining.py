@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from agent.csn_ppo import coverage_probes
 from agent.csn_ppo import criticality_coverage as cc
 from agent.csn_ppo import mosaic_teacher
 from agent.csn_ppo.memory import (
@@ -249,7 +250,7 @@ def label_probe_atoms(
     champions=None,
     global_champion=None,
 ):
-    """Labels synthetic probe atoms with the cluster-aware mosaic teacher."""
+    """Labels synthetic probe atoms with mosaic labels, then P5 safer-of actions."""
     c = jax.vmap(lambda o: cc.criticality_score(o, 0.0, cfg))(probe_obs)
     w = jax.vmap(lambda x: cc.memory_weight(x, cfg))(c)
     klb = jax.vmap(lambda x: cc.kl_budget_from_c(x, cfg))(c)
@@ -266,7 +267,17 @@ def label_probe_atoms(
         cfg,
     )
     kept_idx = jnp.asarray(kept_idx, dtype=jnp.int32)
+    if batch.obs.shape[0] > 0:
+        analytic_mean = jax.vmap(
+            lambda o: coverage_probes.analytic_coverage_teacher(o, cfg)
+        )(batch.obs)
+        safer_mean = jax.vmap(
+            lambda o, p, a: coverage_probes.safer_of(o, p, a, cfg)
+        )(batch.obs, batch.mean, analytic_mean)
+    else:
+        safer_mean = batch.mean
     return batch.replace(
+        mean=safer_mean,
         weight=w[kept_idx],
         kl_budget=klb[kept_idx],
         value_budget=vb[kept_idx],

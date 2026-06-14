@@ -92,6 +92,7 @@ class CSNPPOConfig:
     # Synthetic probes
     synthetic_probe_batch_size: int = 512
     synthetic_probe_insert_interval: int = 1
+    synthetic_safe_dist: float = 0.45
 
     # Holdout overfit control
     enable_holdout_early_stop: bool = True

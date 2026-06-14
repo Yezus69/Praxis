@@ -195,3 +195,28 @@ def kl_budget(c, delta0=0.02):
 
 def value_budget(c, rho0=0.25, beta=1.0):
     return rho0 / (1.0 + beta * c)
+
+
+# P5 coverage-task probes live in coverage_probes.py, the active 28D manifold
+# used by train.py. Re-export them here for the synthetic_probes import surface.
+from agent.csn_ppo.coverage_probes import (  # noqa: E402
+    PROBE_FAMILY_NAMES,
+    analytic_coverage_teacher,
+    generate_cover_probes,
+    make_probe_corner_escape,
+    make_probe_crossing_obstacle_left_to_right,
+    make_probe_crossing_obstacle_right_to_left,
+    make_probe_dense_cluster_escape_tangent,
+    make_probe_frontier_behind_agent,
+    make_probe_high_speed_near_collision,
+    make_probe_near_wall_frontier_along_wall,
+    make_probe_no_obstacle_straight_motion,
+    make_probe_obstacle_behind_agent,
+    make_probe_obstacle_on_frontier_ray,
+    make_probe_open_frontier_high_coverage,
+    make_probe_open_frontier_low_coverage,
+    make_probe_padded_mask_edge_cases,
+    make_probe_stalled_oscillation,
+    obstacle_collision_risk,
+    safer_of,
+)
