@@ -388,11 +388,18 @@ def obstacle_collision_risk(obs, action, cfg):
     return jnp.max(jnp.where(active, close_strength * toward, 0.0))
 
 
-def safer_of(obs, policy_teacher, analytic_teacher, cfg):
-    """P5 safer-of rule: choose analytic only when policy has higher collision risk."""
+def safer_of_with_choice(obs, policy_teacher, analytic_teacher, cfg):
+    """P5 safer-of rule plus whether the analytic teacher was selected."""
     policy_risk = obstacle_collision_risk(obs, policy_teacher, cfg)
     analytic_risk = obstacle_collision_risk(obs, analytic_teacher, cfg)
-    return jnp.where(policy_risk > analytic_risk, analytic_teacher, policy_teacher)
+    chose_analytic = policy_risk > analytic_risk
+    return jnp.where(chose_analytic, analytic_teacher, policy_teacher), chose_analytic
+
+
+def safer_of(obs, policy_teacher, analytic_teacher, cfg):
+    """P5 safer-of rule: choose analytic only when policy has higher collision risk."""
+    safer_mean, _ = safer_of_with_choice(obs, policy_teacher, analytic_teacher, cfg)
+    return safer_mean
 
 
 PROBE_FAMILY_NAMES = (

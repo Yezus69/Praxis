@@ -271,13 +271,18 @@ def label_probe_atoms(
         analytic_mean = jax.vmap(
             lambda o: coverage_probes.analytic_coverage_teacher(o, cfg)
         )(batch.obs)
-        safer_mean = jax.vmap(
-            lambda o, p, a: coverage_probes.safer_of(o, p, a, cfg)
+        safer_mean, chose_analytic = jax.vmap(
+            lambda o, p, a: coverage_probes.safer_of_with_choice(o, p, a, cfg)
         )(batch.obs, batch.mean, analytic_mean)
+        del chose_analytic
+        safer_mean = jnp.clip(safer_mean, -1.0, 1.0)
+        logstd = jnp.full_like(batch.logstd, cfg.analytic_teacher_logstd)
     else:
         safer_mean = batch.mean
+        logstd = batch.logstd
     return batch.replace(
         mean=safer_mean,
+        logstd=logstd,
         weight=w[kept_idx],
         kl_budget=klb[kept_idx],
         value_budget=vb[kept_idx],

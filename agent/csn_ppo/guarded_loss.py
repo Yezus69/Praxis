@@ -123,19 +123,43 @@ def _sorted_p95(values):
     return sorted_values[idx]
 
 
-def memory_guard_loss(params, normalizer_params, memory_batch, apply_policy_value):
+def condition_guard_kl_inputs(teacher_mean, teacher_logstd, policy_mean, policy_logstd, cfg):
+    mean_clip = 3.0 if cfg is None else cfg.guard_mean_clip
+    min_logstd = -2.3 if cfg is None else cfg.guard_min_logstd
+    clip = jnp.asarray(mean_clip, dtype=teacher_mean.dtype)
+    floor = jnp.asarray(min_logstd, dtype=policy_logstd.dtype)
+    t_mean = jnp.clip(teacher_mean, -clip, clip)
+    p_mean = jnp.clip(policy_mean, -clip, clip)
+    p_logstd = jnp.maximum(policy_logstd, floor)
+    return t_mean, teacher_logstd, p_mean, p_logstd
+
+
+def _max_atom_kl(cfg, dtype):
+    value = 1.0e3 if cfg is None else cfg.max_atom_kl
+    return jnp.asarray(value, dtype=dtype)
+
+
+def memory_guard_loss(params, normalizer_params, memory_batch, apply_policy_value, cfg=None):
     pred_mean, pred_logstd, pred_value = apply_policy_value(
         params,
         normalizer_params,
         memory_batch.obs,
     )
 
-    kl = gaussian_kl(
+    t_mean, t_logstd, p_mean, p_logstd = condition_guard_kl_inputs(
         memory_batch.mean,
         memory_batch.logstd,
         pred_mean,
         pred_logstd,
+        cfg,
     )
+    kl = gaussian_kl(
+        t_mean,
+        t_logstd,
+        p_mean,
+        p_logstd,
+    )
+    kl = jnp.minimum(kl, _max_atom_kl(cfg, kl.dtype))
 
     policy_violation = jax.nn.relu(kl - memory_batch.kl_budget)
     policy_loss = jnp.mean(
@@ -151,6 +175,12 @@ def memory_guard_loss(params, normalizer_params, memory_batch, apply_policy_valu
     metrics = {
         "memory/kl_mean": jnp.mean(kl),
         "memory/kl_p95": _sorted_p95(kl),
+        "diag/teacher_logstd_mean": jnp.mean(memory_batch.logstd),
+        "diag/teacher_logstd_min": jnp.min(memory_batch.logstd),
+        "diag/policy_logstd_mean": jnp.mean(pred_logstd),
+        "diag/policy_logstd_min": jnp.min(pred_logstd),
+        "diag/meandiff_mean": jnp.mean(jnp.abs(memory_batch.mean - pred_mean)),
+        "diag/meandiff_max": jnp.max(jnp.abs(memory_batch.mean - pred_mean)),
         "memory/policy_violation_frac": jnp.mean(policy_violation > 0),
         "memory/value_violation_frac": jnp.mean(value_violation > 0),
         "memory/policy_loss": policy_loss,
@@ -214,6 +244,7 @@ def value_and_grad_guard_loss_by_bucket(
     memory_batch,
     apply_policy_value,
     bucket_names=MEMORY_BUCKETS,
+    cfg=None,
 ):
     bucket_batches = bucket_memory_batches(memory_batch, bucket_names)
     loss_values = OrderedDict()
@@ -227,6 +258,7 @@ def value_and_grad_guard_loss_by_bucket(
                 normalizer_params,
                 bucket_batch,
                 apply_policy_value,
+                cfg=cfg,
             )
 
         (loss_value, metrics_value), grad_value = jax.value_and_grad(loss_fn, has_aux=True)(params)

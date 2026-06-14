@@ -7,7 +7,10 @@ import jax
 import jax.numpy as jnp
 
 from agent.csn_ppo import coverage_probes
-from agent.csn_ppo.guarded_loss import gaussian_kl
+from agent.csn_ppo.guarded_loss import (
+    condition_guard_kl_inputs,
+    gaussian_kl,
+)
 from praxis import contract
 
 
@@ -20,6 +23,7 @@ class ValidationBank:
     best_current: jnp.ndarray
     best_history: jnp.ndarray
     best_failure: jnp.ndarray
+    best_synthetic_kl_p95: jnp.ndarray
 
 
 def _prng_key(rng):
@@ -111,6 +115,7 @@ def create_validation_bank(rng, cfg, bank_size=None, synthetic_size=None):
         best_current=jnp.asarray(-jnp.inf, dtype=jnp.float32),
         best_history=jnp.asarray(-jnp.inf, dtype=jnp.float32),
         best_failure=jnp.asarray(-jnp.inf, dtype=jnp.float32),
+        best_synthetic_kl_p95=jnp.asarray(jnp.inf, dtype=jnp.float32),
     )
 
 
@@ -132,14 +137,30 @@ def evaluate_validation_bank(
     history = _score_seed_bank(env, validation_bank.history_keys, policy, cfg)
     failure = _score_seed_bank(env, validation_bank.sentinel_failure_keys, policy, cfg)
 
-    pred_mean, _, _ = apply_policy_value(
+    pred_mean, pred_logstd, _ = apply_policy_value(
         params,
         normalizer_params,
         validation_bank.synthetic_obs,
     )
     reference_mean = _synthetic_reference_mean(validation_bank.synthetic_obs, cfg)
-    zero_logstd = jnp.zeros_like(pred_mean)
-    synthetic_kl = gaussian_kl(reference_mean, zero_logstd, pred_mean, zero_logstd)
+    reference_logstd = jnp.full_like(reference_mean, cfg.analytic_teacher_logstd)
+    t_mean, t_logstd, p_mean, p_logstd = condition_guard_kl_inputs(
+        reference_mean,
+        reference_logstd,
+        pred_mean,
+        pred_logstd,
+        cfg,
+    )
+    synthetic_kl = gaussian_kl(
+        t_mean,
+        t_logstd,
+        p_mean,
+        p_logstd,
+    )
+    synthetic_kl = jnp.minimum(
+        synthetic_kl,
+        jnp.asarray(cfg.max_atom_kl, dtype=synthetic_kl.dtype),
+    )
     synthetic_kl_p95 = _sorted_p95(synthetic_kl)
 
     return {
@@ -160,15 +181,33 @@ def validation_best(validation_bank: ValidationBank):
         "current_score": validation_bank.best_current,
         "history_coverage": validation_bank.best_history,
         "sentinel_failure_score": validation_bank.best_failure,
+        "synthetic_kl_p95": validation_bank.best_synthetic_kl_p95,
     }
 
 
-def validation_regressed(metrics, best, cfg):
-    return (
+def validation_regression_signals(metrics, best, cfg):
+    history_regressed = (
         metrics["validation/history_coverage"]
         < best["history_coverage"] - cfg.validation_tolerance
-        or metrics["validation/synthetic_kl_p95"] > cfg.validation_kl_limit
     )
+    best_synthetic = best.get(
+        "synthetic_kl_p95",
+        jnp.asarray(jnp.inf, dtype=metrics["validation/synthetic_kl_p95"].dtype),
+    )
+    synthetic_regressed = (
+        metrics["validation/synthetic_kl_p95"]
+        > best_synthetic + cfg.validation_kl_margin
+    )
+    return history_regressed, synthetic_regressed
+
+
+def validation_regressed(metrics, best, cfg):
+    history_regressed, synthetic_regressed = validation_regression_signals(
+        metrics,
+        best,
+        cfg,
+    )
+    return bool(jnp.asarray(history_regressed) | jnp.asarray(synthetic_regressed))
 
 
 def update_validation_best(validation_bank: ValidationBank, metrics):
@@ -184,6 +223,10 @@ def update_validation_best(validation_bank: ValidationBank, metrics):
         best_failure=jnp.maximum(
             validation_bank.best_failure,
             metrics["validation/sentinel_failure_score"],
+        ),
+        best_synthetic_kl_p95=jnp.minimum(
+            validation_bank.best_synthetic_kl_p95,
+            metrics["validation/synthetic_kl_p95"],
         ),
     )
 
@@ -204,11 +247,14 @@ def select_validation_update(
     best_safe_params,
     best_safe_opt_state,
     best_safe_normalizer_params,
+    regression_count=0,
 ):
     """P6 update-acceptance gate: keep candidate or roll back to last-safe state."""
     regressed = bool(validation_regressed(metrics, best, cfg))
+    next_count = int(regression_count) + 1 if regressed else 0
+    should_rollback = next_count >= max(int(cfg.validation_patience), 1)
     has_safe = best_safe_params is not None
-    if regressed and has_safe:
+    if should_rollback and has_safe:
         return (
             best_safe_params,
             best_safe_opt_state,

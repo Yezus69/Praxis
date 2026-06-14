@@ -37,6 +37,7 @@ from agent.csn_ppo.gradient_projection import (
 )
 from agent.csn_ppo.guarded_loss import (
     coefficients_for_buckets,
+    condition_guard_kl_inputs,
     gaussian_kl,
     init_guard_pressure_state,
     memory_bucket_mask,
@@ -54,7 +55,6 @@ from agent.csn_ppo.validation import (
     ValidationBank,
     create_validation_bank,
     evaluate_validation_bank,
-    select_validation_update,
     update_validation_best,
     validation_best,
     validation_guard_regressions,
@@ -145,6 +145,7 @@ def _guard_bucket_losses_and_metrics(
     normalizer_params,
     memory_batch,
     apply_policy_value,
+    cfg,
     bucket_names=ACTIVE_MEMORY_BUCKETS,
 ):
     pred_mean, pred_logstd, pred_value = apply_policy_value(
@@ -152,7 +153,15 @@ def _guard_bucket_losses_and_metrics(
         normalizer_params,
         memory_batch.obs,
     )
-    kl = gaussian_kl(memory_batch.mean, memory_batch.logstd, pred_mean, pred_logstd)
+    t_mean, t_logstd, p_mean, p_logstd = condition_guard_kl_inputs(
+        memory_batch.mean,
+        memory_batch.logstd,
+        pred_mean,
+        pred_logstd,
+        cfg,
+    )
+    kl = gaussian_kl(t_mean, t_logstd, p_mean, p_logstd)
+    kl = jnp.minimum(kl, jnp.asarray(cfg.max_atom_kl, dtype=kl.dtype))
     policy_violation = jax.nn.relu(kl - memory_batch.kl_budget)
     value_error = jnp.abs(pred_value - memory_batch.value)
     value_violation = jax.nn.relu(value_error - memory_batch.value_budget)
@@ -341,6 +350,7 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
         )
         champions = mosaic_teacher.init_mosaic_champions(num_sentinel_clusters)
     validation_bank = None
+    validation_regression_count = 0
     if int(config.validation_eval_interval) > 0:
         rng, validation_rng = jax.random.split(rng)
         validation_bank = create_validation_bank(validation_rng, config)
@@ -490,6 +500,7 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
                         epoch_normalizer_params,
                         memory_batch,
                         apply_policy_value,
+                        config,
                     )
                     return losses
 
@@ -498,6 +509,7 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
                     epoch_normalizer_params,
                     memory_batch,
                     apply_policy_value,
+                    config,
                 )
                 stacked_guard_grads = jax.jacrev(loss_vector)(step_params)
                 guard_grads = _unstack_guard_grads(stacked_guard_grads, losses.shape[0])
@@ -694,6 +706,7 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
                     normalizer_params,
                     memory_batch,
                     apply_policy_value,
+                    cfg=config,
                 )
                 memory_kl_p95 = guard_eval_metrics["memory/kl_p95"]
             else:
@@ -870,23 +883,27 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
                 apply_policy_value,
                 config,
             )
-            (
-                params,
-                opt_state,
-                normalizer_params,
-                validation_regressed_now,
-                validation_rolled_back,
-            ) = select_validation_update(
+            best_validation = validation_best(validation_bank)
+            validation_regressed_now = validation_regressed(
                 raw_validation_metrics,
-                validation_best(validation_bank),
+                best_validation,
                 config,
-                params,
-                opt_state,
-                normalizer_params,
-                last_safe_params,
-                last_safe_opt_state,
-                last_safe_normalizer_params,
             )
+            if validation_regressed_now:
+                validation_regression_count += 1
+            else:
+                validation_regression_count = 0
+            validation_patience_exhausted = (
+                validation_regressed_now
+                and validation_regression_count >= max(int(config.validation_patience), 1)
+            )
+            validation_rolled_back = (
+                validation_patience_exhausted and last_safe_params is not None
+            )
+            if validation_rolled_back:
+                params = last_safe_params
+                opt_state = last_safe_opt_state
+                normalizer_params = last_safe_normalizer_params
             validation_metrics = dict(raw_validation_metrics)
             validation_metrics.update(
                 {
@@ -898,9 +915,20 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
                         float(validation_rolled_back),
                         dtype=jnp.float32,
                     ),
+                    "validation/regression_count": jnp.asarray(
+                        float(validation_regression_count),
+                        dtype=jnp.float32,
+                    ),
+                    "validation/patience_exhausted": jnp.asarray(
+                        float(validation_patience_exhausted),
+                        dtype=jnp.float32,
+                    ),
+                    "validation/best_synthetic_kl_p95": best_validation[
+                        "synthetic_kl_p95"
+                    ],
                 }
             )
-            if validation_regressed_now:
+            if validation_patience_exhausted:
                 guard_pressure = update_guard_pressure(
                     guard_pressure,
                     validation_guard_regressions(num_sentinel_clusters),
@@ -915,7 +943,8 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
                         for cluster_id in range(num_sentinel_clusters)
                     }
                 )
-            elif not sentinel_regressed_now:
+                validation_regression_count = 0
+            elif (not validation_regressed_now) and not sentinel_regressed_now:
                 validation_bank = update_validation_best(
                     validation_bank,
                     raw_validation_metrics,

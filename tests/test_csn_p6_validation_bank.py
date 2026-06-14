@@ -125,12 +125,15 @@ def test_6_1_validation_bank_metrics_are_deterministic():
 
 
 def test_6_2_validation_regression_selects_last_safe_state():
-    cfg = _cfg(validation_tolerance=0.05, validation_kl_limit=10.0)
+    cfg = _cfg(validation_tolerance=0.05, validation_patience=3)
     metrics = {
         "validation/history_coverage": jnp.asarray(0.70, dtype=jnp.float32),
         "validation/synthetic_kl_p95": jnp.asarray(0.0, dtype=jnp.float32),
     }
-    best = {"history_coverage": jnp.asarray(0.80, dtype=jnp.float32)}
+    best = {
+        "history_coverage": jnp.asarray(0.80, dtype=jnp.float32),
+        "synthetic_kl_p95": jnp.asarray(0.0, dtype=jnp.float32),
+    }
 
     assert validation_regressed(metrics, best, cfg)
 
@@ -157,6 +160,32 @@ def test_6_2_validation_regression_selects_last_safe_state():
         safe_params,
         safe_opt_state,
         safe_normalizer,
+        regression_count=0,
+    )
+
+    assert regressed
+    assert not rolled_back
+    assert selected_params is candidate_params
+    assert selected_opt_state is candidate_opt_state
+    assert selected_normalizer is candidate_normalizer
+
+    (
+        selected_params,
+        selected_opt_state,
+        selected_normalizer,
+        regressed,
+        rolled_back,
+    ) = select_validation_update(
+        metrics,
+        best,
+        cfg,
+        candidate_params,
+        candidate_opt_state,
+        candidate_normalizer,
+        safe_params,
+        safe_opt_state,
+        safe_normalizer,
+        regression_count=cfg.validation_patience - 1,
     )
 
     assert regressed
@@ -166,8 +195,8 @@ def test_6_2_validation_regression_selects_last_safe_state():
     assert selected_normalizer is safe_normalizer
 
 
-def test_6_3_synthetic_validation_kl_catches_large_mean_shift():
-    cfg = _cfg(validation_kl_limit=0.1)
+def test_6_3_synthetic_validation_kl_catches_relative_mean_shift():
+    cfg = _cfg(validation_kl_margin=0.1)
     bank = create_validation_bank(jax.random.PRNGKey(7), cfg, bank_size=4, synthetic_size=16)
     shifted_params = {"mean": jnp.asarray([5.0, -5.0], dtype=jnp.float32)}
     normalizer_params = {"mean_shift": jnp.zeros((contract.ACT_DIM,), dtype=jnp.float32)}
@@ -181,5 +210,10 @@ def test_6_3_synthetic_validation_kl_catches_large_mean_shift():
         _apply_policy_value,
         cfg,
     )
+    best = {
+        "history_coverage": metrics["validation/history_coverage"],
+        "synthetic_kl_p95": jnp.asarray(0.0, dtype=jnp.float32),
+    }
 
-    assert float(metrics["validation/synthetic_kl_p95"]) > cfg.validation_kl_limit
+    assert float(metrics["validation/synthetic_kl_p95"]) > cfg.validation_kl_margin
+    assert validation_regressed(metrics, best, cfg)

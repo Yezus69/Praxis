@@ -56,6 +56,9 @@ class CSNPPOConfig:
     guard_lambda_down: float = 0.98
     guard_recovery_patience: int = 3
     guard_kl_budget: float = 0.02
+    max_atom_kl: float = 50.0
+    guard_mean_clip: float = 3.0
+    guard_min_logstd: float = -2.3
     critical_kl_budget: float = 0.005
     value_budget: float = 0.25
     critical_value_budget: float = 0.05
@@ -73,6 +76,9 @@ class CSNPPOConfig:
     slow_memory_threshold: float = 3.0
     atoms_per_rollout: int = 1024
     teacher_logstd_floor: float = -6.9
+    # Analytic teacher is a geometric direction, not a tight target; guard should
+    # keep the policy roughly aligned, not pin it.
+    analytic_teacher_logstd: float = -1.6
 
     # Gradient projection
     enable_gradient_projection: bool = True
@@ -104,6 +110,8 @@ class CSNPPOConfig:
     # Fixed validation bank
     validation_tolerance: float = 0.05
     validation_kl_limit: float = 1.0
+    validation_patience: int = 3
+    validation_kl_margin: float = 1.0
     validation_eval_interval: int = 25
 
     # Curriculum mixture
