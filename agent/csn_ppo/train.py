@@ -274,7 +274,7 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
     if total_batch_size % int(config.num_envs) != 0:
         raise ValueError("total rollout batch must be divisible by num_envs")
     num_unrolls = total_batch_size // int(config.num_envs)
-    env_steps_per_update = total_batch_size * int(config.unroll_length)
+    env_steps_per_update = num_unrolls * int(config.num_envs) * int(config.unroll_length)
     num_updates = max(int(config.num_timesteps) // env_steps_per_update, 1)
     eval_interval = max(num_updates // max(int(config.num_evals) - 1, 1), 1)
     champion_eval_interval = int(config.champion_eval_interval) or eval_interval
@@ -412,8 +412,8 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
 
     def eval_policy_fn(eval_params):
         return make_policy(
-            (normalizer_params, eval_params.policy, eval_params.value),
-            deterministic=True,
+            eval_params,
+            deterministic=config.eval_deterministic,
         )
 
     evaluator = Evaluator(
@@ -427,7 +427,7 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
 
     metrics = {}
     if progress_fn is not None:
-        eval_metrics = evaluator.run_evaluation(params, {})
+        eval_metrics = evaluator.run_evaluation((normalizer_params, params.policy, params.value), {})
         champion, champion_metrics = mosaic_teacher.maybe_update_champion(
             champion,
             eval_metrics,
@@ -558,15 +558,18 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
                 best_opt_state = opt_state_candidate
                 best_holdout = float(np.asarray(holdout_surrogate))
 
-            stop = M.should_stop_epoch(
-                float(np.asarray(holdout_surrogate)),
-                best_holdout,
-                float(np.asarray(memory_kl_p95)),
-                config.memory_kl_limit_p95,
-                float(np.asarray(epoch_metrics["ppo/kl_mean"])),
-                config.target_kl,
-                config.holdout_eps,
-            )
+            stop = False
+            if config.enable_holdout_early_stop:
+                stop = M.should_stop_epoch(
+                    float(np.asarray(holdout_surrogate)),
+                    best_holdout,
+                    float(np.asarray(memory_kl_p95)),
+                    config.memory_kl_limit_p95,
+                    float(np.asarray(epoch_metrics["ppo/kl_mean"])),
+                    config.target_kl,
+                    config.holdout_eps,
+                    enable_kl_early_stop=config.enable_kl_early_stop,
+                )
             params = params_candidate
             opt_state = opt_state_candidate
             holdout_metrics = {
@@ -590,7 +593,7 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
         eval_metrics = {}
         champion_metrics = {}
         if do_eval:
-            eval_metrics = evaluator.run_evaluation(params, {})
+            eval_metrics = evaluator.run_evaluation((normalizer_params, params.policy, params.value), {})
             if do_champion and config.enable_mosaic_teacher:
                 champion, champion_metrics = mosaic_teacher.maybe_update_champion(
                     champion,

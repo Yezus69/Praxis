@@ -84,6 +84,8 @@ class CSNPPOConfig:
     synthetic_probe_insert_interval: int = 1
 
     # Holdout overfit control
+    enable_holdout_early_stop: bool = True
+    enable_kl_early_stop: bool = False
     holdout_fraction: float = 0.2
     holdout_eps: float = 1e-4
     target_kl: float = 0.03
@@ -102,6 +104,7 @@ class CSNPPOConfig:
     # Evaluation/logging
     num_evals: int = 20
     num_eval_envs: int = 128
+    eval_deterministic: bool = False
     log_interval: int = 1
 
     def __post_init__(self) -> None:

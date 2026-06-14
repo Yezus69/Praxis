@@ -22,6 +22,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--num-timesteps", type=float, default=float(CSNPPOConfig.num_timesteps))
     p.add_argument("--num-envs", type=int, default=CSNPPOConfig.num_envs)
     p.add_argument("--num-evals", type=int, default=CSNPPOConfig.num_evals)
+    p.add_argument("--deterministic-eval", dest="eval_deterministic",
+                   action=argparse.BooleanOptionalAction,
+                   default=CSNPPOConfig.eval_deterministic)
     p.add_argument("--seed", type=int, default=CSNPPOConfig.seed)
     p.add_argument("--run-name", type=str, default=None)
     p.add_argument("--episode-length", type=int, default=contract.EPISODE_LENGTH)
@@ -33,6 +36,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--discounting", type=float, default=CSNPPOConfig.discounting)
     p.add_argument("--reward-scaling", type=float, default=CSNPPOConfig.reward_scaling)
     p.add_argument("--max-updates-per-batch", type=int, default=CSNPPOConfig.max_updates_per_batch)
+    p.add_argument("--holdout-early-stop", dest="enable_holdout_early_stop",
+                   action=argparse.BooleanOptionalAction,
+                   default=CSNPPOConfig.enable_holdout_early_stop)
     p.add_argument("--memory-size-fast", type=int, default=CSNPPOConfig.memory_size_fast)
     p.add_argument("--memory-size-slow", type=int, default=CSNPPOConfig.memory_size_slow)
     p.add_argument("--memory-batch-size", type=int, default=CSNPPOConfig.memory_batch_size)
@@ -59,6 +65,7 @@ def resolve_config(args: argparse.Namespace) -> CSNPPOConfig:
         num_timesteps=int(args.num_timesteps),
         num_envs=int(args.num_envs),
         num_evals=int(args.num_evals),
+        eval_deterministic=bool(args.eval_deterministic),
         seed=int(args.seed),
         episode_length=int(args.episode_length),
         unroll_length=int(args.unroll_length),
@@ -69,6 +76,7 @@ def resolve_config(args: argparse.Namespace) -> CSNPPOConfig:
         discounting=float(args.discounting),
         reward_scaling=float(args.reward_scaling),
         max_updates_per_batch=int(args.max_updates_per_batch),
+        enable_holdout_early_stop=bool(args.enable_holdout_early_stop),
         memory_size_fast=int(args.memory_size_fast),
         memory_size_slow=int(args.memory_size_slow),
         memory_batch_size=int(args.memory_batch_size),
