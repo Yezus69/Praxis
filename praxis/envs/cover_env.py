@@ -43,6 +43,13 @@ def default_config() -> ml_collections.ConfigDict:
     cfg.reward.k_cov = contract.DEFAULT_REWARD_WEIGHTS["k_cov"]
     cfg.reward.k_coll = contract.DEFAULT_REWARD_WEIGHTS["k_coll"]
     cfg.reward.k_time = contract.DEFAULT_REWARD_WEIGHTS["k_time"]
+    # --- WALL1 fix: opt-in reward shaping; defaults reproduce current behavior ---
+    cfg.reward.terminate_on_full_coverage = False  # Variant A: true terminal when all cells covered
+    cfg.reward.k_complete = 0.0                     # Variant A: completion bonus weight (0 => off)
+    cfg.reward.collision_penalty_cap = 0.0          # Variant C.1: 0 => uncapped (current behavior)
+    cfg.reward.patrol = False                       # Variant B: renewable freshness reward
+    cfg.reward.k_fresh = 0.0                        # Variant B: weight on freshness restored/step
+    cfg.reward.freshness_decay = 0.99               # Variant B: per-step freshness decay
 
     cfg.arena_half = contract.ARENA_HALF
     cfg.grid_size = contract.GRID_SIZE
@@ -178,6 +185,8 @@ class CoverEnv(mjx_env.MjxEnv):
             contract.METRIC_REWARD_COMPONENTS[0]: z,
             contract.METRIC_REWARD_COMPONENTS[1]: z,
             contract.METRIC_REWARD_COMPONENTS[2]: z,
+            "completed": z,
+            "mean_freshness": z,
         }
 
     # ---- reset ---- #
@@ -225,6 +234,7 @@ class CoverEnv(mjx_env.MjxEnv):
         # episode metrics by summation) to the final coverage fraction.
         visited = jp.zeros((contract.N_CELLS,))
         info["visited"] = visited
+        info["freshness"] = jp.zeros((contract.N_CELLS,))  # Variant B; inert unless patrol/k_fresh
         info["covered"] = jp.zeros(())
 
         agent_xy, agent_vel = self._agent_pose(data)
@@ -259,6 +269,14 @@ class CoverEnv(mjx_env.MjxEnv):
         visited = prev_visited.at[cell].set(1.0)
         new_cells = visited.sum() - prev_visited.sum()
 
+        # Variant B: renewable freshness (inert when patrol=False / k_fresh=0).
+        decay = float(cfg.reward.freshness_decay) if bool(cfg.reward.patrol) else 1.0
+        prev_fresh = info["freshness"] * decay
+        gain = 1.0 - prev_fresh[cell]
+        freshness = prev_fresh.at[cell].set(1.0)
+        info["freshness"] = freshness
+        r_fresh = float(cfg.reward.k_fresh) * gain
+
         # collision penalty (geometric, vs obstacles; NON-terminal)
         rel = obst_pos[:, :2] - agent_xy[None, :]
         d = jp.linalg.norm(rel, axis=-1)
@@ -270,13 +288,25 @@ class CoverEnv(mjx_env.MjxEnv):
         k_time = float(cfg.reward.k_time)
         r_cover = k_cov * new_cells
         r_coll = -k_coll * collision
+        _cap = float(cfg.reward.collision_penalty_cap)
+        r_coll = jp.where(_cap > 0.0, jp.maximum(r_coll, -_cap), r_coll)
         r_time = -k_time
-        reward = r_cover + r_coll + r_time
 
+        # Variant A: terminate on full coverage + completion bonus.
         timeout = (step_idx >= int(cfg.episode_length)).astype(jp.float32)
-        done = timeout
-        info["truncation"] = timeout
-        info["time_out"] = timeout
+        fully_covered = (visited.sum() >= float(contract.N_CELLS)).astype(jp.float32)
+        success = fully_covered * (1.0 if bool(cfg.reward.terminate_on_full_coverage) else 0.0)
+        remaining_frac = jp.clip(
+            (float(cfg.episode_length) - step_idx.astype(jp.float32)) / float(cfg.episode_length),
+            0.0, 1.0)
+        r_complete = float(cfg.reward.k_complete) * success * remaining_frac
+
+        reward = r_cover + r_coll + r_time + r_complete + r_fresh
+
+        done = jp.maximum(timeout, success)
+        time_out = timeout * (1.0 - success)
+        info["truncation"] = time_out
+        info["time_out"] = time_out
         info["step"] = step_idx
         info["time"] = time
         info["visited"] = visited
@@ -295,5 +325,7 @@ class CoverEnv(mjx_env.MjxEnv):
         metrics[contract.METRIC_REWARD_COMPONENTS[0]] = r_cover
         metrics[contract.METRIC_REWARD_COMPONENTS[1]] = r_coll
         metrics[contract.METRIC_REWARD_COMPONENTS[2]] = jp.asarray(r_time)
+        metrics["completed"] = success
+        metrics["mean_freshness"] = freshness.mean() / float(cfg.episode_length)
 
         return mjx_env.State(data, obs, reward, done, metrics, info)

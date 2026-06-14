@@ -1,0 +1,18 @@
+**Deliverable Summary**
+1. Regions changed:
+   - [cover_env.py](C:/Users/Asav/source/repos/Praxis/praxis/envs/cover_env.py:43): added opt-in reward config defaults.
+   - [cover_env.py](C:/Users/Asav/source/repos/Praxis/praxis/envs/cover_env.py:181): added `completed` and `mean_freshness` reset metrics.
+   - [cover_env.py](C:/Users/Asav/source/repos/Praxis/praxis/envs/cover_env.py:236): added separate `info["freshness"]` grid.
+   - [cover_env.py](C:/Users/Asav/source/repos/Praxis/praxis/envs/cover_env.py:267): updated step tail for freshness reward, collision cap, full-coverage terminal/bonus, timeout contract, and new metrics.
+   - [train.py](C:/Users/Asav/source/repos/Praxis/praxis/train.py:344): threaded explicit reward/env overrides into env construction.
+   - [train.py](C:/Users/Asav/source/repos/Praxis/praxis/train.py:407): added new CLI flags.
+   - [train.py](C:/Users/Asav/source/repos/Praxis/praxis/train.py:474): added non-None override extraction.
+
+2. AST check: `AST OK`.
+
+3. No-flag default path is behavior-identical for `reward`, `done`, and `time_out`: `success=0`, `r_complete=0`, `r_fresh=0`, collision cap is off, so reward reduces to the existing `r_cover + r_coll + r_time`; `done=timeout`; `time_out=timeout`. Coverage remains the per-step delta metric.
+
+4. New CLI flags:
+   `--k-cov`, `--k-coll`, `--k-time`, `--k-complete`, `--k-fresh`, `--freshness-decay`, `--collision-penalty-cap`, `--terminate-on-full-coverage` / `--no-terminate-on-full-coverage`, `--patrol` / `--no-patrol`.
+
+`cover_scene.xml` was not touched.

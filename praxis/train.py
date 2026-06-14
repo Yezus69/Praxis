@@ -53,7 +53,18 @@ DEFAULTS = dict(
     entropy_cost=1e-2,
     discounting=0.97,
     reward_scaling=1.0,
-    normalize_observations=True,  # Brax default is False — MUST enable.
+    lr_schedule="none",            # "none" | "adaptive_kl"
+    desired_kl=0.01,               # target per-update KL (only used under adaptive_kl)
+    lr_min=1e-5,                   # -> learning_rate_schedule_min_lr
+    lr_max=1e-2,                   # -> learning_rate_schedule_max_lr
+    clipping_epsilon=None,         # None => brax default (0.3); float => override
+    clipping_epsilon_value=None,   # None => OFF (brax default); float => value-clip range
+    normalize_advantage=None,      # None => brax default (True); bool => override
+    normalize_until_count=None,    # None => off; int => freeze obs-normalizer stats after N obs
+    gae_lambda=None,               # None => brax default 0.95; float => override
+    vf_loss_coefficient=None,      # None => brax default 0.5; float => override
+    deterministic_eval=False,      # False => current behavior (stochastic eval policy)
+    normalize_observations=True,  # Brax default is False - MUST enable.
     num_evals=10,
     seed=0,
 )
@@ -197,17 +208,18 @@ def make_progress_fn(
         "eval/collision_rate",
     ]
     state = {"header_written": False, "extra_cols": []}
+    train_csv_path = os.path.join(os.path.dirname(csv_path) or ".", "train_metrics.csv")
+    train_state = {"header_written": False, "metric_cols": [], "rows": []}
 
     os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
 
     def progress_fn(num_steps: int, metrics: Dict[str, Any]) -> None:
         wall_s = time.time() - start_time
 
-        # Brax calls progress_fn for BOTH eval rounds (keys under 'eval/') and, when
-        # log_training_metrics=True, training rounds (keys under 'training/'). Only eval
-        # rounds carry the per-episode success/collision metrics we curve, so write CSV
-        # rows for eval rounds ONLY; training rounds get logged to TB and skipped here
-        # (keeps metrics.csv clean for the DoD-2 learning plot).
+        # Only eval rounds carry the per-episode success/collision metrics we curve, so
+        # write metrics.csv rows for eval rounds ONLY (keeps the DoD-2 plot clean).
+        # In brax 0.14.2, log_training_metrics=True merges training/* keys into this
+        # same eval callback; those are written to train_metrics.csv below.
         is_eval = any(k.startswith("eval/") for k in metrics)
         if not is_eval:
             if tb_writer is not None:
@@ -223,6 +235,15 @@ def make_progress_fn(
             return
 
         mapped = map_eval_metrics(metrics)
+
+        train_mapped: Dict[str, float] = {}
+        for k, v in metrics.items():
+            if not k.lower().startswith("training/"):
+                continue
+            try:
+                train_mapped[k] = float(v)
+            except (TypeError, ValueError):
+                continue
 
         # Determine extra columns (sorted, stable) beyond the canonical three.
         canonical = {"eval/episode_reward", "eval/coverage", "eval/collision_rate"}
@@ -254,6 +275,46 @@ def make_progress_fn(
         except OSError as e:
             print(f"[progress_fn] WARN: failed to write CSV row: {e}")
 
+        # --- training CSV (merged into eval metrics by brax 0.14.2) ---
+        if train_mapped:
+            try:
+                old_cols = list(train_state["metric_cols"])
+                metric_cols = sorted(set(old_cols).union(train_mapped.keys()))
+                train_state["metric_cols"] = metric_cols
+                train_cols = ["step", "wall_s"] + metric_cols
+                train_row = {
+                    "step": int(num_steps),
+                    "wall_s": round(wall_s, 2),
+                }
+                for c in metric_cols:
+                    train_row[c] = train_mapped.get(c, float("nan"))
+
+                rows = train_state["rows"]
+                rows.append(train_row)
+                header_changed = train_state["header_written"] and metric_cols != old_cols
+                if header_changed:
+                    with open(train_csv_path, "w", newline="") as f:
+                        writer = csv.DictWriter(f, fieldnames=train_cols, extrasaction="ignore")
+                        writer.writeheader()
+                        for r in rows:
+                            full_row = {
+                                "step": r["step"],
+                                "wall_s": r["wall_s"],
+                            }
+                            for c in metric_cols:
+                                full_row[c] = r.get(c, float("nan"))
+                            writer.writerow(full_row)
+                else:
+                    write_header = not train_state["header_written"]
+                    with open(train_csv_path, "a", newline="") as f:
+                        writer = csv.DictWriter(f, fieldnames=train_cols, extrasaction="ignore")
+                        if write_header:
+                            writer.writeheader()
+                            train_state["header_written"] = True
+                        writer.writerow(train_row)
+            except OSError as e:
+                print(f"[progress_fn] WARN: failed to write training CSV row: {e}")
+
         # --- TensorBoard (best-effort) ---
         if tb_writer is not None:
             try:
@@ -280,7 +341,7 @@ def make_progress_fn(
 # --------------------------------------------------------------------------- #
 # Env construction
 # --------------------------------------------------------------------------- #
-def build_env(episode_length: int):
+def build_env(episode_length: int, reward_overrides: Optional[Dict[str, Any]] = None):
     """Construct the (unwrapped) ``praxis.envs.CoverEnv``.
 
     episode_length is threaded INTO the env so its timeout (and thus info['time_out']
@@ -289,6 +350,10 @@ def build_env(episode_length: int):
     from praxis.envs import CoverEnv, default_config  # type: ignore
     cfg = default_config()
     cfg.episode_length = int(episode_length)
+    if reward_overrides:
+        for key, value in reward_overrides.items():
+            if value is not None:
+                cfg.reward[key] = value
     print(f"[env] Using praxis.envs.CoverEnv (coverage, episode_length={int(episode_length)}).")
     return CoverEnv(cfg)
 
@@ -317,6 +382,37 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--entropy-cost", type=float, default=DEFAULTS["entropy_cost"])
     p.add_argument("--discounting", type=float, default=DEFAULTS["discounting"])
     p.add_argument("--reward-scaling", type=float, default=DEFAULTS["reward_scaling"])
+    p.add_argument("--lr-schedule", type=str, choices=["none", "adaptive_kl"],
+                   default=DEFAULTS["lr_schedule"],
+                   help="LR controller. 'none' (default)=constant LR (current behavior). "
+                        "'adaptive_kl'=brax KL-throttled adaptive LR. brax 0.14.2 has no cosine/linear schedule.")
+    p.add_argument("--desired-kl", type=float, default=DEFAULTS["desired_kl"],
+                   help="Target per-update KL for adaptive_kl. Inert unless --lr-schedule adaptive_kl.")
+    p.add_argument("--lr-min", type=float, default=DEFAULTS["lr_min"], help="Floor LR for adaptive_kl.")
+    p.add_argument("--lr-max", type=float, default=DEFAULTS["lr_max"], help="Ceiling LR for adaptive_kl.")
+    p.add_argument("--clipping-epsilon", type=float, default=None,
+                   help="Policy PPO clip eps. None => brax default 0.3. Lower (0.2) tightens trust region.")
+    p.add_argument("--clipping-epsilon-value", type=float, default=None,
+                   help="Value-function clip range. None => OFF (brax default). e.g. 0.2 enables clipped value loss.")
+    p.add_argument("--normalize-advantage", action=argparse.BooleanOptionalAction, default=None,
+                   help="Per-minibatch advantage standardization. None => brax default (True).")
+    p.add_argument("--normalize-until-count", type=int, default=None,
+                   help="Freeze obs-normalizer running stats after N observations. None => never freeze.")
+    p.add_argument("--gae-lambda", type=float, default=None, help="GAE lambda. None => brax default 0.95.")
+    p.add_argument("--vf-loss-coefficient", type=float, default=None,
+                   help="Value loss coefficient. None => brax default 0.5.")
+    p.add_argument("--deterministic-eval", action=argparse.BooleanOptionalAction, default=False,
+                   help="Use the greedy (mean) policy at eval time. Default False = stochastic eval (current behavior). "
+                        "Diagnostic: isolates eval-time action noise from real policy degradation.")
+    p.add_argument("--k-cov", type=float, default=None)
+    p.add_argument("--k-coll", type=float, default=None)
+    p.add_argument("--k-time", type=float, default=None)
+    p.add_argument("--k-complete", type=float, default=None)
+    p.add_argument("--k-fresh", type=float, default=None)
+    p.add_argument("--freshness-decay", type=float, default=None)
+    p.add_argument("--collision-penalty-cap", type=float, default=None)
+    p.add_argument("--terminate-on-full-coverage", action=argparse.BooleanOptionalAction, default=None)
+    p.add_argument("--patrol", action=argparse.BooleanOptionalAction, default=None)
     p.add_argument("--num-evals", type=int, default=DEFAULTS["num_evals"])
     p.add_argument("--seed", type=int, default=DEFAULTS["seed"])
 
@@ -355,6 +451,17 @@ def resolve_config(args: argparse.Namespace) -> Dict[str, Any]:
         num_evals=int(args.num_evals),
         seed=int(args.seed),
         normalize_observations=DEFAULTS["normalize_observations"],
+        lr_schedule=str(args.lr_schedule),
+        desired_kl=float(args.desired_kl),
+        lr_min=float(args.lr_min),
+        lr_max=float(args.lr_max),
+        clipping_epsilon=(None if args.clipping_epsilon is None else float(args.clipping_epsilon)),
+        clipping_epsilon_value=(None if args.clipping_epsilon_value is None else float(args.clipping_epsilon_value)),
+        normalize_advantage=args.normalize_advantage,
+        normalize_until_count=(None if args.normalize_until_count is None else int(args.normalize_until_count)),
+        gae_lambda=(None if args.gae_lambda is None else float(args.gae_lambda)),
+        vf_loss_coefficient=(None if args.vf_loss_coefficient is None else float(args.vf_loss_coefficient)),
+        deterministic_eval=bool(args.deterministic_eval),
     )
     if args.smoke:
         # Only override the few smoke knobs; respect explicit user-set everything else.
@@ -364,9 +471,26 @@ def resolve_config(args: argparse.Namespace) -> Dict[str, Any]:
     return cfg
 
 
+def reward_overrides_from_args(args: argparse.Namespace) -> Dict[str, Any]:
+    """Return only explicit reward/env overrides, preserving no-flag defaults."""
+    names = (
+        "k_cov",
+        "k_coll",
+        "k_time",
+        "k_complete",
+        "k_fresh",
+        "freshness_decay",
+        "collision_penalty_cap",
+        "terminate_on_full_coverage",
+        "patrol",
+    )
+    return {name: getattr(args, name) for name in names if getattr(args, name) is not None}
+
+
 def main(argv: Optional[list] = None) -> int:
     args = build_parser().parse_args(argv)
     cfg = resolve_config(args)
+    reward_overrides = reward_overrides_from_args(args)
 
     # Run identity + output dirs.
     run_name = args.run_name or (
@@ -390,6 +514,8 @@ def main(argv: Optional[list] = None) -> int:
     print("=" * 78)
     print(f"Praxis PPO (coverage)  run={run_name}")
     print(f"  hyperparams: {cfg}")
+    if reward_overrides:
+        print(f"  reward/env overrides: {reward_overrides}")
     print(f"  metrics.csv -> {os.path.abspath(csv_path)}")
     print(f"  tensorboard -> {os.path.abspath(tb_dir)}")
     print(f"  checkpoints -> {ckpt_dir_abs}")
@@ -401,7 +527,7 @@ def main(argv: Optional[list] = None) -> int:
     # Build the UNWRAPPED env and let Brax wrap it via wrap_env_fn (the official
     # Playground+Brax pattern, verified against the installed ppo.train). Pre-wrapping +
     # the default wrap_env=True would DOUBLE-wrap and break.
-    raw_env = build_env(episode_length=cfg["episode_length"])
+    raw_env = build_env(episode_length=cfg["episode_length"], reward_overrides=reward_overrides)
 
     # Network factory (explicit 256/256/256 policy & value).
     network_factory = make_network_factory(
@@ -486,6 +612,66 @@ def main(argv: Optional[list] = None) -> int:
     # training (reward/coverage regressing after an early peak); clip to stabilize.
     if "max_grad_norm" in train_sig_params:
         train_kwargs["max_grad_norm"] = 1.0
+
+    # LR schedule (adaptive KL trust region). Only inject when opted in.
+    if cfg["lr_schedule"] != "none":
+        if "learning_rate_schedule" in train_sig_params:
+            train_kwargs["learning_rate_schedule"] = "ADAPTIVE_KL"
+            if "desired_kl" in train_sig_params:
+                train_kwargs["desired_kl"] = float(cfg["desired_kl"])
+            if "learning_rate_schedule_min_lr" in train_sig_params:
+                train_kwargs["learning_rate_schedule_min_lr"] = float(cfg["lr_min"])
+            if "learning_rate_schedule_max_lr" in train_sig_params:
+                train_kwargs["learning_rate_schedule_max_lr"] = float(cfg["lr_max"])
+            print(f"[ppo] ADAPTIVE_KL LR schedule ON: desired_kl={cfg['desired_kl']} "
+                  f"lr in [{cfg['lr_min']},{cfg['lr_max']}] start={cfg['learning_rate']}")
+        else:
+            print("[ppo] NOTE: brax has no learning_rate_schedule; --lr-schedule ignored.")
+
+    if cfg["clipping_epsilon"] is not None:
+        if "clipping_epsilon" in train_sig_params:
+            train_kwargs["clipping_epsilon"] = float(cfg["clipping_epsilon"])
+        else:
+            print("[ppo] NOTE: brax has no clipping_epsilon; --clipping-epsilon ignored.")
+
+    if cfg["clipping_epsilon_value"] is not None:
+        if "clipping_epsilon_value" in train_sig_params:
+            train_kwargs["clipping_epsilon_value"] = float(cfg["clipping_epsilon_value"])
+        else:
+            print("[ppo] NOTE: brax has no clipping_epsilon_value; --clipping-epsilon-value ignored.")
+
+    if cfg["normalize_advantage"] is not None:
+        if "normalize_advantage" in train_sig_params:
+            train_kwargs["normalize_advantage"] = bool(cfg["normalize_advantage"])
+        else:
+            print("[ppo] NOTE: brax has no normalize_advantage; --[no-]normalize-advantage ignored.")
+
+    if cfg["normalize_until_count"] is not None:
+        if "normalize_until_count" in train_sig_params:
+            train_kwargs["normalize_until_count"] = int(cfg["normalize_until_count"])
+        else:
+            print("[ppo] NOTE: brax has no normalize_until_count; ignored.")
+
+    if cfg["gae_lambda"] is not None:
+        if "gae_lambda" in train_sig_params:
+            train_kwargs["gae_lambda"] = float(cfg["gae_lambda"])
+        else:
+            print("[ppo] NOTE: brax has no gae_lambda; ignored.")
+
+    if cfg["vf_loss_coefficient"] is not None:
+        if "vf_loss_coefficient" in train_sig_params:
+            train_kwargs["vf_loss_coefficient"] = float(cfg["vf_loss_coefficient"])
+        else:
+            print("[ppo] NOTE: brax has no vf_loss_coefficient; ignored.")
+
+    # Deterministic eval is a real brax kwarg but its non-default (False) IS the current behavior,
+    # so only inject when the user opts in to True, and still guard on the signature.
+    if cfg["deterministic_eval"]:
+        if "deterministic_eval" in train_sig_params:
+            train_kwargs["deterministic_eval"] = True
+            print("[ppo] deterministic_eval=True (greedy/mean policy at eval).")
+        else:
+            print("[ppo] NOTE: brax has no deterministic_eval; --deterministic-eval ignored.")
 
     # --- Train. ppo.train returns a 3-tuple. ---
     print("[ppo] starting ppo.train(...) — expect 30-60s first-run JIT compile.")
