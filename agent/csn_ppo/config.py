@@ -74,6 +74,7 @@ class CSNPPOConfig:
     enable_guard: bool = True
 
     # Sentinel evaluation
+    enable_sentinel: bool = False
     sentinel_eval_interval: int = 25
     sentinel_bank_size: int = 4096
     sentinel_success_tolerance: float = 0.05

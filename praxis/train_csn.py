@@ -50,6 +50,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--guard-policy-coef", type=float, default=CSNPPOConfig.guard_policy_coef)
     p.add_argument("--projection", "--enable-projection", dest="enable_projection",
                    action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--enable-sentinel", dest="enable_sentinel",
+                   action=argparse.BooleanOptionalAction,
+                   default=CSNPPOConfig.enable_sentinel)
     p.add_argument("--smoke", action="store_true")
 
     p.add_argument("--k-cov", type=float, default=None)
@@ -90,6 +93,7 @@ def resolve_config(args: argparse.Namespace) -> CSNPPOConfig:
         guard_lambda_mem=float(args.guard_lambda_mem),
         guard_policy_coef=float(args.guard_policy_coef),
         enable_gradient_projection=bool(args.enable_projection),
+        enable_sentinel=bool(args.enable_sentinel),
     )
     if args.smoke:
         values.update(

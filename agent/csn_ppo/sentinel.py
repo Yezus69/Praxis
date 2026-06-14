@@ -38,8 +38,18 @@ class SentinelTrajectories:
     active: jnp.ndarray           # [N, T]
 
 
+def _prng_key(rng):
+    rng = jnp.asarray(rng)
+    if rng.ndim == 0:
+        return jax.random.PRNGKey(rng.astype(jnp.uint32))
+    if rng.ndim == 2 and rng.shape[0] == 1:
+        return rng[0]
+    return rng
+
+
 def create_sentinel_bank(rng, size, num_clusters):
     """README section 13: fixed deterministic sentinel worlds assigned to clusters."""
+    rng = _prng_key(rng)
     reset_rng = jax.random.split(rng, int(size))
     idx = jnp.arange(int(size), dtype=jnp.int32)
     cluster_id = idx % jnp.asarray(num_clusters, dtype=jnp.int32)
@@ -75,6 +85,19 @@ def _episode_length(env):
     return int(contract.EPISODE_LENGTH)
 
 
+def _batched_prng_keys(reset_rng):
+    reset_rng = jnp.asarray(reset_rng)
+    if reset_rng.ndim == 0:
+        reset_rng = _prng_key(reset_rng)
+    if reset_rng.ndim == 1:
+        if reset_rng.shape[0] == 2:
+            return reset_rng[None, :]
+        return jax.vmap(lambda seed: jax.random.PRNGKey(seed.astype(jnp.uint32)))(
+            reset_rng
+        )
+    return reset_rng
+
+
 def evaluate_sentinel_bank(
     env,
     bank: SentinelSeed,
@@ -91,16 +114,17 @@ def evaluate_sentinel_bank(
     horizon = _episode_length(env)
     num_clusters = bank.best_coverage.shape[0]
 
-    states0 = jax.vmap(env.reset)(bank.reset_rng)
-    step_rng = jax.random.fold_in(bank.reset_rng[0], horizon)
-    done0 = jnp.zeros((bank.reset_rng.shape[0],), dtype=jnp.float32)
+    reset_rng = _batched_prng_keys(bank.reset_rng)
+    states0 = env.reset(reset_rng)
+    step_rng = jax.random.fold_in(reset_rng[0], horizon)
+    done0 = jnp.zeros((reset_rng.shape[0],), dtype=jnp.float32)
 
     def scan_step(carry, _):
         state, done, rng = carry
         rng, action_rng = jax.random.split(rng)
         action, _ = policy(state.obs, action_rng)
         action = jnp.where(done[:, None] > 0.0, jnp.zeros_like(action), action)
-        next_state = jax.vmap(env.step)(state, action)
+        next_state = env.step(state, action)
         active = 1.0 - done
         coverage_delta = next_state.metrics[contract.METRIC_COVERAGE] * active
         collision_delta = next_state.metrics[contract.METRIC_COLLISION] * active
@@ -128,7 +152,7 @@ def evaluate_sentinel_bank(
     episode_collision_rate = jnp.sum(collision_t, axis=0)
     cluster_coverage, counts = _cluster_mean(
         episode_coverage,
-        bank.cluster_id,
+        bank.cluster_id[: reset_rng.shape[0]],
         num_clusters,
     )
     cluster_collision_rate, _ = _cluster_mean(
@@ -154,7 +178,7 @@ def evaluate_sentinel_bank(
         reward=reward,
         coverage=episode_coverage,
         collision_rate=episode_collision_rate,
-        cluster_id=bank.cluster_id,
+        cluster_id=bank.cluster_id[: reset_rng.shape[0]],
         active=active,
     )
     return metrics, trajectories

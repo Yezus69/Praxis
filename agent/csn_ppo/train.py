@@ -23,6 +23,7 @@ from agent.csn_ppo import coverage_probes
 from agent.csn_ppo import metrics as M
 from agent.csn_ppo import mosaic_teacher
 from agent.csn_ppo import rollout_mining
+from agent.csn_ppo import sentinel
 from agent.csn_ppo.config import CSNPPOConfig
 from agent.csn_ppo.gradient_projection import (
     combine_safe_and_guard_grads,
@@ -200,6 +201,43 @@ def _metric_value(metrics, key):
     return metrics[key]
 
 
+def _sentinel_cluster_metrics(sentinel_metrics, trajectories, num_clusters):
+    episode_return = jnp.sum(trajectories.reward, axis=1)
+    one_hot = jax.nn.one_hot(
+        trajectories.cluster_id,
+        num_clusters,
+        dtype=jnp.float32,
+    )
+    counts = jnp.maximum(jnp.sum(one_hot, axis=0), 1.0)
+    mean_return = jnp.sum(one_hot * episode_return[:, None], axis=0) / counts
+    return {
+        "coverage": sentinel_metrics["coverage"],
+        "collision_rate": sentinel_metrics["collision_rate"],
+        "mean_return": mean_return,
+    }
+
+
+def _champion_policy_id(policy_id):
+    return -1 if policy_id is None else int(policy_id)
+
+
+def _sync_sentinel_bank_from_champions(sentinel_bank, champions):
+    return sentinel_bank.replace(
+        best_coverage=jnp.asarray(
+            [c.best_coverage for c in champions.champions],
+            dtype=jnp.float32,
+        ),
+        best_collision_rate=jnp.asarray(
+            [c.best_collision_rate for c in champions.champions],
+            dtype=jnp.float32,
+        ),
+        champion_policy_id=jnp.asarray(
+            [_champion_policy_id(c.policy_id) for c in champions.champions],
+            dtype=jnp.int32,
+        ),
+    )
+
+
 def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
     """Runs Phase 1b CSN-PPO over an already wrapped coverage environment."""
     rng = jax.random.PRNGKey(config.seed)
@@ -248,6 +286,17 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
         config.action_dim,
     )
     champion = mosaic_teacher.init_champion()
+    sentinel_bank = None
+    champions = None
+    num_sentinel_clusters = 4
+    if config.enable_sentinel:
+        rng, sentinel_rng = jax.random.split(rng)
+        sentinel_bank = sentinel.create_sentinel_bank(
+            sentinel_rng,
+            config.sentinel_bank_size,
+            num_sentinel_clusters,
+        )
+        champions = mosaic_teacher.init_mosaic_champions(num_sentinel_clusters)
 
     reset_keys = jax.random.split(key_reset, config.num_envs)
     env_state = jax.jit(environment.reset)(reset_keys)
@@ -587,6 +636,60 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
                 stopped_at = epoch + 1
                 break
 
+        sentinel_metrics = {}
+        if (
+            config.enable_sentinel
+            and int(config.sentinel_eval_interval) > 0
+            and update % int(config.sentinel_eval_interval) == 0
+        ):
+            raw_sentinel_metrics, sentinel_trajectories = sentinel.evaluate_sentinel_bank(
+                eval_env or environment,
+                sentinel_bank,
+                make_policy,
+                params,
+                normalizer_params,
+                deterministic=True,
+            )
+            regressions = sentinel.detect_sentinel_regressions(
+                raw_sentinel_metrics,
+                sentinel_bank,
+                config.sentinel_success_tolerance,
+                config.sentinel_collision_tolerance,
+            )
+            sentinel_metrics = {
+                k: v
+                for k, v in M.merge_metrics(raw_sentinel_metrics, regressions).items()
+                if k.startswith("sentinel/")
+            }
+            if bool(np.asarray(jnp.any(regressions["regressed"]))):
+                failed_atoms = sentinel.mine_failed_sentinel_states(
+                    sentinel_trajectories,
+                    regressions,
+                    params,
+                    normalizer_params,
+                    apply_policy_value=apply_policy_value,
+                    cfg=config,
+                )
+                memory_slow = insert_atoms(memory_slow, failed_atoms)
+            else:
+                cluster_metrics = _sentinel_cluster_metrics(
+                    raw_sentinel_metrics,
+                    sentinel_trajectories,
+                    num_sentinel_clusters,
+                )
+                champions = mosaic_teacher.maybe_update_champions(
+                    cluster_metrics,
+                    params,
+                    normalizer_params,
+                    champions,
+                    config,
+                    env_steps,
+                )
+                sentinel_bank = _sync_sentinel_bank_from_champions(
+                    sentinel_bank,
+                    champions,
+                )
+
         do_eval = (update + 1) % eval_interval == 0 or update == num_updates - 1
         do_champion = (
             do_eval and ((update + 1) % champion_eval_interval == 0 or update == num_updates - 1)
@@ -617,6 +720,7 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
             holdout_metrics,
             base_memory_metrics,
             mine_metrics,
+            sentinel_metrics,
             eval_metrics,
             champion_metrics,
             {
