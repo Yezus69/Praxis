@@ -72,3 +72,17 @@ def test_sampled_batch_shapes_and_fields_are_correct():
     assert batch.value_budget.shape == (3,)
     assert batch.cluster_id.shape == (3,)
     assert batch.source_id.shape == (3,)
+
+
+def test_memory_structs_are_jax_pytrees():
+    memory = init_behavioral_memory(5)
+    memory = insert_atoms(memory, _atoms(0, 5))
+    batch = sample_memory(memory, jax.random.PRNGKey(0), 3)
+
+    memory_leaves = jax.tree_util.tree_leaves(memory)
+    batch_leaves = jax.tree_util.tree_leaves(batch)
+
+    assert len(memory_leaves) == 12
+    assert len(batch_leaves) == 9
+    assert all(isinstance(leaf, jax.Array) for leaf in memory_leaves)
+    assert all(isinstance(leaf, jax.Array) for leaf in batch_leaves)

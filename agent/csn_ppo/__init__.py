@@ -40,6 +40,7 @@ from agent.csn_ppo.synthetic_probes import (
     success_proximity,
     value_budget,
 )
+from agent.csn_ppo import coverage_probes, criticality_coverage, metrics, mosaic_teacher, rollout_mining, train
 
 __all__ = [
     "BehavioralMemory",
@@ -74,4 +75,10 @@ __all__ = [
     "tree_scalar_mul",
     "value_and_grad_guard_loss_by_bucket",
     "value_budget",
+    "coverage_probes",
+    "criticality_coverage",
+    "metrics",
+    "mosaic_teacher",
+    "rollout_mining",
+    "train",
 ]

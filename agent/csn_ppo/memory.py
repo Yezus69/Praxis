@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
+import flax
 import jax
 import jax.numpy as jnp
 
 
-@dataclass
+@flax.struct.dataclass
 class BehavioralMemory:
     obs: jnp.ndarray              # [N, 27]
     mean: jnp.ndarray             # [N, 2]
@@ -24,7 +23,7 @@ class BehavioralMemory:
     size: jnp.ndarray             # scalar int32
 
 
-@dataclass
+@flax.struct.dataclass
 class BehavioralMemoryBatch:
     obs: jnp.ndarray              # [B, 27]
     mean: jnp.ndarray             # [B, 2]
@@ -76,7 +75,7 @@ def insert_atoms(memory: BehavioralMemory, atoms: BehavioralMemoryBatch) -> Beha
 
 def sample_memory(memory: BehavioralMemory, rng: jax.Array, batch_size: int) -> BehavioralMemoryBatch:
     max_idx = jnp.maximum(memory.size, 1)
-    idx = jax.random.randint(rng, (batch_size,), 0, max_idx)
+    idx = jax.random.randint(rng, (batch_size,), minval=0, maxval=max_idx)
 
     return BehavioralMemoryBatch(
         obs=memory.obs[idx],
