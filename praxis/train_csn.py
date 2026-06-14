@@ -44,6 +44,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--memory-batch-size", type=int, default=CSNPPOConfig.memory_batch_size)
     p.add_argument("--guard", "--enable-guard", dest="enable_guard",
                    action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--guard-warmup-steps", type=int, default=CSNPPOConfig.guard_warmup_steps)
+    p.add_argument("--guard-kl-budget", type=float, default=CSNPPOConfig.guard_kl_budget)
+    p.add_argument("--guard-lambda-mem", type=float, default=CSNPPOConfig.guard_lambda_mem)
+    p.add_argument("--guard-policy-coef", type=float, default=CSNPPOConfig.guard_policy_coef)
     p.add_argument("--projection", "--enable-projection", dest="enable_projection",
                    action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--smoke", action="store_true")
@@ -81,6 +85,10 @@ def resolve_config(args: argparse.Namespace) -> CSNPPOConfig:
         memory_size_slow=int(args.memory_size_slow),
         memory_batch_size=int(args.memory_batch_size),
         enable_guard=bool(args.enable_guard),
+        guard_warmup_steps=int(args.guard_warmup_steps),
+        guard_kl_budget=float(args.guard_kl_budget),
+        guard_lambda_mem=float(args.guard_lambda_mem),
+        guard_policy_coef=float(args.guard_policy_coef),
         enable_gradient_projection=bool(args.enable_projection),
     )
     if args.smoke:

@@ -502,9 +502,11 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
             if slow_probe_batch is not None:
                 memory_slow = insert_atoms(memory_slow, slow_probe_batch)
 
+        env_steps = (update + 1) * env_steps_per_update
         guard_active = (
             bool(config.enable_guard)
             and int(np.asarray(memory_fast.size)) >= int(config.min_memory_size_before_guard)
+            and env_steps >= int(config.guard_warmup_steps)
         )
         best_params = params
         best_opt_state = opt_state
@@ -585,7 +587,6 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
                 stopped_at = epoch + 1
                 break
 
-        env_steps = (update + 1) * env_steps_per_update
         do_eval = (update + 1) % eval_interval == 0 or update == num_updates - 1
         do_champion = (
             do_eval and ((update + 1) % champion_eval_interval == 0 or update == num_updates - 1)

@@ -43,6 +43,7 @@ class CSNPPOConfig:
     memory_size_slow: int = 32_768
     memory_batch_size: int = 2048
     min_memory_size_before_guard: int = 4096
+    guard_warmup_steps: int = 0
 
     # Guard budgets
     guard_policy_coef: float = 1.0

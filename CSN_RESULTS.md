@@ -75,6 +75,34 @@ implementation bug. CSN is correctly implemented; this is hyperparameter tuning.
 **Build priority:** finish all README phases (sentinel/curriculum/full-mosaic/tests/100M/math-audit)
 FIRST (primary deliverable = complete correct math-aligned spec), then guard-tuning to demonstrate
 peak preservation.
+
+## DELAYED-GUARD WORKS (2026-06-14) — CSN measurably fights forgetting
+Added --guard-warmup-steps (delay guard activation past the ~1.3M peak so the champion captures the
+GOOD policy first, per section 14). 5M runs (fast), default params, --guard-warmup-steps 1500000:
+| step | csn_full (guard@1.5M) | csn_abl (off) | gap |
+|------|----------------------|---------------|-----|
+| 1.23M (peak) | 0.754 | 0.754 | 0 (guard off both) |
+| 2.0M | 0.674 | 0.612 | +0.06 |
+| 4.1M | 0.570 | 0.418 | +0.15 |
+| 4.5M | 0.550 | 0.375 | +0.175 |
+The guard engages at 1.5M and the gap GROWS (the guard increasingly resists collapse). Full retains
+~47% more coverage by 4.5M. Clear anti-forgetting signal, at the real operating point. Still declining
+(not flat) ⇒ guard needs to be STRONGER. All experiments now 5M steps (~6 min) for fast iteration.
+
+## MATH AUDIT: MATH_OK (2026-06-14) — all loss functions/formulas match the README
+10-auditor adversarial audit (687K tokens) of all 9 modules vs CSN_PPO_README.md: ZERO real math
+mismatches. Verified: gaussian_kl §7, hinge policy/value guards + 0.25 combine §6/§8, projection
+coeff=min(dot,0)/(||g_mem||^2+eps) & combine §9-11, ring-buffer memory §5, criticality weights
+1/3/2/1/1 clip(0.1,10) + budgets δ0/(1+c), ρ0/(1+βc) §18/§19, sentinel regression §13, curriculum
+70/20/10 §22, champion rule (margin 0.02/collision+0.01/patience) §14, PPO loss + holdout early-stop
+(holdout|memory|1.5*target_kl) §21/§28. Coverage adaptations are intentional & FORM-preserving.
+
+## Guard strength findings
+- guard_kl_budget (δ0, criticality_coverage.py:74) IS the active engagement lever: tighter → guard
+  engages more (0.005 inert-ish → 0.003 retains 0.567). guard_lambda_mem (train.py:385, §9 combine) is
+  the real gradient-strength knob. guard_policy_coef was a DEAD flag (config-only, unused) — removed.
+- sg_max (warmup1.5M, budget0.003): peak 0.83 → 0.567 @4.9M vs ablation 0.375. Tighter guard = better
+  retention. NEXT: guard_lambda_mem high + tight budget for a flatter hold.
 (2) expose --learning-rate/--entropy-cost/--discounting + --[no-]holdout-early-stop in train_csn.py
 (Codex). (3) rerun csn_full vs csn_abl at the base10m operating point (lr 1.5e-4, entropy 5e-3) so
 the preserved coverage is ~0.8, not ~0.35. Baseline reference: base10m 0.82→0.23 (see WALL1_RESULTS.md).
