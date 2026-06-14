@@ -1,0 +1,77 @@
+"""Pure-functional CSN-PPO Phase 1 core."""
+
+from agent.csn_ppo.config import CSNPPOConfig
+from agent.csn_ppo.gradient_projection import (
+    combine_safe_and_guard_grads,
+    project_conflicting_gradient,
+    tree_add,
+    tree_add_scaled,
+    tree_dot,
+    tree_scalar_mul,
+)
+from agent.csn_ppo.guarded_loss import (
+    gaussian_kl,
+    memory_guard_loss,
+    value_and_grad_guard_loss_by_bucket,
+)
+from agent.csn_ppo.memory import (
+    BehavioralMemory,
+    BehavioralMemoryBatch,
+    age_memory,
+    init_behavioral_memory,
+    insert_atoms,
+    sample_memory,
+    should_insert_slow_memory,
+)
+from agent.csn_ppo.synthetic_probes import (
+    analytic_no_obstacle_teacher,
+    analytic_obstacle_teacher,
+    collision_proximity,
+    criticality_score,
+    dynamic_obstacle_score,
+    kl_budget,
+    make_probe_blocked_path,
+    make_probe_no_obstacle,
+    make_teacher_distribution,
+    memory_weight,
+    obstacle_distances,
+    pack_contract_obs,
+    sort_and_pad_obstacles,
+    success_proximity,
+    value_budget,
+)
+
+__all__ = [
+    "BehavioralMemory",
+    "BehavioralMemoryBatch",
+    "CSNPPOConfig",
+    "age_memory",
+    "analytic_no_obstacle_teacher",
+    "analytic_obstacle_teacher",
+    "collision_proximity",
+    "combine_safe_and_guard_grads",
+    "criticality_score",
+    "dynamic_obstacle_score",
+    "gaussian_kl",
+    "init_behavioral_memory",
+    "insert_atoms",
+    "kl_budget",
+    "make_probe_blocked_path",
+    "make_probe_no_obstacle",
+    "make_teacher_distribution",
+    "memory_guard_loss",
+    "memory_weight",
+    "obstacle_distances",
+    "pack_contract_obs",
+    "project_conflicting_gradient",
+    "sample_memory",
+    "should_insert_slow_memory",
+    "sort_and_pad_obstacles",
+    "success_proximity",
+    "tree_add",
+    "tree_add_scaled",
+    "tree_dot",
+    "tree_scalar_mul",
+    "value_and_grad_guard_loss_by_bucket",
+    "value_budget",
+]
