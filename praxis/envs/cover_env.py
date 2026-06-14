@@ -189,36 +189,75 @@ class CoverEnv(mjx_env.MjxEnv):
             "mean_freshness": z,
         }
 
-    # ---- reset ---- #
-    def reset(self, rng: jax.Array) -> Any:
+    def _sample_obstacle_params(self, rng: jax.Array, difficulty: jax.Array):
+        difficulty = jp.clip(jp.asarray(difficulty, dtype=jp.float32), 0.0, 1.0)
         cfg = self._config
         arena = float(cfg.arena_half)
-        spawn = arena - float(cfg.spawn_margin)
+        M = contract.MAX_OBSTACLES
+
+        ks = jax.random.split(rng, 6)
+        spawn_scale = 0.35 + 0.65 * difficulty
+        agent_spawn = (arena - float(cfg.spawn_margin)) * spawn_scale
+        obstacle_spawn = 1.6 * spawn_scale
+
+        obst_centre = jax.random.uniform(
+            ks[0],
+            (M, 2),
+            minval=-obstacle_spawn,
+            maxval=obstacle_spawn,
+        )
+        theta = jax.random.uniform(ks[1], (M,), minval=0.0, maxval=2.0 * jp.pi)
+        obst_axis = jp.stack([jp.cos(theta), jp.sin(theta)], axis=-1)
+
+        frac_moving = float(cfg.obstacle.frac_moving) * difficulty
+        moving = jax.random.uniform(ks[2], (M,)) < frac_moving
+
+        max_amp = 0.10 + (float(cfg.obstacle.max_amplitude) - 0.10) * difficulty
+        min_amp = jp.minimum(0.05 + 0.45 * difficulty, max_amp)
+        sampled_amp = jax.random.uniform(ks[3], (M,), minval=min_amp, maxval=max_amp)
+        amp = jp.where(moving, sampled_amp, 0.0)
+
+        min_freq = 0.05 + (float(cfg.obstacle.min_frequency) - 0.05) * difficulty
+        max_freq = 0.10 + (float(cfg.obstacle.max_frequency) - 0.10) * difficulty
+        max_freq = jp.maximum(max_freq, min_freq + 1e-4)
+        freq = jax.random.uniform(ks[4], (M,), minval=min_freq, maxval=max_freq)
+        phase = jax.random.uniform(ks[5], (M,), minval=0.0, maxval=2.0 * jp.pi)
+        height = jp.full((M,), float(cfg.obstacle.height))
+
+        return {
+            "agent_spawn": agent_spawn,
+            "obst_centre": obst_centre,
+            "obst_axis": obst_axis,
+            "obst_amp": amp,
+            "obst_freq": freq,
+            "obst_phase": phase,
+            "obst_height": height,
+            "obst_peak_speed": jp.abs(amp * (2.0 * jp.pi * freq)),
+        }
+
+    # ---- reset ---- #
+    def reset(self, rng: jax.Array, difficulty: Optional[jax.Array] = None) -> Any:
+        difficulty = jp.asarray(0.0 if difficulty is None else difficulty, dtype=jp.float32)
         M = contract.MAX_OBSTACLES
 
         rng, ka, ko = jax.random.split(rng, 3)
-        agent_xy0 = jax.random.uniform(ka, (2,), minval=-spawn, maxval=spawn)
-
-        ks = jax.random.split(ko, 6)
-        obst_centre = jax.random.uniform(ks[0], (M, 2), minval=-1.6, maxval=1.6)
-        theta = jax.random.uniform(ks[1], (M,), minval=0.0, maxval=2.0 * jp.pi)
-        obst_axis = jp.stack([jp.cos(theta), jp.sin(theta)], axis=-1)
-        # ~frac_moving obstacles patrol; the rest are static (amp 0).
-        moving = (jax.random.uniform(ks[2], (M,)) < float(cfg.obstacle.frac_moving))
-        amp = jp.where(moving,
-                       jax.random.uniform(ks[3], (M,), minval=0.5,
-                                          maxval=float(cfg.obstacle.max_amplitude)),
-                       0.0)
-        freq = jax.random.uniform(ks[4], (M,), minval=float(cfg.obstacle.min_frequency),
-                                  maxval=float(cfg.obstacle.max_frequency))
-        phase = jax.random.uniform(ks[5], (M,), minval=0.0, maxval=2.0 * jp.pi)
-        height = jp.full((M,), float(cfg.obstacle.height))
+        obstacle_params = self._sample_obstacle_params(ko, difficulty)
+        agent_spawn = obstacle_params["agent_spawn"]
+        agent_xy0 = jax.random.uniform(ka, (2,), minval=-agent_spawn, maxval=agent_spawn)
+        obst_centre = obstacle_params["obst_centre"]
+        obst_axis = obstacle_params["obst_axis"]
+        amp = obstacle_params["obst_amp"]
+        freq = obstacle_params["obst_freq"]
+        phase = obstacle_params["obst_phase"]
+        height = obstacle_params["obst_height"]
 
         info: Dict[str, Any] = {
             "rng": rng, "step": jp.zeros((), jp.int32), "time": jp.zeros(()),
             "truncation": jp.zeros(()), "time_out": jp.zeros(()),
             "obst_centre": obst_centre, "obst_axis": obst_axis, "obst_amp": amp,
             "obst_freq": freq, "obst_phase": phase, "obst_height": height,
+            "obst_peak_speed": obstacle_params["obst_peak_speed"],
+            "difficulty": jp.clip(difficulty, 0.0, 1.0),
         }
 
         data = mjx.make_data(self._mjx_model)

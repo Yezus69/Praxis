@@ -34,3 +34,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Codex orchestration scratch (task specs, run logs, last-messages)
+.codex/

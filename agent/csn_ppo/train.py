@@ -20,6 +20,12 @@ from brax.training.agents.ppo import losses as ppo_losses
 from brax.training.agents.ppo import networks as ppo_networks
 
 from agent.csn_ppo import coverage_probes
+from agent.csn_ppo.curriculum import (
+    freeze_or_slow_curriculum,
+    init_curriculum_state,
+    maybe_advance_curriculum,
+    sample_world_difficulties,
+)
 from agent.csn_ppo import metrics as M
 from agent.csn_ppo import mosaic_teacher
 from agent.csn_ppo import rollout_mining
@@ -30,12 +36,16 @@ from agent.csn_ppo.gradient_projection import (
     project_conflicting_gradient,
 )
 from agent.csn_ppo.guarded_loss import (
+    coefficients_for_buckets,
     gaussian_kl,
+    init_guard_pressure_state,
     memory_bucket_mask,
     memory_guard_loss,
+    update_guard_pressure,
 )
 from agent.csn_ppo.memory import (
     BehavioralMemoryBatch,
+    concat_memory_batches,
     init_behavioral_memory,
     insert_atoms,
     sample_memory,
@@ -61,20 +71,6 @@ def make_apply_policy_value(ppo_network):
         return dist.loc, jnp.log(dist.scale), value
 
     return apply_policy_value
-
-
-def concat_memory_batches(*batches):
-    return BehavioralMemoryBatch(
-        obs=jnp.concatenate([b.obs for b in batches], axis=0),
-        mean=jnp.concatenate([b.mean for b in batches], axis=0),
-        logstd=jnp.concatenate([b.logstd for b in batches], axis=0),
-        value=jnp.concatenate([b.value for b in batches], axis=0),
-        weight=jnp.concatenate([b.weight for b in batches], axis=0),
-        kl_budget=jnp.concatenate([b.kl_budget for b in batches], axis=0),
-        value_budget=jnp.concatenate([b.value_budget for b in batches], axis=0),
-        cluster_id=jnp.concatenate([b.cluster_id for b in batches], axis=0),
-        source_id=jnp.concatenate([b.source_id for b in batches], axis=0),
-    )
 
 
 def _take_memory_batch(batch, idx):
@@ -238,6 +234,32 @@ def _sync_sentinel_bank_from_champions(sentinel_bank, champions):
     )
 
 
+def _sentinel_failure_difficulty_from_regressions(regressions, num_clusters, fallback):
+    regressed = regressions["regressed"]
+    has_failure = jnp.any(regressed)
+    failed_cluster = jnp.argmax(regressed.astype(jnp.int32))
+    denom = jnp.maximum(jnp.asarray(num_clusters - 1, dtype=jnp.float32), 1.0)
+    difficulty = failed_cluster.astype(jnp.float32) / denom
+    return jnp.reshape(jnp.where(has_failure, difficulty, fallback), (1,))
+
+
+def _set_env_curriculum_info(
+    environment,
+    state,
+    curriculum_state,
+    sentinel_failure_difficulty,
+    next_difficulty,
+):
+    if hasattr(environment, "set_curriculum_info"):
+        return environment.set_curriculum_info(
+            state,
+            curriculum_state,
+            sentinel_failure_difficulty,
+            next_difficulty,
+        )
+    return state
+
+
 def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
     """Runs Phase 1b CSN-PPO over an already wrapped coverage environment."""
     rng = jax.random.PRNGKey(config.seed)
@@ -288,7 +310,18 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
     champion = mosaic_teacher.init_champion()
     sentinel_bank = None
     champions = None
-    num_sentinel_clusters = 4
+    num_sentinel_clusters = int(config.num_clusters)
+    guard_pressure = init_guard_pressure_state(num_sentinel_clusters, config)
+    curriculum_state = init_curriculum_state(config)
+    # TODO(P4): replace this placeholder with a fixed-size mined sentinel-failure
+    # difficulty bank once failure-world persistence exists outside the sentinel bank.
+    sentinel_failure_difficulty = jnp.reshape(
+        curriculum_state.current_difficulty,
+        (1,),
+    )
+    last_safe_params = None
+    last_safe_opt_state = None
+    last_safe_normalizer_params = None
     if config.enable_sentinel:
         rng, sentinel_rng = jax.random.split(rng)
         sentinel_bank = sentinel.create_sentinel_bank(
@@ -299,7 +332,22 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
         champions = mosaic_teacher.init_mosaic_champions(num_sentinel_clusters)
 
     reset_keys = jax.random.split(key_reset, config.num_envs)
-    env_state = jax.jit(environment.reset)(reset_keys)
+    rng, initial_difficulty_rng = jax.random.split(rng)
+    initial_difficulty_batch = sample_world_difficulties(
+        curriculum_state,
+        initial_difficulty_rng,
+        config.num_envs,
+        sentinel_failure_difficulty,
+    )
+    if hasattr(environment, "set_curriculum_info"):
+        env_state = jax.jit(environment.reset)(
+            reset_keys,
+            initial_difficulty_batch,
+            curriculum_state,
+            sentinel_failure_difficulty,
+        )
+    else:
+        env_state = jax.jit(environment.reset)(reset_keys)
 
     ppo_loss_fn = functools.partial(
         ppo_losses.compute_ppo_loss,
@@ -328,7 +376,22 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
     eval_interval = max(num_updates // max(int(config.num_evals) - 1, 1), 1)
     champion_eval_interval = int(config.champion_eval_interval) or eval_interval
 
-    def collect_rollout(state, rollout_rng, rollout_params, rollout_normalizer_params):
+    def collect_rollout(
+        state,
+        rollout_rng,
+        rollout_params,
+        rollout_normalizer_params,
+        rollout_curriculum_state,
+        rollout_sentinel_failure_difficulty,
+        rollout_next_difficulty,
+    ):
+        state = _set_env_curriculum_info(
+            environment,
+            state,
+            rollout_curriculum_state,
+            rollout_sentinel_failure_difficulty,
+            rollout_next_difficulty,
+        )
         policy = make_policy(
             (
                 rollout_normalizer_params,
@@ -383,6 +446,7 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
         epoch_normalizer_params,
         train_data,
         memory_batch,
+        cluster_guard_lambda,
         epoch_rng,
         guard_active: bool,
         enable_projection: bool,
@@ -431,7 +495,11 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
                     )
                 else:
                     g_safe = g_ppo
-                coefs = (config.guard_lambda_mem,) * len(guard_grads)
+                coefs = coefficients_for_buckets(
+                    bucket_names=ACTIVE_MEMORY_BUCKETS,
+                    cluster_guard_lambda=cluster_guard_lambda,
+                    cfg=config,
+                )
                 g_total = combine_safe_and_guard_grads(g_safe, guard_grads, coefs)
             else:
                 g_total = g_ppo
@@ -488,12 +556,29 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
         progress_fn(0, M.to_float_dict(metrics))
 
     for update in range(num_updates):
-        rng, rollout_rng, split_rng, mine_rng, probe_rng, opt_rng = jax.random.split(rng, 6)
+        (
+            rng,
+            rollout_rng,
+            difficulty_rng,
+            split_rng,
+            mine_rng,
+            probe_rng,
+            opt_rng,
+        ) = jax.random.split(rng, 7)
+        difficulty_batch = sample_world_difficulties(
+            curriculum_state,
+            difficulty_rng,
+            config.num_envs,
+            sentinel_failure_difficulty,
+        )
         env_state, data = collect_rollout(
             env_state,
             rollout_rng,
             params,
             normalizer_params,
+            curriculum_state,
+            sentinel_failure_difficulty,
+            difficulty_batch,
         )
         normalizer_params = running_statistics.update(
             normalizer_params,
@@ -514,18 +599,15 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
             ppo_network,
             config,
         )
-        teacher_normalizer, teacher_params = mosaic_teacher.teacher_snapshot(
-            champion,
-            normalizer_params,
-            params,
-        )
         mined_batch, slow_mask, mine_metrics = rollout_mining.mine_atoms(
             obs_flat,
             adv_abs,
-            teacher_params,
-            teacher_normalizer,
+            params,
+            normalizer_params,
             apply_policy_value,
             config,
+            champions=champions,
+            global_champion=champion,
         )
         memory_fast = insert_atoms(memory_fast, mined_batch)
         slow_mined_batch = _filter_memory_batch_host(mined_batch, slow_mask)
@@ -539,10 +621,12 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
             )
             probe_batch = rollout_mining.label_probe_atoms(
                 probe_obs,
-                teacher_params,
-                teacher_normalizer,
+                params,
+                normalizer_params,
                 apply_policy_value,
                 config,
+                champions=champions,
+                global_champion=champion,
             )
             slow_probe_batch = _filter_memory_batch_host(
                 probe_batch,
@@ -577,6 +661,7 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
                 normalizer_params,
                 train_data,
                 memory_batch,
+                guard_pressure.cluster_lambda,
                 epoch_rng,
                 guard_active=guard_active,
                 enable_projection=bool(config.enable_gradient_projection),
@@ -656,22 +741,86 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
                 config.sentinel_success_tolerance,
                 config.sentinel_collision_tolerance,
             )
+            guard_pressure = update_guard_pressure(
+                guard_pressure,
+                regressions,
+                recovered=jnp.logical_not(regressions["regressed"]),
+                cfg=config,
+            )
             sentinel_metrics = {
                 k: v
                 for k, v in M.merge_metrics(raw_sentinel_metrics, regressions).items()
                 if k.startswith("sentinel/")
             }
+            sentinel_metrics.update(
+                {
+                    f"guard/cluster_lambda/{cluster_id}": guard_pressure.cluster_lambda[cluster_id]
+                    for cluster_id in range(num_sentinel_clusters)
+                }
+            )
             if bool(np.asarray(jnp.any(regressions["regressed"]))):
-                failed_atoms = sentinel.mine_failed_sentinel_states(
-                    sentinel_trajectories,
+                # P4: freeze/slow curriculum here.
+                curriculum_state = freeze_or_slow_curriculum(curriculum_state)
+                sentinel_failure_difficulty = _sentinel_failure_difficulty_from_regressions(
                     regressions,
-                    params,
-                    normalizer_params,
+                    num_sentinel_clusters,
+                    curriculum_state.current_difficulty,
+                )
+                failed_atoms = sentinel.label_failed_sentinel_atoms_with_best_teacher(
+                    sentinel_trajectories=sentinel_trajectories,
+                    regressions=regressions,
+                    champions=champions,
+                    global_champion=champion,
+                    current_params=params,
+                    current_normalizer=normalizer_params,
                     apply_policy_value=apply_policy_value,
                     cfg=config,
                 )
-                memory_slow = insert_atoms(memory_slow, failed_atoms)
+                if failed_atoms is not None:
+                    memory_slow = insert_atoms(memory_slow, failed_atoms)
+                coverage_drop = sentinel_bank.best_coverage - raw_sentinel_metrics["coverage"]
+                collision_increase = (
+                    raw_sentinel_metrics["collision_rate"]
+                    - sentinel_bank.best_collision_rate
+                )
+                severe = jnp.any(
+                    (coverage_drop > 2.0 * config.sentinel_success_tolerance)
+                    | (collision_increase > 2.0 * config.sentinel_collision_tolerance)
+                )
+                if bool(np.asarray(severe)) and last_safe_params is not None:
+                    params = last_safe_params
+                    opt_state = last_safe_opt_state
+                    normalizer_params = last_safe_normalizer_params
+                    sentinel_metrics["sentinel/severe_rollback"] = jnp.asarray(
+                        1.0,
+                        dtype=jnp.float32,
+                    )
+                else:
+                    sentinel_metrics["sentinel/severe_rollback"] = jnp.asarray(
+                        0.0,
+                        dtype=jnp.float32,
+                    )
             else:
+                last_safe_params = params
+                last_safe_opt_state = opt_state
+                last_safe_normalizer_params = normalizer_params
+                curriculum_state = maybe_advance_curriculum(
+                    curriculum_state,
+                    {
+                        # TODO(P4): split current/history once sentinel evaluation
+                        # reports those slices separately.
+                        "current_success_rate": jnp.mean(raw_sentinel_metrics["coverage"]),
+                        "current_collision_rate": jnp.max(
+                            raw_sentinel_metrics["collision_rate"]
+                        ),
+                        "historical_success_rate": jnp.mean(
+                            raw_sentinel_metrics["coverage"]
+                        ),
+                        "historical_collision_rate": jnp.max(
+                            raw_sentinel_metrics["collision_rate"]
+                        ),
+                    },
+                )
                 cluster_metrics = _sentinel_cluster_metrics(
                     raw_sentinel_metrics,
                     sentinel_trajectories,
@@ -726,6 +875,12 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
             {
                 "epoch/stopped_at": stopped_at,
                 "env_steps": env_steps,
+                "curriculum/current_difficulty": curriculum_state.current_difficulty,
+                "curriculum/frozen": curriculum_state.frozen.astype(jnp.float32),
+                "curriculum/sentinel_failure_difficulty": jnp.mean(
+                    sentinel_failure_difficulty
+                ),
+                "curriculum/next_difficulty_mean": jnp.mean(difficulty_batch),
             },
         )
         if progress_fn is not None and (update % int(config.log_interval) == 0 or do_eval):

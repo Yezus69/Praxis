@@ -10,8 +10,12 @@ from agent.csn_ppo.gradient_projection import (
     tree_scalar_mul,
 )
 from agent.csn_ppo.guarded_loss import (
+    GuardPressureState,
+    coefficients_for_buckets,
     gaussian_kl,
+    init_guard_pressure_state,
     memory_guard_loss,
+    update_guard_pressure,
     value_and_grad_guard_loss_by_bucket,
 )
 from agent.csn_ppo.memory import (
@@ -46,14 +50,17 @@ __all__ = [
     "BehavioralMemory",
     "BehavioralMemoryBatch",
     "CSNPPOConfig",
+    "GuardPressureState",
     "age_memory",
     "analytic_no_obstacle_teacher",
     "analytic_obstacle_teacher",
     "collision_proximity",
+    "coefficients_for_buckets",
     "combine_safe_and_guard_grads",
     "criticality_score",
     "dynamic_obstacle_score",
     "gaussian_kl",
+    "init_guard_pressure_state",
     "init_behavioral_memory",
     "insert_atoms",
     "kl_budget",
@@ -73,6 +80,7 @@ __all__ = [
     "tree_add_scaled",
     "tree_dot",
     "tree_scalar_mul",
+    "update_guard_pressure",
     "value_and_grad_guard_loss_by_bucket",
     "value_budget",
     "coverage_probes",

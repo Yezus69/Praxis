@@ -7,15 +7,21 @@ from typing import Any
 import flax
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from agent.csn_ppo import criticality_coverage as cc
+from agent.csn_ppo import mosaic_teacher
 from agent.csn_ppo import rollout_mining
 from agent.csn_ppo.config import CSNPPOConfig
-from agent.csn_ppo.memory import BehavioralMemoryBatch
+from agent.csn_ppo.memory import (
+    SOURCE_SENTINEL_FAILURE,
+    BehavioralMemoryBatch,
+    concat_memory_batches,
+)
 from praxis import contract
 
 
-SENTINEL_FAILURE_SOURCE_ID = 2
+SENTINEL_FAILURE_SOURCE_ID = SOURCE_SENTINEL_FAILURE
 
 
 @flax.struct.dataclass
@@ -233,6 +239,161 @@ def _sentinel_criticality(obs, sentinel_failure, cfg, criticality_bonus):
         + criticality_bonus * sentinel_failure
     )
     return jnp.clip(c, cfg.crit_clip_min, cfg.crit_clip_max)
+
+
+def _teacher_is_available(teacher_normalizer, teacher_params):
+    return teacher_normalizer is not None and teacher_params is not None
+
+
+def _strict_cluster_teacher(champions, cluster_id: int):
+    if champions is None:
+        return None, None
+    try:
+        return mosaic_teacher.get_cluster_teacher(
+            champions,
+            cluster_id,
+            include_fallback=False,
+        )
+    except TypeError:
+        normalizer, params = mosaic_teacher.get_cluster_teacher(champions, cluster_id)
+        return normalizer, params
+
+
+def _strict_global_teacher(global_champion, current_normalizer, current_params):
+    if global_champion is None:
+        return None, None
+    try:
+        return mosaic_teacher.teacher_snapshot(
+            global_champion,
+            current_normalizer,
+            current_params,
+            allow_current_fallback=False,
+        )
+    except TypeError:
+        if not mosaic_teacher.has_champion(global_champion):
+            return None, None
+        return mosaic_teacher.teacher_snapshot(
+            global_champion,
+            current_normalizer,
+            current_params,
+        )
+
+
+def mine_failed_sentinel_states_for_cluster(
+    failed_trajectories,
+    cluster_id: int,
+    regressions,
+    teacher_params,
+    teacher_normalizer,
+    apply_policy_value,
+    cfg,
+) -> BehavioralMemoryBatch:
+    """P0: mine one regressed sentinel cluster using an explicit teacher."""
+    if not _teacher_is_available(teacher_normalizer, teacher_params):
+        raise ValueError("sentinel failure mining requires a non-current teacher")
+
+    cfg = CSNPPOConfig() if cfg is None else cfg
+    obs = _trajectory_field(failed_trajectories, "obs")
+    trajectory_cluster_id = _trajectory_field(failed_trajectories, "cluster_id")
+    try:
+        active = _trajectory_field(failed_trajectories, "active")
+    except (AttributeError, KeyError):
+        active = jnp.ones(obs.shape[:-1], dtype=jnp.float32)
+
+    n, t = obs.shape[:2]
+    obs_flat = obs.reshape((n * t, obs.shape[-1]))
+    cluster_flat = jnp.repeat(trajectory_cluster_id.astype(jnp.int32), t)
+    active_flat = active.reshape((n * t,))
+    cluster_id = int(cluster_id)
+    regressed_clusters = _regression_mask(regressions)
+    cluster_regressed = regressed_clusters[jnp.asarray(cluster_id, dtype=jnp.int32)]
+    sentinel_failure = (
+        (cluster_flat == jnp.asarray(cluster_id, dtype=jnp.int32)).astype(jnp.float32)
+        * cluster_regressed.astype(jnp.float32)
+        * active_flat
+    )
+
+    criticality_bonus = 5.0
+    crit = jax.vmap(
+        lambda o, s: _sentinel_criticality(o, s, cfg, criticality_bonus)
+    )(obs_flat, sentinel_failure)
+    crit = jnp.where(sentinel_failure > 0.0, crit, -jnp.inf)
+
+    k = min(int(cfg.atoms_per_rollout), int(obs_flat.shape[0]))
+    selected_crit, idx = jax.lax.top_k(crit, k)
+    selected_obs = obs_flat[idx]
+    valid = jnp.isfinite(selected_crit)
+    c = jnp.where(valid, selected_crit, cfg.crit_clip_min)
+
+    mean, logstd, value = apply_policy_value(
+        teacher_params,
+        teacher_normalizer,
+        selected_obs,
+    )
+    logstd = jnp.maximum(logstd, cfg.teacher_logstd_floor)
+
+    weight = jnp.where(valid, jax.vmap(lambda x: cc.memory_weight(x, cfg))(c), 0.0)
+    kl_budget = jax.vmap(lambda x: cc.kl_budget_from_c(x, cfg))(c)
+    value_budget = jax.vmap(lambda x: cc.value_budget_from_c(x, cfg))(c)
+    selected_cluster = cluster_flat[idx]
+    source_id = jnp.full((k,), SOURCE_SENTINEL_FAILURE, dtype=jnp.int32)
+
+    return BehavioralMemoryBatch(
+        obs=selected_obs,
+        mean=mean,
+        logstd=logstd,
+        value=value,
+        weight=weight,
+        kl_budget=kl_budget,
+        value_budget=value_budget,
+        cluster_id=selected_cluster.astype(jnp.int32),
+        source_id=source_id,
+    )
+
+
+def label_failed_sentinel_atoms_with_best_teacher(
+    sentinel_trajectories,
+    regressions,
+    champions,
+    global_champion,
+    current_params,
+    current_normalizer,
+    apply_policy_value,
+    cfg,
+):
+    """P0: label regressed sentinel failures with champion teachers only."""
+    regressed = np.asarray(jax.device_get(_regression_mask(regressions)), dtype=bool)
+    batches = []
+
+    for cluster_id in np.where(regressed)[0]:
+        teacher_normalizer, teacher_params = _strict_cluster_teacher(
+            champions,
+            int(cluster_id),
+        )
+
+        if not _teacher_is_available(teacher_normalizer, teacher_params):
+            teacher_normalizer, teacher_params = _strict_global_teacher(
+                global_champion,
+                current_normalizer,
+                current_params,
+            )
+
+        if not _teacher_is_available(teacher_normalizer, teacher_params):
+            continue
+
+        batches.append(
+            mine_failed_sentinel_states_for_cluster(
+                failed_trajectories=sentinel_trajectories,
+                cluster_id=int(cluster_id),
+                regressions=regressions,
+                teacher_params=teacher_params,
+                teacher_normalizer=teacher_normalizer,
+                apply_policy_value=apply_policy_value,
+                cfg=cfg,
+            )
+        )
+
+    return concat_memory_batches(*batches) if batches else None
 
 
 def mine_failed_sentinel_states(

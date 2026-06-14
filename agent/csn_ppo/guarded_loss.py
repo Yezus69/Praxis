@@ -2,20 +2,22 @@
 
 from collections import OrderedDict
 
+import flax
 import jax
 import jax.numpy as jnp
 
-from agent.csn_ppo.memory import BehavioralMemoryBatch
+from agent.csn_ppo.memory import (
+    SOURCE_RECENT_CURRENT,
+    SOURCE_SENTINEL_FAILURE,
+    SOURCE_SYNTHETIC_PROBE,
+    BehavioralMemoryBatch,
+)
 
 
 CLUSTER_COLLISION_BOUNDARY = 0
 CLUSTER_SUCCESSFUL_GOAL = 1
 CLUSTER_DYNAMIC_OBSTACLE = 2
 CLUSTER_NO_OBSTACLE_STRAIGHT_LINE = 3
-
-SOURCE_RECENT_CURRENT = 0
-SOURCE_SYNTHETIC_PROBE = 1
-SOURCE_SENTINEL_FAILURE = 2
 
 MEMORY_BUCKETS = (
     "collision_boundary",
@@ -26,6 +28,69 @@ MEMORY_BUCKETS = (
     "synthetic_contract_probe",
     "sentinel_regression",
 )
+
+_BUCKET_CLUSTER_ID = {
+    "collision_boundary": CLUSTER_COLLISION_BOUNDARY,
+    "successful_goal": CLUSTER_SUCCESSFUL_GOAL,
+    "dynamic_obstacle": CLUSTER_DYNAMIC_OBSTACLE,
+    "no_obstacle_straight_line": CLUSTER_NO_OBSTACLE_STRAIGHT_LINE,
+}
+
+_SOURCE_WIDE_BUCKETS = frozenset(
+    (
+        "recent_current",
+        "synthetic_contract_probe",
+        "sentinel_regression",
+    )
+)
+
+
+@flax.struct.dataclass
+class GuardPressureState:
+    cluster_lambda: jnp.ndarray       # [num_clusters]
+    recovery_count: jnp.ndarray       # [num_clusters]
+
+
+def init_guard_pressure_state(num_clusters, cfg):
+    return GuardPressureState(
+        cluster_lambda=jnp.full(
+            (int(num_clusters),),
+            cfg.guard_lambda_base,
+            dtype=jnp.float32,
+        ),
+        recovery_count=jnp.zeros((int(num_clusters),), dtype=jnp.int32),
+    )
+
+
+def update_guard_pressure(state, regressions, recovered, cfg):
+    del recovered
+    regressed = regressions["regressed"]
+    increased = jnp.minimum(
+        cfg.guard_lambda_max,
+        state.cluster_lambda * cfg.guard_lambda_up,
+    )
+    decayed = jnp.maximum(
+        cfg.guard_lambda_min,
+        state.cluster_lambda * cfg.guard_lambda_down,
+    )
+    next_lambda = jnp.where(regressed, increased, decayed)
+    return state.replace(cluster_lambda=next_lambda)
+
+
+def coefficient_for_bucket(bucket_name, cluster_guard_lambda, cfg):
+    del cfg
+    if bucket_name in _BUCKET_CLUSTER_ID:
+        return cluster_guard_lambda[_BUCKET_CLUSTER_ID[bucket_name]]
+    if bucket_name in _SOURCE_WIDE_BUCKETS:
+        return jnp.max(cluster_guard_lambda)
+    raise ValueError(f"unknown memory bucket: {bucket_name}")
+
+
+def coefficients_for_buckets(bucket_names, cluster_guard_lambda, cfg):
+    return tuple(
+        coefficient_for_bucket(bucket_name, cluster_guard_lambda, cfg)
+        for bucket_name in bucket_names
+    )
 
 
 def gaussian_kl(mean0, logstd0, mean1, logstd1):

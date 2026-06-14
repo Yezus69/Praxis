@@ -9,7 +9,7 @@ import os
 import time
 from typing import Any, Dict, Optional
 
-from agent.csn_ppo.config import CSNPPOConfig
+from agent.csn_ppo.config import CSNPPOConfig, validate_long_run_safety
 from praxis import contract
 from praxis.train import build_env, reward_overrides_from_args
 
@@ -53,6 +53,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--enable-sentinel", dest="enable_sentinel",
                    action=argparse.BooleanOptionalAction,
                    default=CSNPPOConfig.enable_sentinel)
+    p.add_argument("--allow-no-sentinel-for-debug", action="store_true",
+                   default=CSNPPOConfig.allow_no_sentinel_for_debug)
     p.add_argument("--smoke", action="store_true")
 
     p.add_argument("--k-cov", type=float, default=None)
@@ -94,6 +96,7 @@ def resolve_config(args: argparse.Namespace) -> CSNPPOConfig:
         guard_policy_coef=float(args.guard_policy_coef),
         enable_gradient_projection=bool(args.enable_projection),
         enable_sentinel=bool(args.enable_sentinel),
+        allow_no_sentinel_for_debug=bool(args.allow_no_sentinel_for_debug),
     )
     if args.smoke:
         values.update(
@@ -170,6 +173,7 @@ def make_csn_progress_fn(run_dir: str, start_time: float):
 def main(argv: Optional[list[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     config = resolve_config(args)
+    validate_long_run_safety(config)
     reward_overrides = reward_overrides_from_args(args)
 
     run_name = args.run_name or (
@@ -188,6 +192,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     print("=" * 78)
 
     from agent.csn_ppo import train as csn_train
+    from agent.csn_ppo.env_wrappers import CurriculumBraxTrainingWrapper
     from mujoco_playground import wrapper as mjxp_wrapper
 
     raw_env = build_env(
@@ -198,11 +203,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         episode_length=config.episode_length,
         reward_overrides=reward_overrides,
     )
-    env = mjxp_wrapper.wrap_for_brax_training(
-        raw_env,
-        episode_length=config.episode_length,
-        action_repeat=1,
-    )
+    env = CurriculumBraxTrainingWrapper(raw_env)
     eval_env = mjxp_wrapper.wrap_for_brax_training(
         raw_eval_env,
         episode_length=config.episode_length,

@@ -37,10 +37,17 @@ def snapshot_params(normalizer_params, params):
     return normalizer_snapshot, params.replace(policy=policy_snapshot, value=value_snapshot)
 
 
-def teacher_snapshot(champion: ChampionState, normalizer_params, params):
-    """Returns champion teacher params, falling back to current params before one exists."""
+def teacher_snapshot(
+    champion: ChampionState,
+    normalizer_params,
+    params,
+    allow_current_fallback: bool = True,
+):
+    """Returns champion teacher params, optionally falling back before one exists."""
     if has_champion(champion):
         return champion.normalizer_params, champion.params
+    if not allow_current_fallback:
+        return None, None
     return normalizer_params, params
 
 
@@ -267,10 +274,16 @@ def maybe_update_champions(
     )
 
 
-def get_cluster_teacher(champions: MosaicChampions, cluster_id: int) -> tuple[Any | None, Any | None]:
+def get_cluster_teacher(
+    champions: MosaicChampions,
+    cluster_id: int,
+    include_fallback: bool = True,
+) -> tuple[Any | None, Any | None]:
     """Return the teacher snapshot for labeling one cluster's memory atoms."""
 
     champion = champions.champions[int(cluster_id)]
     if champion.param_snapshot is not None or champion.normalizer_snapshot is not None:
         return champion.normalizer_snapshot, champion.param_snapshot
+    if not include_fallback:
+        return None, None
     return champions.fallback_normalizer_snapshot, champions.fallback_param_snapshot

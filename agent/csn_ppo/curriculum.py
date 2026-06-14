@@ -26,6 +26,9 @@ DEFAULT_COLLISION_RATE_THRESHOLD = 0.0
 DEFAULT_KL_THRESHOLD = 0.03
 DEFAULT_VALUE_ERROR_THRESHOLD = 0.25
 MAX_OBSTACLES = 4
+COMPONENT_FRONTIER = 0
+COMPONENT_HISTORY = 1
+COMPONENT_SENTINEL_FAILURE = 2
 
 
 @struct.dataclass
@@ -201,6 +204,46 @@ def _sample_history_difficulties(
     return jnp.where(has_history, history_draws, state.current_difficulty)
 
 
+def _sample_sentinel_failure_difficulties(
+    sentinel_failure_difficulty: jax.Array, rng: jax.Array, num_envs: int
+) -> jax.Array:
+    values = jnp.reshape(
+        jnp.clip(_as_float(sentinel_failure_difficulty), 0.0, 1.0),
+        (-1,),
+    )
+    indices = jax.random.randint(rng, (num_envs,), 0, values.shape[0])
+    return jnp.take(values, indices, mode="clip")
+
+
+def sample_world_difficulties_with_components(
+    state: CurriculumState,
+    rng: jax.Array,
+    num_envs: int,
+    sentinel_failure_difficulty: jax.Array,
+) -> tuple[jax.Array, jax.Array]:
+    """Sample difficulties and mixture labels from the section-22 curriculum mixture."""
+
+    component_key, history_key, sentinel_key = jax.random.split(rng, 3)
+    components = jax.random.categorical(
+        component_key, _mixture_logits(state), shape=(num_envs,)
+    )
+    frontier_draws = jnp.full(
+        (num_envs,), state.current_difficulty, dtype=jnp.float32
+    )
+    history_draws = _sample_history_difficulties(state, history_key, num_envs)
+    sentinel_failure_draws = _sample_sentinel_failure_difficulties(
+        sentinel_failure_difficulty,
+        sentinel_key,
+        num_envs,
+    )
+    difficulties = jnp.where(
+        components == COMPONENT_FRONTIER,
+        frontier_draws,
+        jnp.where(components == COMPONENT_HISTORY, history_draws, sentinel_failure_draws),
+    )
+    return difficulties, components
+
+
 def sample_world_difficulties(
     state: CurriculumState,
     rng: jax.Array,
@@ -209,24 +252,13 @@ def sample_world_difficulties(
 ) -> jax.Array:
     """Sample per-env difficulties from the section-22 curriculum mixture."""
 
-    component_key, history_key = jax.random.split(rng)
-    components = jax.random.categorical(
-        component_key, _mixture_logits(state), shape=(num_envs,)
+    difficulties, _ = sample_world_difficulties_with_components(
+        state,
+        rng,
+        num_envs,
+        sentinel_failure_difficulty,
     )
-    frontier_draws = jnp.full(
-        (num_envs,), state.current_difficulty, dtype=jnp.float32
-    )
-    history_draws = _sample_history_difficulties(state, history_key, num_envs)
-    sentinel_failure_draws = jnp.full(
-        (num_envs,),
-        jnp.clip(_as_float(sentinel_failure_difficulty), 0.0, 1.0),
-        dtype=jnp.float32,
-    )
-    return jnp.where(
-        components == 0,
-        frontier_draws,
-        jnp.where(components == 1, history_draws, sentinel_failure_draws),
-    )
+    return difficulties
 
 
 def difficulty_to_env_params(difficulty: jax.Array) -> dict[str, jax.Array]:

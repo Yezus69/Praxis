@@ -49,6 +49,12 @@ class CSNPPOConfig:
     guard_policy_coef: float = 1.0
     guard_value_coef: float = 0.25
     guard_lambda_mem: float = 1.0
+    guard_lambda_min: float = 1.0
+    guard_lambda_base: float = 8.0
+    guard_lambda_max: float = 32.0
+    guard_lambda_up: float = 1.5
+    guard_lambda_down: float = 0.98
+    guard_recovery_patience: int = 3
     guard_kl_budget: float = 0.02
     critical_kl_budget: float = 0.005
     value_budget: float = 0.25
@@ -74,7 +80,9 @@ class CSNPPOConfig:
     enable_guard: bool = True
 
     # Sentinel evaluation
-    enable_sentinel: bool = False
+    enable_sentinel: bool = True
+    allow_no_sentinel_for_debug: bool = False
+    long_run_sentinel_required_steps: int = 10_000_000
     sentinel_eval_interval: int = 25
     sentinel_bank_size: int = 4096
     sentinel_success_tolerance: float = 0.05
@@ -99,6 +107,7 @@ class CSNPPOConfig:
 
     # Mosaic teacher
     enable_mosaic_teacher: bool = True
+    num_clusters: int = 4
     champion_min_margin: float = 0.02
     champion_patience: int = 2
     champion_eval_interval: int = 0
@@ -125,3 +134,13 @@ class CSNPPOConfig:
                 f"(batch_size * num_minibatches) = {rhs} must be divisible by "
                 f"num_envs = {self.num_envs}."
             )
+
+
+def validate_long_run_safety(cfg):
+    if (cfg.num_timesteps >= cfg.long_run_sentinel_required_steps
+            and not cfg.enable_sentinel
+            and not cfg.allow_no_sentinel_for_debug):
+        raise ValueError(
+            "Long CSN-PPO runs require --enable-sentinel. "
+            "Use --allow-no-sentinel-for-debug only for ablations."
+        )

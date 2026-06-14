@@ -7,6 +7,12 @@ import jax
 import jax.numpy as jnp
 
 
+SOURCE_RECENT_CURRENT = 0
+SOURCE_SYNTHETIC_PROBE = 1
+SOURCE_SENTINEL_FAILURE = 2
+SOURCE_SENTINEL_FAILURE_UNTRUSTED = 3
+
+
 @flax.struct.dataclass
 class BehavioralMemory:
     obs: jnp.ndarray              # [N, 27]
@@ -87,6 +93,20 @@ def sample_memory(memory: BehavioralMemory, rng: jax.Array, batch_size: int) -> 
         value_budget=memory.value_budget[idx],
         cluster_id=memory.cluster_id[idx],
         source_id=memory.source_id[idx],
+    )
+
+
+def concat_memory_batches(*batches: BehavioralMemoryBatch) -> BehavioralMemoryBatch:
+    return BehavioralMemoryBatch(
+        obs=jnp.concatenate([b.obs for b in batches], axis=0),
+        mean=jnp.concatenate([b.mean for b in batches], axis=0),
+        logstd=jnp.concatenate([b.logstd for b in batches], axis=0),
+        value=jnp.concatenate([b.value for b in batches], axis=0),
+        weight=jnp.concatenate([b.weight for b in batches], axis=0),
+        kl_budget=jnp.concatenate([b.kl_budget for b in batches], axis=0),
+        value_budget=jnp.concatenate([b.value_budget for b in batches], axis=0),
+        cluster_id=jnp.concatenate([b.cluster_id for b in batches], axis=0),
+        source_id=jnp.concatenate([b.source_id for b in batches], axis=0),
     )
 
 
