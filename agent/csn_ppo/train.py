@@ -50,6 +50,16 @@ from agent.csn_ppo.memory import (
     insert_atoms,
     sample_memory,
 )
+from agent.csn_ppo.validation import (
+    ValidationBank,
+    create_validation_bank,
+    evaluate_validation_bank,
+    select_validation_update,
+    update_validation_best,
+    validation_best,
+    validation_guard_regressions,
+    validation_regressed,
+)
 
 
 ACTIVE_MEMORY_BUCKETS = (
@@ -330,6 +340,10 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
             num_sentinel_clusters,
         )
         champions = mosaic_teacher.init_mosaic_champions(num_sentinel_clusters)
+    validation_bank = None
+    if int(config.validation_eval_interval) > 0:
+        rng, validation_rng = jax.random.split(rng)
+        validation_bank = create_validation_bank(validation_rng, config)
 
     reset_keys = jax.random.split(key_reset, config.num_envs)
     rng, initial_difficulty_rng = jax.random.split(rng)
@@ -722,6 +736,7 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
                 break
 
         sentinel_metrics = {}
+        sentinel_regressed_now = False
         if (
             config.enable_sentinel
             and int(config.sentinel_eval_interval) > 0
@@ -759,6 +774,7 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
                 }
             )
             if bool(np.asarray(jnp.any(regressions["regressed"]))):
+                sentinel_regressed_now = True
                 # P4: freeze/slow curriculum here.
                 curriculum_state = freeze_or_slow_curriculum(curriculum_state)
                 sentinel_failure_difficulty = _sentinel_failure_difficulty_from_regressions(
@@ -839,6 +855,75 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
                     champions,
                 )
 
+        validation_metrics = {}
+        if (
+            validation_bank is not None
+            and int(config.validation_eval_interval) > 0
+            and update % int(config.validation_eval_interval) == 0
+        ):
+            raw_validation_metrics = evaluate_validation_bank(
+                eval_env or environment,
+                validation_bank,
+                params,
+                normalizer_params,
+                make_policy,
+                apply_policy_value,
+                config,
+            )
+            (
+                params,
+                opt_state,
+                normalizer_params,
+                validation_regressed_now,
+                validation_rolled_back,
+            ) = select_validation_update(
+                raw_validation_metrics,
+                validation_best(validation_bank),
+                config,
+                params,
+                opt_state,
+                normalizer_params,
+                last_safe_params,
+                last_safe_opt_state,
+                last_safe_normalizer_params,
+            )
+            validation_metrics = dict(raw_validation_metrics)
+            validation_metrics.update(
+                {
+                    "validation/regressed": jnp.asarray(
+                        float(validation_regressed_now),
+                        dtype=jnp.float32,
+                    ),
+                    "validation/rollback": jnp.asarray(
+                        float(validation_rolled_back),
+                        dtype=jnp.float32,
+                    ),
+                }
+            )
+            if validation_regressed_now:
+                guard_pressure = update_guard_pressure(
+                    guard_pressure,
+                    validation_guard_regressions(num_sentinel_clusters),
+                    recovered=jnp.zeros((num_sentinel_clusters,), dtype=jnp.bool_),
+                    cfg=config,
+                )
+                validation_metrics.update(
+                    {
+                        f"guard/cluster_lambda/{cluster_id}": guard_pressure.cluster_lambda[
+                            cluster_id
+                        ]
+                        for cluster_id in range(num_sentinel_clusters)
+                    }
+                )
+            elif not sentinel_regressed_now:
+                validation_bank = update_validation_best(
+                    validation_bank,
+                    raw_validation_metrics,
+                )
+                last_safe_params = params
+                last_safe_opt_state = opt_state
+                last_safe_normalizer_params = normalizer_params
+
         do_eval = (update + 1) % eval_interval == 0 or update == num_updates - 1
         do_champion = (
             do_eval and ((update + 1) % champion_eval_interval == 0 or update == num_updates - 1)
@@ -870,6 +955,7 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
             base_memory_metrics,
             mine_metrics,
             sentinel_metrics,
+            validation_metrics,
             eval_metrics,
             champion_metrics,
             {

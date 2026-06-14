@@ -101,6 +101,11 @@ class CSNPPOConfig:
     holdout_eps: float = 1e-4
     target_kl: float = 0.03
 
+    # Fixed validation bank
+    validation_tolerance: float = 0.05
+    validation_kl_limit: float = 1.0
+    validation_eval_interval: int = 25
+
     # Curriculum mixture
     frontier_fraction: float = 0.70
     history_fraction: float = 0.20

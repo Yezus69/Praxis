@@ -18,6 +18,16 @@ from agent.csn_ppo.guarded_loss import (
     update_guard_pressure,
     value_and_grad_guard_loss_by_bucket,
 )
+from agent.csn_ppo.validation import (
+    ValidationBank,
+    create_validation_bank,
+    evaluate_validation_bank,
+    select_validation_update,
+    update_validation_best,
+    validation_best,
+    validation_guard_regressions,
+    validation_regressed,
+)
 from agent.csn_ppo.memory import (
     BehavioralMemory,
     BehavioralMemoryBatch,
@@ -44,13 +54,14 @@ from agent.csn_ppo.synthetic_probes import (
     success_proximity,
     value_budget,
 )
-from agent.csn_ppo import coverage_probes, criticality_coverage, metrics, mosaic_teacher, rollout_mining, train
+from agent.csn_ppo import coverage_probes, criticality_coverage, metrics, mosaic_teacher, rollout_mining, train, validation
 
 __all__ = [
     "BehavioralMemory",
     "BehavioralMemoryBatch",
     "CSNPPOConfig",
     "GuardPressureState",
+    "ValidationBank",
     "age_memory",
     "analytic_no_obstacle_teacher",
     "analytic_obstacle_teacher",
@@ -81,6 +92,13 @@ __all__ = [
     "tree_dot",
     "tree_scalar_mul",
     "update_guard_pressure",
+    "create_validation_bank",
+    "evaluate_validation_bank",
+    "select_validation_update",
+    "update_validation_best",
+    "validation_best",
+    "validation_guard_regressions",
+    "validation_regressed",
     "value_and_grad_guard_loss_by_bucket",
     "value_budget",
     "coverage_probes",
@@ -89,4 +107,5 @@ __all__ = [
     "mosaic_teacher",
     "rollout_mining",
     "train",
+    "validation",
 ]
