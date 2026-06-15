@@ -5,19 +5,23 @@
 
 ## 1. Claim
 
-Across **three** continual-learning settings spanning **two domains** — Permuted-MNIST (10 tasks),
-Split-MNIST (class-incremental), and **continual reinforcement learning** (sequential gridworld goals) —
-a **naive baseline catastrophically forgets** earlier tasks while **PMA-C retains them**, using the
-*same* network, optimizer, learning rate, task order, and training data. PMA-C dominates the baseline on
-every standard metric (Average Accuracy / success, Forgetting / Backward Transfer, Retention) while
-**still learning each new task as well as the baseline** (no loss of plasticity). The same atlas +
-conservation + projection + stability + replay machinery is used in all three — only the domain adapter
-(behavior + distance) changes, demonstrating domain-generality.
+On **three** continual-learning settings — Permuted-MNIST (10 tasks), Split-MNIST (class-incremental),
+and a **continual-RL** gridworld (sequential goals) — a **naive baseline catastrophically forgets**
+earlier tasks while **PMA-C retains them**, using the *same* network, optimizer, learning rate, task
+order, and training data. PMA-C dominates the baseline on every standard metric (Average Accuracy /
+success, Forgetting / Backward Transfer, Retention) while **still learning each new task as well as the
+baseline** (no loss of plasticity). The same atlas + conservation + projection + stability + memory
+machinery is reused across all three via different domain adapters — evidence the approach **transfers
+across supervised and an RL adapter**, though these are deliberately small benchmarks (MNIST variants +
+a toy gridworld), not a claim of generality to hard domains like Atari/MuJoCo (see scope, §6).
 
 Headlines: **10-task Permuted-MNIST** — ACC 0.749→0.930, worst-task retention 0.529→0.906, forgetting
 6.8× lower. **Split-MNIST** — ACC 0.197→0.962, the baseline forgets *completely* (worst retention
-0.000). An ablation decomposition (§4) shows the driver is the **hinge conservation loss**, not replay:
-PMA-C *without any rehearsal* retains ~99% (≈ full system), while plain Experience Replay barely helps.
+0.000). **Continual-RL** — mean success 0.330→1.000, forgetting 0.89→0.00. An ablation decomposition
+(§4) isolates the driver as the **hinge conservation loss** (functional regularization to stored teacher
+behavior), *not data rehearsal*: PMA-C with **no replay** retains ~99% (≈ full system) while plain
+Experience Replay barely helps. (Note: "no replay" still *uses* the stored anchors — for the conservation
+*gradient* — so this separates rehearsal from functional memory, not memory from no-memory.)
 
 This is the empirical instantiation of the PMA-C spec
 (`PMA_C_GENERAL_CONTINUAL_LEARNING_SPEC.md`): protected behavior anchors + hinge **conservation loss**
@@ -105,10 +109,15 @@ episodes reaching the goal). Figure: `pma_c_results/rl_continual/comparison.png`
 Both arms **learn every goal** to 1.0 success. But the naive A2C agent then **catastrophically forgets**:
 after training all 4 goals it reaches *only the most recent* (mean success 0.33, forgetting 0.89). **PMA-C
 retains all goals perfectly** (success 1.00, forgetting 0.00) across all 3 seeds. The right panel shows the
-baseline's goal-0 success collapsing 1.0→0.0 as new goals arrive while PMA-C stays flat. In this (easy) RL
-task *either* protection mechanism alone suffices (both `no_replay` and `no_conservation` retain perfectly) —
-the protection is robust/redundant; the *baseline*, with neither, forgets. This establishes that the **same
-PMA-C system works in RL**, not just supervised learning — the spec's central domain-generality claim.
+baseline's goal-0 success collapsing 1.0→0.0 as new goals arrive while PMA-C stays flat.
+
+**Honest scope of this RL result.** The gridworld is *deliberately easy* — small 5×5 grid, short horizon,
+goal-conditioned, so A2C converges reliably and the forgetting signal is clean. It is a *proof that the
+PMA-C machinery ports to an RL adapter* (policy-KL + value distance) and stops the baseline's
+catastrophic forgetting — **not** a claim of generality to hard RL (Atari/MuJoCo), which is future work.
+Because the task is easy, the ablations saturate: *either* protection mechanism alone (`no_replay` or
+`no_conservation`) already retains perfectly, so this benchmark cannot separate their contributions the
+way the supervised decomposition (§4) does. Its value is the cross-paradigm transfer, not a mechanism study.
 
 ## 4. Credit decomposition — what actually drives the retention (3 seeds)
 
@@ -150,12 +159,16 @@ replay?" — **it is not; the hinge *conservation* loss is the driver.**
   and 10 tasks/5 epochs. More epochs / more tasks → the baseline forgets *more* (worst retention
   0.76 → 0.71 → 0.53), PMA-C stays ≥0.90. On class-incremental Split-MNIST the baseline's worst
   retention is 0.00 (total collapse) while PMA-C is 0.99.
-- **Hardening (a real finding, fixed).** Without gradient-norm control, the squared-hinge conservation
-  loss `∇ = 2·(KL−ε)·∇KL` becomes a positive-feedback runaway at lr 0.1 once an update pushes the net
-  off-manifold; at 8 epochs / 10 tasks PMA-C collapsed to chance. Fix: clip each guard gradient to
-  `k·‖g_new‖` (the conservation correction can never dominate the task signal) + a global update-norm
-  clip + a non-finite-step skip. After hardening PMA-C is stable across all tested regimes (e.g. 8-epoch
-  PMA-C went from ACC 0.088 → 0.965). The clip is applied to **both** arms.
+- **Stability constraint (a real, load-bearing finding).** The squared-hinge conservation loss has
+  gradient `2·(KL−ε)·∇KL`, which becomes a positive-feedback runaway at lr 0.1 once an update pushes the
+  net off-manifold; *without* gradient-norm control PMA-C collapsed to chance at 8 epochs / 10 tasks
+  (ACC 0.088). This is not a hygiene detail — the conservation mechanism is **unstable unless
+  constrained**. The fix clips each guard gradient to `k·‖g_new‖` (so the conservation correction can
+  never dominate the task signal) + a global update-norm clip + a non-finite-step skip; it trades a small
+  amount of guard strength for stability. After it, PMA-C is stable across all tested regimes (8-epoch
+  ACC 0.088 → 0.965). **Honesty:** the *global* clip is applied to both arms (a near-no-op for the
+  baseline's small gradients), but the **guard-gradient clip is PMA-C-specific** (the baseline has no
+  guard gradient) — it is part of PMA-C's mechanism, not a shared control.
 
 ## 6. Fairness & honesty (adversarial-audit response)
 
@@ -173,13 +186,32 @@ A multi-agent adversarial audit of this result confirmed the phenomenon and the 
 - **The baseline is a fair naive learner** (same architecture/optimizer/lr/order/data); it is the
   "PMA-C disabled" control the task requires.
 
-**Honest scope.** Generalization to unseen inputs is empirical (depends on anchor/sentinel coverage),
-exactly as the spec states. Consolidation/growth/router are implemented and unit-tested but are not the
-*active* drivers in this headline (the 256-256 MLP has ample capacity, so growth never triggers and the
-consolidation interval is not reached within these short runs); they are exercised by the unit suite and
-the live full-system demo `pmac/experiments/full_system_demo.py` (sections A–D all PASS: champion
-immutability + non-deletion, no-op growth giving plasticity with zero old-task interference, slow-core
-consolidation, and context routing).
+**Honest scope — what these results do and do NOT show.**
+- **Active mechanisms in the headline.** The retention shown here is produced by **conservation +
+  projection + stability + replay** on a spare-capacity 256-256 MLP. **Growth, consolidation, and the
+  router are implemented and unit-tested but are NOT the active drivers** here — the net has ample
+  capacity so growth never triggers, and the consolidation interval is not reached within these short
+  runs. They are exercised separately by the unit suite and the live full-system demo
+  `pmac/experiments/full_system_demo.py` (sections A–D all PASS: champion immutability + non-deletion,
+  no-op growth giving plasticity with zero old-task interference, slow-core consolidation, routing). On
+  harder, capacity-limited tasks those mechanisms would activate and could surface new failure modes not
+  tested here.
+- **The impossibility-boundary case (spec §2) is NOT tested.** All three benchmarks have *distinguishable*
+  contexts (different pixel permutations / disjoint class subsets / explicit goal IDs in the observation),
+  so a single function *can* in principle serve all tasks. The spec's hard case — *identical* input
+  requiring *opposite* output with no context — is exactly where the spec says you need explicit/inferred
+  context, growth, or frozen experts; none of our benchmarks probe it. The claim here is the empirical one
+  (PMA-C resists forgetting when tasks are distinguishable and capacity/memory suffice), not the
+  system-level non-overwrite guarantee (which is structural — frozen champions — and unit-tested, not
+  measured by these accuracy curves).
+- **Benchmarks are small.** Three MNIST-variant + one toy-RL settings. They establish the mechanism and
+  the contrast cleanly and reproducibly; they do not establish generality to large-scale or
+  adversarially-conflicting domains.
+- **Memory vs rehearsal.** "no_replay" removes data *rehearsal* but still uses the stored anchors for the
+  conservation gradient — it is rehearsal-free, not memory-free. Long-term memory (anchors) is intrinsic
+  to PMA-C; §4 separates two *uses* of that memory (functional regularization vs. data mixing).
+- Generalization to unseen inputs is empirical (depends on anchor/sentinel coverage), exactly as the spec
+  states (§0 honesty boundary, §29.5).
 
 ## 7. What is implemented (spec coverage)
 
