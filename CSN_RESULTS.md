@@ -1,5 +1,29 @@
 # CSN-PPO results log
 
+## Current CSN-PPO Target
+
+Current CSN-PPO implementation target:
+- 28-D coverage/exploration task
+- no goal-reaching reward
+- collisions are non-terminal by default
+- metric is coverage retention, not success-rate retention
+
+This is not the original 27-D navigation contract. Interpret the result curves below as coverage retention
+experiments, not success-rate retention experiments.
+
+Operational rule: sentinel required for long runs.
+
+P0-P8 hardening now exists: sentinel mandatory for long runs, per-cluster mosaic teachers, adaptive guard
+pressure, curriculum mixture, validation bank, stratified memory, `--long-run` preset, and guard-KL
+conditioning.
+
+To use CSN-PPO for 27-D navigation:
+1. replace coverage criticality with nav criticality,
+2. replace coverage probes with nav probes,
+3. use success/collision sentinels instead of coverage/collision sentinels,
+4. restore goal-relative observation contract,
+5. label synthetic probes using goal-directed analytic teacher.
+
 ## Phase 1b killer experiment #1 (2026-06-14) — POSITIVE but low operating point
 10M steps, coverage env, seed 0, num_envs 2048, CSN config defaults (lr 3e-4, entropy 1e-2,
 holdout early-stop ON). Same custom loop; only guard+projection toggled.

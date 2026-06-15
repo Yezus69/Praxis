@@ -3,6 +3,28 @@
 **Purpose:** Build a long-horizon PPO training system for the Praxis navigation agent that resists both catastrophic forgetting and overfitting over 100M+ environment steps.
 
 **Target repo:** `Yezus69/Praxis`
+
+## Current CSN-PPO Target
+
+Current CSN-PPO implementation target:
+- 28-D coverage/exploration task
+- no goal-reaching reward
+- collisions are non-terminal by default
+- metric is coverage retention, not success-rate retention
+
+This is not the original 27-D navigation contract. The original math and optimizer structure below remain authoritative, but the live implementation adapts the observation-coupled pieces to coverage: `praxis/contract.py` defines the 28-D coverage observation, `coverage_probes.py` supplies coverage probes, `criticality_coverage.py` supplies coverage criticality, and sentinel/validation metrics track coverage retention plus collision rate.
+
+Operational rule: sentinel required for long runs.
+
+P0-P8 hardening now exists: sentinel mandatory for long runs, per-cluster mosaic teachers, adaptive guard pressure, curriculum mixture, validation bank, stratified memory, `--long-run` preset, and guard-KL conditioning.
+
+To use CSN-PPO for 27-D navigation:
+1. replace coverage criticality with nav criticality,
+2. replace coverage probes with nav probes,
+3. use success/collision sentinels instead of coverage/collision sentinels,
+4. restore goal-relative observation contract,
+5. label synthetic probes using goal-directed analytic teacher.
+
 ---
 
 ## 0. Executive summary

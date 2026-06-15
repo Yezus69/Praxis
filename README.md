@@ -9,6 +9,27 @@ Two components, joined by a shared task definition:
 - **[`sim/`](sim/README.md)** — *the world.* A real-physics 3D environment with a controllable agent body, a goal, static clutter, and scripted moving obstacles.
 - **[`agent/`](agent/README.md)** — *the brain.* A neural-network policy trained with reinforcement learning to reach the goal while avoiding obstacles.
 
+## Current CSN-PPO Target
+
+Current CSN-PPO implementation target:
+- 28-D coverage/exploration task
+- no goal-reaching reward
+- collisions are non-terminal by default
+- metric is coverage retention, not success-rate retention
+
+This is not the original 27-D navigation contract. The active CSN-PPO contract is the coverage/exploration task in `praxis/contract.py` and `praxis/envs/cover_env.py`. Optimize coverage retention, collision discipline, and guard/sentinel stability, not goal success.
+
+Operational rule: sentinel required for long runs.
+
+P0-P8 hardening now exists: sentinel mandatory for long runs, per-cluster mosaic teachers, adaptive guard pressure, curriculum mixture, validation bank, stratified memory, `--long-run` preset, and guard-KL conditioning.
+
+To use CSN-PPO for 27-D navigation:
+1. replace coverage criticality with nav criticality,
+2. replace coverage probes with nav probes,
+3. use success/collision sentinels instead of coverage/collision sentinels,
+4. restore goal-relative observation contract,
+5. label synthetic probes using goal-directed analytic teacher.
+
 ---
 
 ## ⚠️ GPU prerequisite — read this first
