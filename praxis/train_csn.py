@@ -6,12 +6,53 @@ import argparse
 import csv
 import datetime
 import os
+import sys
 import time
-from typing import Any, Dict, Optional
+from dataclasses import replace
+from typing import Any, Dict, Optional, Sequence
 
-from agent.csn_ppo.config import CSNPPOConfig, validate_long_run_safety
+from agent.csn_ppo.config import (
+    CSNPPOConfig,
+    resolve_long_run_config,
+    validate_long_run_safety,
+)
 from praxis import contract
 from praxis.train import build_env, reward_overrides_from_args
+
+
+_ARG_DEST_TO_CONFIG_FIELD = {
+    "enable_projection": "enable_gradient_projection",
+}
+
+
+def _explicit_config_fields(
+    parser: argparse.ArgumentParser,
+    argv: Sequence[str],
+) -> set[str]:
+    option_to_field = {}
+    for action in parser._actions:
+        field_name = _ARG_DEST_TO_CONFIG_FIELD.get(action.dest, action.dest)
+        for option in action.option_strings:
+            option_to_field[option] = field_name
+
+    explicit = set()
+    for token in argv:
+        if token == "--":
+            break
+        if not token.startswith("-"):
+            continue
+        field_name = option_to_field.get(token.split("=", 1)[0])
+        if field_name is not None:
+            explicit.add(field_name)
+    return explicit
+
+
+def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    parser = build_parser()
+    args = parser.parse_args(raw_argv)
+    args._explicit_config_fields = _explicit_config_fields(parser, raw_argv)
+    return args
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -19,6 +60,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="praxis.train_csn",
         description="CSN-PPO trainer for the Praxis coverage task.",
     )
+    p.add_argument("--long-run", "--safe-long-run", dest="long_run",
+                   action="store_true", default=False)
     p.add_argument("--num-timesteps", type=float, default=float(CSNPPOConfig.num_timesteps))
     p.add_argument("--num-envs", type=int, default=CSNPPOConfig.num_envs)
     p.add_argument("--num-evals", type=int, default=CSNPPOConfig.num_evals)
@@ -47,12 +90,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--guard-warmup-steps", type=int, default=CSNPPOConfig.guard_warmup_steps)
     p.add_argument("--guard-kl-budget", type=float, default=CSNPPOConfig.guard_kl_budget)
     p.add_argument("--guard-lambda-mem", type=float, default=CSNPPOConfig.guard_lambda_mem)
+    p.add_argument("--guard-lambda-base", type=float, default=CSNPPOConfig.guard_lambda_base)
     p.add_argument("--guard-policy-coef", type=float, default=CSNPPOConfig.guard_policy_coef)
     p.add_argument("--projection", "--enable-projection", dest="enable_projection",
                    action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--enable-sentinel", dest="enable_sentinel",
                    action=argparse.BooleanOptionalAction,
                    default=CSNPPOConfig.enable_sentinel)
+    p.add_argument("--sentinel-bank-size", type=int, default=CSNPPOConfig.sentinel_bank_size)
+    p.add_argument("--sentinel-eval-interval", type=int,
+                   default=CSNPPOConfig.sentinel_eval_interval)
+    p.add_argument("--synthetic-probe-batch-size", type=int,
+                   default=CSNPPOConfig.synthetic_probe_batch_size)
     p.add_argument("--allow-no-sentinel-for-debug", action="store_true",
                    default=CSNPPOConfig.allow_no_sentinel_for_debug)
     p.add_argument("--smoke", action="store_true")
@@ -69,7 +118,16 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def resolve_config(args: argparse.Namespace) -> CSNPPOConfig:
+def resolve_config(
+    argv: argparse.Namespace | Sequence[str] | None = None,
+) -> CSNPPOConfig:
+    if isinstance(argv, argparse.Namespace):
+        args = argv
+        explicit_fields = set(getattr(args, "_explicit_config_fields", set()))
+    else:
+        args = parse_args(argv)
+        explicit_fields = set(args._explicit_config_fields)
+
     values = dict(
         num_timesteps=int(args.num_timesteps),
         num_envs=int(args.num_envs),
@@ -93,13 +151,21 @@ def resolve_config(args: argparse.Namespace) -> CSNPPOConfig:
         guard_warmup_steps=int(args.guard_warmup_steps),
         guard_kl_budget=float(args.guard_kl_budget),
         guard_lambda_mem=float(args.guard_lambda_mem),
+        guard_lambda_base=float(args.guard_lambda_base),
         guard_policy_coef=float(args.guard_policy_coef),
         enable_gradient_projection=bool(args.enable_projection),
         enable_sentinel=bool(args.enable_sentinel),
+        sentinel_bank_size=int(args.sentinel_bank_size),
+        sentinel_eval_interval=int(args.sentinel_eval_interval),
+        synthetic_probe_batch_size=int(args.synthetic_probe_batch_size),
         allow_no_sentinel_for_debug=bool(args.allow_no_sentinel_for_debug),
     )
+    cfg = CSNPPOConfig(**values)
+    if args.long_run:
+        cfg = resolve_long_run_config(cfg, explicit_overrides=explicit_fields)
     if args.smoke:
-        values.update(
+        cfg = replace(
+            cfg,
             num_timesteps=300_000,
             num_envs=256,
             num_evals=10,
@@ -111,7 +177,7 @@ def resolve_config(args: argparse.Namespace) -> CSNPPOConfig:
             synthetic_probe_batch_size=256,
             min_memory_size_before_guard=2048,
         )
-    return CSNPPOConfig(**values)
+    return cfg
 
 
 def _coerce_scalar(value: Any) -> Any:
@@ -171,7 +237,7 @@ def make_csn_progress_fn(run_dir: str, start_time: float):
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    args = build_parser().parse_args(argv)
+    args = parse_args(argv)
     config = resolve_config(args)
     validate_long_run_safety(config)
     reward_overrides = reward_overrides_from_args(args)

@@ -1,6 +1,7 @@
 """CSN-PPO configuration."""
 
 from dataclasses import dataclass, replace
+from typing import Iterable
 
 from praxis import contract
 
@@ -163,12 +164,34 @@ def validate_long_run_safety(cfg):
         )
 
 
-def resolve_long_run_config(cfg: CSNPPOConfig) -> CSNPPOConfig:
-    # P8 extends this preset.
-    return replace(
-        cfg,
-        memory_size_fast=1_048_576,
-        memory_size_slow=262_144,
-        memory_batch_size=4096,
-        enable_sentinel=True,
-    )
+LONG_RUN_PRESET = {
+    "num_timesteps": 100_000_000,
+    "enable_sentinel": True,
+    "guard_warmup_steps": 1_500_000,
+    "guard_kl_budget": 0.002,
+    "guard_lambda_mem": 8.0,
+    "guard_lambda_base": 8.0,
+    "memory_size_fast": 1_048_576,
+    "memory_size_slow": 262_144,
+    "memory_batch_size": 4096,
+    "synthetic_probe_batch_size": 4096,
+    "sentinel_bank_size": 4096,
+    "sentinel_eval_interval": 25,
+    "enable_holdout_early_stop": True,
+    "enable_gradient_projection": True,
+}
+
+
+def resolve_long_run_config(
+    cfg: CSNPPOConfig,
+    explicit_overrides: Iterable[str] | None = None,
+) -> CSNPPOConfig:
+    explicit = frozenset(explicit_overrides or ())
+    updates = {
+        field_name: value
+        for field_name, value in LONG_RUN_PRESET.items()
+        if field_name not in explicit
+    }
+    if "guard_lambda_base" not in explicit and "guard_lambda_mem" in explicit:
+        updates["guard_lambda_base"] = cfg.guard_lambda_mem
+    return replace(cfg, **updates)

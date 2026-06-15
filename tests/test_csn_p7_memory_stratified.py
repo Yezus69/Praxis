@@ -128,7 +128,7 @@ def test_7_2_stratified_sampling_respects_source_cluster_quotas():
         np.testing.assert_allclose(proportion, quota, atol=0.03)
 
 
-def test_7_3_long_run_config_sets_memory_sizes_and_sentinel_only():
+def test_7_3_long_run_config_sets_memory_sizes_and_sentinel():
     base_cfg = CSNPPOConfig(
         memory_size_fast=32,
         memory_size_slow=16,
@@ -142,5 +142,5 @@ def test_7_3_long_run_config_sets_memory_sizes_and_sentinel_only():
     assert cfg.memory_size_slow == 262_144
     assert cfg.memory_batch_size == 4096
     assert cfg.enable_sentinel is True
-    assert cfg.guard_lambda_mem == base_cfg.guard_lambda_mem
-    assert cfg.synthetic_probe_batch_size == base_cfg.synthetic_probe_batch_size
+    assert cfg.guard_lambda_mem == 8.0
+    assert cfg.synthetic_probe_batch_size == 4096
