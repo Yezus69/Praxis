@@ -40,6 +40,12 @@ class Auditor:
     def evaluate_candidate(
         self, cand_params, prev_params, source_eval, protected_nodes, adapter
     ) -> Audit:
+        """Evaluate a candidate update using train-derived validation data only.
+
+        Reported benchmark metrics are computed outside the auditor on held-out
+        test splits; source_eval is intentionally reserved for validation-gate
+        decisions during training.
+        """
         current_cand = _score(cand_params, source_eval, adapter)
         current_prev = _score(prev_params, source_eval, adapter)
         current_delta = current_cand - current_prev

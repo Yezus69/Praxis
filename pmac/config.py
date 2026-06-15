@@ -72,6 +72,9 @@ class ExperimentConfig:
     seed: int = 0
     max_eval: int = 2_000
     use_jit: bool = True
+    baseline_clip: bool = True
+    val_size: int = 5_000
+    max_grad_norm: float = 10.0
 
 
 __all__ = ["PMAConfig", "ExperimentConfig"]

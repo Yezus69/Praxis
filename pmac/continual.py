@@ -41,6 +41,28 @@ class ContinualResult:
     extra: dict = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class TrainValidationSplit:
+    train_x: np.ndarray
+    train_y: np.ndarray
+    val_x: np.ndarray
+    val_y: np.ndarray
+    val_size: int
+
+
+ALLOWED_ABLATIONS = {
+    None,
+    "no_projection",
+    "no_conservation",
+    "no_replay",
+    "random_memory",
+    "no_stability",
+    "no_gate",
+    "replay_only",
+    "no_consolidation",
+}
+
+
 def _source_tag(tasks):
     if not tasks:
         return "unknown"
@@ -173,6 +195,41 @@ def _eval_set(task, max_eval):
     return _batch(task.test_x[:n], task.test_y[:n])
 
 
+def _effective_val_size(n_train, requested_val_size):
+    n_train = int(n_train)
+    requested_val_size = int(requested_val_size)
+    if requested_val_size <= 0 or n_train <= 1:
+        return 0
+    ten_percent = max(1, n_train // 10)
+    return min(requested_val_size, ten_percent, n_train - 1)
+
+
+def split_train_validation(task, val_size) -> TrainValidationSplit:
+    """Carve validation from the tail of task.train_*; never use task.test_*."""
+    n_val = _effective_val_size(task.train_x.shape[0], val_size)
+    if n_val <= 0:
+        return TrainValidationSplit(
+            train_x=task.train_x,
+            train_y=task.train_y,
+            val_x=task.train_x[:0],
+            val_y=task.train_y[:0],
+            val_size=0,
+        )
+    return TrainValidationSplit(
+        train_x=task.train_x[:-n_val],
+        train_y=task.train_y[:-n_val],
+        val_x=task.train_x[-n_val:],
+        val_y=task.train_y[-n_val:],
+        val_size=int(n_val),
+    )
+
+
+def _validation_eval_set(split: TrainValidationSplit):
+    if split.val_size > 0:
+        return _batch(split.val_x, split.val_y)
+    return _batch(split.train_x, split.train_y)
+
+
 def evaluate_all_tasks(params, tasks, adapter, max_eval=2000) -> np.ndarray:
     scores = []
     for task in tasks:
@@ -287,17 +344,24 @@ def run_baseline(tasks, exp_cfg, seed) -> ContinualResult:
 
     exp_cfg = exp_cfg or ExperimentConfig(seed=seed)
     use_jit = bool(getattr(exp_cfg, "use_jit", True))
+    baseline_clip = bool(getattr(exp_cfg, "baseline_clip", True))
+    max_grad_norm = getattr(exp_cfg, "max_grad_norm", 10.0)
     adapter = SupervisedAdapter(temperature=exp_cfg.temperature)
     params = _init_params(tasks, exp_cfg, seed)
     opt = _make_optimizer(exp_cfg)
     opt_state = opt.init(params)
     acc_matrix = np.zeros((len(tasks), len(tasks)), dtype=np.float32)
+    train_rows_per_task = []
+    val_rows_per_task = []
 
     for task_i, task in enumerate(tasks):
+        split = split_train_validation(task, getattr(exp_cfg, "val_size", 5_000))
+        train_rows_per_task.append(int(split.train_x.shape[0]))
+        val_rows_per_task.append(int(split.val_size))
         for epoch in range(int(exp_cfg.epochs_per_task)):
             key = jax.random.PRNGKey(int(seed) + 10_007 * task_i + epoch)
             for x_np, y_np in iterate_minibatches(
-                key, task.train_x, task.train_y, exp_cfg.batch_size, drop_last=True
+                key, split.train_x, split.train_y, exp_cfg.batch_size, drop_last=True
             ):
                 if use_jit:
                     grads = _current_grad(
@@ -306,6 +370,8 @@ def run_baseline(tasks, exp_cfg, seed) -> ContinualResult:
                 else:
                     batch = _batch(x_np, y_np)
                     grads = jax.grad(adapter.current_loss)(params, batch)
+                if baseline_clip:
+                    grads = clip_global(grads, max_grad_norm)
                 updates, opt_state = opt.update(grads, opt_state, params)
                 params = optax.apply_updates(params, updates)
         acc_matrix[task_i] = evaluate_all_tasks(
@@ -316,7 +382,17 @@ def run_baseline(tasks, exp_cfg, seed) -> ContinualResult:
         acc_matrix,
         mode="baseline",
         source_tag=_source_tag(tasks),
-        extra={"seed": int(seed), "optimizer": exp_cfg.optimizer, "use_jit": use_jit},
+        extra={
+            "seed": int(seed),
+            "optimizer": exp_cfg.optimizer,
+            "use_jit": use_jit,
+            "baseline_clip": baseline_clip,
+            "max_grad_norm": None if max_grad_norm is None else float(max_grad_norm),
+            "val_size": int(getattr(exp_cfg, "val_size", 5_000)),
+            "train_rows_per_task": train_rows_per_task,
+            "val_rows_per_task": val_rows_per_task,
+            "eval_source": "test",
+        },
     )
 
 
@@ -430,6 +506,7 @@ def _all_guard_arrays(node):
 def _certify_task(
     params,
     task,
+    split,
     task_i,
     atlas,
     champions,
@@ -440,40 +517,42 @@ def _certify_task(
     seed,
     ablation,
 ):
-    train_batch = _batch(task.train_x, task.train_y)
+    train_batch = _batch(split.train_x, split.train_y)
     logits = np.asarray(adapter.behavior(params, train_batch))
     mode = "random" if ablation == "random_memory" else "importance"
-    n_anchor = min(int(pma_cfg.anchor_memory_per_skill), int(task.train_x.shape[0]))
+    n_anchor = min(int(pma_cfg.anchor_memory_per_skill), int(split.train_x.shape[0]))
     idx = select_indices(
         logits,
-        task.train_y,
+        split.train_y,
         n_anchor,
         mode=mode,
         key=int(seed) + 51_001 * (task_i + 1),
     )
-    scores = importance_scores(logits[idx], task.train_y[idx])
+    if idx.shape[0] == 0:
+        scores = np.asarray([], dtype=np.float32)
+    else:
+        scores = importance_scores(logits[idx], split.train_y[idx])
     teachers = logits[idx]
     tolerances = np.full((idx.shape[0],), pma_cfg.drift_budget_kl, dtype=np.float32)
     weights = np.ones((idx.shape[0],), dtype=np.float32)
     anchors = AnchorStore(pma_cfg.anchor_memory_per_skill)
     anchors.add(
-        task.train_x[idx],
+        split.train_x[idx],
         teachers,
         tolerances,
         weights,
         scores,
         skill_ids=[task.name] * idx.shape[0],
-        labels=task.train_y[idx],
+        labels=split.train_y[idx],
     )
 
-    n_sentinel = min(int(pma_cfg.sentinel_count_per_skill), int(idx.shape[0]))
-    sentinel_idx = idx[:n_sentinel]
+    n_sentinel = min(int(pma_cfg.sentinel_count_per_skill), int(split.val_x.shape[0]))
     sentinels = SentinelStore(
-        x=task.train_x[sentinel_idx],
-        y=task.train_y[sentinel_idx],
+        x=split.val_x[:n_sentinel],
+        y=split.val_y[:n_sentinel],
         seeds=np.arange(n_sentinel, dtype=np.int32),
     )
-    eval_score = adapter.evaluate_skill(params, _eval_set(task, exp_cfg.max_eval))
+    eval_score = adapter.evaluate_skill(params, _validation_eval_set(split))
     champion = champions.freeze(
         params,
         route=task.name,
@@ -501,21 +580,29 @@ def _certify_task(
 def run_pmac(tasks, exp_cfg, pma_cfg, seed, ablation=None) -> ContinualResult:
     from pmac.adapters.supervised import SupervisedAdapter
 
-    allowed = {
-        None,
-        "no_projection",
-        "no_conservation",
-        "no_replay",
-        "random_memory",
-        "no_stability",
-        "no_gate",
-    }
-    if ablation not in allowed:
+    if ablation not in ALLOWED_ABLATIONS:
         raise ValueError(f"unknown PMA-C ablation: {ablation}")
 
     exp_cfg = exp_cfg or ExperimentConfig(seed=seed)
     pma_cfg = pma_cfg or PMAConfig()
     use_jit = bool(getattr(exp_cfg, "use_jit", True))
+    guard_enabled = ablation not in ("no_conservation", "replay_only")
+    projection_enabled = bool(pma_cfg.projection_enabled) and ablation not in (
+        "no_projection",
+        "replay_only",
+    )
+    stability_enabled = bool(pma_cfg.stability_enabled) and ablation not in (
+        "no_stability",
+        "replay_only",
+    )
+    gate_enabled = bool(getattr(pma_cfg, "gate_enabled", True)) and ablation not in (
+        "no_gate",
+        "replay_only",
+    )
+    consolidation_enabled = bool(pma_cfg.consolidation_enabled) and ablation not in (
+        "no_consolidation",
+        "replay_only",
+    )
     adapter = SupervisedAdapter(temperature=exp_cfg.temperature)
     params = _init_params(tasks, exp_cfg, seed)
     omega = zeros_omega_like(params)
@@ -536,18 +623,39 @@ def run_pmac(tasks, exp_cfg, pma_cfg, seed, ablation=None) -> ContinualResult:
     nonfinite_steps = 0
     n_clipped = 0
     diag_interval = max(0, int(getattr(pma_cfg, "diag_interval", 25)))
+    train_rows_per_task = []
+    val_rows_per_task = []
+    sentinel_rows_per_task = []
+    gate_eval_rows = []
+    replay_mixed_steps = 0
+    replay_examples = 0
+    max_effective_batch = 0
+    guard_grad_count = 0
+    projection_steps = 0
+    stability_scaled_steps = 0
+    consolidation_steps = 0
+    gate_audit_steps = 0
 
     for task_i, task in enumerate(tasks):
         current_skill_id = task.name
+        split = split_train_validation(task, getattr(exp_cfg, "val_size", 5_000))
+        train_rows_per_task.append(int(split.train_x.shape[0]))
+        val_rows_per_task.append(int(split.val_size))
         for epoch in range(int(exp_cfg.epochs_per_task)):
             key = jax.random.PRNGKey(int(seed) + 10_007 * task_i + epoch)
             for x_np, y_np in iterate_minibatches(
-                key, task.train_x, task.train_y, exp_cfg.batch_size, drop_last=True
+                key, split.train_x, split.train_y, exp_cfg.batch_size, drop_last=True
             ):
                 global_step += 1
+                base_batch_n = int(x_np.shape[0])
                 x_train, y_train = _maybe_mix_replay(
                     x_np, y_np, atlas, global_step, exp_cfg, ablation
                 )
+                effective_batch_n = int(x_train.shape[0])
+                max_effective_batch = max(max_effective_batch, effective_batch_n)
+                if effective_batch_n > base_batch_n:
+                    replay_mixed_steps += 1
+                    replay_examples += effective_batch_n - base_batch_n
                 prev_params = params
                 if use_jit:
                     g_new = _current_grad(
@@ -564,7 +672,7 @@ def run_pmac(tasks, exp_cfg, pma_cfg, seed, ablation=None) -> ContinualResult:
                 guard_grads = []
                 guard_losses = []
                 active_guard_nodes = []
-                if ablation != "no_conservation":
+                if guard_enabled:
                     for guard_i, node in enumerate(guard_nodes):
                         n_guard = max(1, int(exp_cfg.replay_batch))
                         guard_arrays = _sample_guard_arrays(
@@ -599,26 +707,25 @@ def run_pmac(tasks, exp_cfg, pma_cfg, seed, ablation=None) -> ContinualResult:
                         guard_losses.append(float(loss_value))
                         guard_grads.append(grad_value)
                         active_guard_nodes.append(node)
+                        guard_grad_count += 1
 
-                if (
-                    pma_cfg.projection_enabled
-                    and ablation != "no_projection"
-                    and guard_grads
-                ):
+                if projection_enabled and guard_grads:
                     g_projected = project_conflicts(g_new, guard_grads)
+                    projection_steps += 1
                 else:
                     g_projected = g_new
                 g_total = g_projected
 
-                if ablation != "no_conservation":
+                if guard_enabled:
                     for node, g_guard in zip(active_guard_nodes, guard_grads):
                         lam = min(float(node.guard_lambda), float(pma_cfg.guard_lambda_max))
                         g_total = tree_add_scaled(g_total, g_guard, lam)
 
-                if pma_cfg.stability_enabled and ablation != "no_stability":
+                if stability_enabled:
                     g_total = scale_by_stability(
                         g_total, omega, alpha=pma_cfg.stability_alpha
                     )
+                    stability_scaled_steps += 1
 
                 if guard_losses:
                     guard_loss_trace.append(float(np.mean(guard_losses)))
@@ -643,14 +750,15 @@ def run_pmac(tasks, exp_cfg, pma_cfg, seed, ablation=None) -> ContinualResult:
                     continue
 
                 audit_ran = (
-                    getattr(pma_cfg, "gate_enabled", True)
-                    and ablation != "no_gate"
+                    gate_enabled
                     and pma_cfg.audit_interval > 0
                     and global_step % int(pma_cfg.audit_interval) == 0
                     and bool(atlas.protected_nodes())
                 )
                 if audit_ran:
-                    source_eval = _eval_set(task, exp_cfg.max_eval)
+                    source_eval = _validation_eval_set(split)
+                    gate_eval_rows.append(int(source_eval["x"].shape[0]))
+                    gate_audit_steps += 1
                     audit = auditor.evaluate_candidate(
                         candidate,
                         prev_params,
@@ -673,11 +781,13 @@ def run_pmac(tasks, exp_cfg, pma_cfg, seed, ablation=None) -> ContinualResult:
                     opt_state = cand_opt_state
 
                 if (
-                    pma_cfg.consolidation_enabled
+                    consolidation_enabled
                     and pma_cfg.consolidation_interval > 0
                     and global_step % int(pma_cfg.consolidation_interval) == 0
                     and atlas.protected_nodes()
                 ):
+                    # With the default 10_000-step interval this usually does not fire
+                    # in short MNIST runs; no_consolidation exists for spec section 27.
                     params, _ = consolidate(
                         params,
                         atlas,
@@ -687,6 +797,7 @@ def run_pmac(tasks, exp_cfg, pma_cfg, seed, ablation=None) -> ContinualResult:
                         steps=pma_cfg.consolidation_epochs,
                         lr=exp_cfg.lr * pma_cfg.slow_lr_multiplier,
                     )
+                    consolidation_steps += 1
 
         acc_matrix[task_i] = evaluate_all_tasks(
             params, tasks, adapter, max_eval=exp_cfg.max_eval
@@ -694,6 +805,7 @@ def run_pmac(tasks, exp_cfg, pma_cfg, seed, ablation=None) -> ContinualResult:
         node = _certify_task(
             params,
             task,
+            split,
             task_i,
             atlas,
             champions,
@@ -704,7 +816,11 @@ def run_pmac(tasks, exp_cfg, pma_cfg, seed, ablation=None) -> ContinualResult:
             seed,
             ablation,
         )
-        guard_arrays = _all_guard_arrays(node)
+        sentinel_rows_per_task.append(int(np.asarray(node.sentinels.x).shape[0]))
+        if stability_enabled:
+            guard_arrays = _all_guard_arrays(node)
+        else:
+            guard_arrays = None
         if guard_arrays is None:
             grad_guard = zeros_omega_like(params)
         else:
@@ -727,7 +843,9 @@ def run_pmac(tasks, exp_cfg, pma_cfg, seed, ablation=None) -> ContinualResult:
                     gweight,
                     float(exp_cfg.temperature),
                 )
-        omega = update_omega(omega, params, grad_guard, pma_cfg.stability_decay)
+            guard_grad_count += 1
+        if stability_enabled:
+            omega = update_omega(omega, params, grad_guard, pma_cfg.stability_decay)
         safe = SafeCheckpoint(params)
         safe_opt_state = deep_copy_pytree(opt_state)
 
@@ -745,6 +863,29 @@ def run_pmac(tasks, exp_cfg, pma_cfg, seed, ablation=None) -> ContinualResult:
             "diag": _summarize_diag(diag_samples, nonfinite_steps, n_clipped),
             "optimizer": exp_cfg.optimizer,
             "use_jit": use_jit,
+            "max_grad_norm": float(getattr(pma_cfg, "max_grad_norm", 10.0)),
+            "val_size": int(getattr(exp_cfg, "val_size", 5_000)),
+            "train_rows_per_task": train_rows_per_task,
+            "val_rows_per_task": val_rows_per_task,
+            "sentinel_rows_per_task": sentinel_rows_per_task,
+            "sentinel_source": "validation",
+            "gate_source": "validation",
+            "gate_eval_rows": gate_eval_rows,
+            "eval_source": "test",
+            "guard_enabled": guard_enabled,
+            "projection_enabled": projection_enabled,
+            "stability_enabled": stability_enabled,
+            "gate_enabled": gate_enabled,
+            "consolidation_enabled": consolidation_enabled,
+            "replay_mixed_steps": int(replay_mixed_steps),
+            "replay_examples": int(replay_examples),
+            "max_effective_batch": int(max_effective_batch),
+            "base_batch_size": int(exp_cfg.batch_size),
+            "guard_grad_count": int(guard_grad_count),
+            "projection_steps": int(projection_steps),
+            "stability_scaled_steps": int(stability_scaled_steps),
+            "consolidation_steps": int(consolidation_steps),
+            "gate_audit_steps": int(gate_audit_steps),
         },
     )
 
@@ -758,4 +899,6 @@ __all__ = [
     "clip_guard_grad",
     "clip_global",
     "optimizer_step_if_finite",
+    "split_train_validation",
+    "ALLOWED_ABLATIONS",
 ]

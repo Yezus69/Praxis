@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from pmac.config import ExperimentConfig, PMAConfig
-from pmac.continual import ContinualResult, run_baseline, run_pmac
+from pmac.continual import ALLOWED_ABLATIONS, ContinualResult, run_baseline, run_pmac
 from pmac.data.streams import build_stream
 from pmac.plotting import plot_comparison
 
@@ -112,6 +112,8 @@ def main(argv=None):
     parser.add_argument("--ablations", default="none")
     parser.add_argument("--out", default="runs/pmac_mnist")
     parser.add_argument("--max-eval", type=int, default=2000)
+    parser.add_argument("--val-size", type=int, default=5000)
+    parser.add_argument("--baseline-clip", choices=("on", "off"), default="on")
     parser.add_argument("--guard-lambda", type=float, default=None)
     parser.add_argument("--guard-grad-clip", type=float, default=None)
     parser.add_argument("--max-grad-norm", type=float, default=None)
@@ -129,6 +131,14 @@ def main(argv=None):
 
     seeds = _parse_seeds(args.seeds)
     ablations = _parse_ablations(args.ablations)
+    valid_ablations = {value for value in ALLOWED_ABLATIONS if value is not None}
+    invalid_ablations = [value for value in ablations if value not in ALLOWED_ABLATIONS]
+    if invalid_ablations:
+        parser.error(
+            "unknown ablation(s): "
+            + ", ".join(str(value) for value in invalid_ablations)
+            + f"; valid values are none,{','.join(sorted(valid_ablations))}"
+        )
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -142,6 +152,8 @@ def main(argv=None):
         seed=seeds[0] if seeds else 0,
         max_eval=args.max_eval,
         use_jit=not args.no_jit,
+        baseline_clip=args.baseline_clip == "on",
+        val_size=args.val_size,
     )
     exp_overrides = {}
     if args.replay_batch is not None:
@@ -180,10 +192,22 @@ def main(argv=None):
     if args.allowed_regression is not None:
         pma_overrides["allowed_regression"] = args.allowed_regression
     pma_cfg = replace(PMAConfig(), **pma_overrides)
+    exp_cfg = replace(exp_cfg, max_grad_norm=pma_cfg.max_grad_norm)
 
     results_by_mode = {}
     first_seed_results = {}
-    raw = {"seeds": seeds, "runs": {}, "config": {"experiment": asdict(exp_cfg), "pma": asdict(pma_cfg)}}
+    raw = {
+        "seeds": seeds,
+        "runs": {},
+        "config": {"experiment": asdict(exp_cfg), "pma": asdict(pma_cfg)},
+        "headline_config": {
+            "gate_enabled": bool(pma_cfg.gate_enabled),
+            "max_grad_norm": float(pma_cfg.max_grad_norm),
+            "baseline_clip": bool(exp_cfg.baseline_clip),
+            "val_size": int(exp_cfg.val_size),
+            "replay_batch": int(exp_cfg.replay_batch),
+        },
+    }
 
     for seed in seeds:
         stream_kwargs = {"seed": seed}
