@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import partial
 from typing import NamedTuple
@@ -13,7 +14,8 @@ import numpy as np
 import optax
 
 from pmac.agents.atari_net import atari_apply, init_atari
-from pmac.envs.atari_envpool import ACT_DIM, EpisodeReturnTracker, make_train_env
+from pmac.behavior_distance import kl_categorical
+from pmac.envs.atari_envpool import ACT_DIM, EpisodeReturnTracker, make_train_env, norm_obs
 
 
 @dataclass(frozen=True)
@@ -40,6 +42,24 @@ class TrainBatch(NamedTuple):
     advantages: jnp.ndarray
     returns: jnp.ndarray
     values: jnp.ndarray
+
+
+class GuardBatch(NamedTuple):
+    obs: jnp.ndarray
+    game_onehot: jnp.ndarray
+    teacher_logits: jnp.ndarray
+    teacher_value: jnp.ndarray
+
+
+class GuardHost(NamedTuple):
+    obs_uint8: np.ndarray
+    game_onehot: np.ndarray
+    teacher_logits: np.ndarray
+    teacher_value: np.ndarray
+    guard_coef: float
+    value_coef: float
+    guard_tolerance: float
+    guard_batch: int
 
 
 def _validate_config(cfg: AtariPPOConfig) -> int:
@@ -157,6 +177,97 @@ def _ppo_loss(params, batch: TrainBatch, game_onehot, clip_coef: float, vf_coef:
     return loss, aux
 
 
+def _guard_get(guard, name: str):
+    if isinstance(guard, Mapping):
+        return guard[name]
+    return getattr(guard, name)
+
+
+def _prepare_guard_host(guard, n_games: int) -> GuardHost:
+    obs_uint8 = np.asarray(_guard_get(guard, "obs_uint8"), dtype=np.uint8)
+    game_onehot = np.asarray(_guard_get(guard, "game_onehot"), dtype=np.float32)
+    teacher_logits = np.asarray(_guard_get(guard, "teacher_logits"), dtype=np.float32)
+    teacher_value = np.asarray(_guard_get(guard, "teacher_value"), dtype=np.float32).reshape(-1)
+    guard_batch = int(_guard_get(guard, "guard_batch"))
+
+    if obs_uint8.ndim != 4 or obs_uint8.shape[1:] != (4, 84, 84):
+        raise ValueError(f"guard obs_uint8 must have shape [M,4,84,84], got {obs_uint8.shape}")
+    m = int(obs_uint8.shape[0])
+    if m <= 0:
+        raise ValueError("guard obs_uint8 must contain at least one anchor")
+    if game_onehot.shape != (m, int(n_games)):
+        raise ValueError(f"guard game_onehot must have shape [{m},{int(n_games)}], got {game_onehot.shape}")
+    if teacher_logits.shape != (m, ACT_DIM):
+        raise ValueError(f"guard teacher_logits must have shape [{m},{ACT_DIM}], got {teacher_logits.shape}")
+    if teacher_value.shape != (m,):
+        raise ValueError(f"guard teacher_value must have shape [{m}], got {teacher_value.shape}")
+    if guard_batch <= 0:
+        raise ValueError("guard_batch must be positive")
+
+    return GuardHost(
+        obs_uint8=obs_uint8,
+        game_onehot=game_onehot,
+        teacher_logits=teacher_logits,
+        teacher_value=teacher_value,
+        guard_coef=float(_guard_get(guard, "guard_coef")),
+        value_coef=float(_guard_get(guard, "value_coef")),
+        guard_tolerance=float(_guard_get(guard, "guard_tolerance")),
+        guard_batch=guard_batch,
+    )
+
+
+def _sample_guard_batch_host(guard: GuardHost, rng: np.random.Generator) -> GuardBatch:
+    idx = rng.integers(
+        0,
+        int(guard.obs_uint8.shape[0]),
+        size=int(guard.guard_batch),
+        endpoint=False,
+    )
+    return GuardBatch(
+        obs=jnp.asarray(norm_obs(guard.obs_uint8[idx]), dtype=jnp.float32),
+        game_onehot=jnp.asarray(guard.game_onehot[idx], dtype=jnp.float32),
+        teacher_logits=jnp.asarray(guard.teacher_logits[idx], dtype=jnp.float32),
+        teacher_value=jnp.asarray(guard.teacher_value[idx], dtype=jnp.float32),
+    )
+
+
+def _guard_loss(params, guard_batch: GuardBatch, value_coef: float, guard_tolerance: float):
+    logits, value = atari_apply(params, guard_batch.obs, guard_batch.game_onehot)
+    policy_kl = kl_categorical(guard_batch.teacher_logits, logits)
+    value_drift = jnp.abs(value - guard_batch.teacher_value)
+    violation = jnp.maximum(
+        policy_kl + float(value_coef) * value_drift - float(guard_tolerance),
+        0.0,
+    )
+    return jnp.mean(jnp.square(violation))
+
+
+def _ppo_guard_loss(
+    params,
+    batch: TrainBatch,
+    game_onehot,
+    guard_batch: GuardBatch,
+    clip_coef: float,
+    vf_coef: float,
+    ent_coef: float,
+    guard_coef: float,
+    guard_value_coef: float,
+    guard_tolerance: float,
+):
+    ppo_loss, ppo_aux = _ppo_loss(
+        params,
+        batch,
+        game_onehot,
+        clip_coef,
+        vf_coef,
+        ent_coef,
+    )
+    guard_loss = _guard_loss(params, guard_batch, guard_value_coef, guard_tolerance)
+    total = ppo_loss + float(guard_coef) * guard_loss
+    aux = jnp.concatenate([ppo_aux, jnp.asarray([guard_loss], dtype=jnp.float32)], axis=0)
+    return total, aux
+
+
 @partial(
     jax.jit,
     static_argnames=(
@@ -217,6 +328,87 @@ def ppo_update(
     return params, opt_state, rng, jnp.mean(metrics, axis=0)
 
 
+@partial(
+    jax.jit,
+    static_argnames=(
+        "update_epochs",
+        "num_minibatches",
+        "minibatch_size",
+        "clip_coef",
+        "vf_coef",
+        "ent_coef",
+        "max_grad_norm",
+        "guard_coef",
+        "guard_value_coef",
+        "guard_tolerance",
+    ),
+)
+def ppo_guard_update(
+    params,
+    opt_state,
+    batch: TrainBatch,
+    game_onehot,
+    guard_batch: GuardBatch,
+    rng,
+    learning_rate: float,
+    update_epochs: int,
+    num_minibatches: int,
+    minibatch_size: int,
+    clip_coef: float,
+    vf_coef: float,
+    ent_coef: float,
+    max_grad_norm: float,
+    guard_coef: float,
+    guard_value_coef: float,
+    guard_tolerance: float,
+):
+    batch_size = int(num_minibatches) * int(minibatch_size)
+    tx = optax.chain(
+        optax.clip_by_global_norm(float(max_grad_norm)),
+        optax.adam(learning_rate=learning_rate),
+    )
+
+    def epoch_step(carry, _):
+        params, opt_state, rng = carry
+        rng, perm_key = jax.random.split(rng)
+        permutation = jax.random.permutation(perm_key, batch_size)
+        minibatches = _make_minibatches(batch, permutation, int(num_minibatches), int(minibatch_size))
+
+        def minibatch_step(carry, minibatch):
+            params, opt_state = carry
+
+            def loss_fn(p):
+                return _ppo_guard_loss(
+                    p,
+                    minibatch,
+                    game_onehot,
+                    guard_batch,
+                    clip_coef,
+                    vf_coef,
+                    ent_coef,
+                    guard_coef,
+                    guard_value_coef,
+                    guard_tolerance,
+                )
+
+            (loss, aux), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
+            updates, opt_state = tx.update(grads, opt_state, params)
+            params = optax.apply_updates(params, updates)
+            metrics = jnp.concatenate([jnp.asarray([loss], dtype=jnp.float32), aux], axis=0)
+            return (params, opt_state), metrics
+
+        (params, opt_state), metrics = jax.lax.scan(minibatch_step, (params, opt_state), minibatches)
+        return (params, opt_state, rng), jnp.mean(metrics, axis=0)
+
+    (params, opt_state, rng), metrics = jax.lax.scan(
+        epoch_step,
+        (params, opt_state, rng),
+        None,
+        length=int(update_epochs),
+    )
+    return params, opt_state, rng, jnp.mean(metrics, axis=0)
+
+
 def _learning_rate(cfg: AtariPPOConfig, update: int, num_updates: int) -> float:
     if not bool(cfg.anneal_lr):
         return float(cfg.lr)
@@ -230,13 +422,14 @@ def _mean_or_previous(recent_returns, previous: float) -> float:
     return float(np.mean(np.asarray(recent_returns, dtype=np.float32)))
 
 
-def train_ppo_atari(game, game_id, n_games, cfg, seed, init_params=None) -> dict:
+def train_ppo_atari(game, game_id, n_games, cfg, seed, init_params=None, *, guard=None) -> dict:
     """Train one Atari game using bounded host envpool rollouts and jitted updates."""
     cfg = cfg or AtariPPOConfig()
     num_updates = _validate_config(cfg)
     batch_size = int(cfg.num_envs) * int(cfg.num_steps)
     minibatch_size = batch_size // int(cfg.num_minibatches)
     game_onehot = jax.nn.one_hot(int(game_id), int(n_games), dtype=jnp.float32)
+    guard_host = None if guard is None else _prepare_guard_host(guard, int(n_games))
 
     rng = jax.random.PRNGKey(int(seed))
     rng, init_key = jax.random.split(rng)
@@ -256,7 +449,11 @@ def train_ppo_atari(game, game_id, n_games, cfg, seed, init_params=None) -> dict
     tracker = EpisodeReturnTracker(int(cfg.num_envs))
     recent_returns = deque(maxlen=100)
     returns_curve: list[float] = []
+    guard_curve: list[float] = []
     last_curve_value = 0.0
+    guard_rng = None
+    if guard_host is not None:
+        guard_rng = np.random.default_rng(int(seed) + 700_001)
 
     obs_buf = np.zeros((int(cfg.num_steps), int(cfg.num_envs), 4, 84, 84), dtype=np.uint8)
     actions_buf = np.zeros((int(cfg.num_steps), int(cfg.num_envs)), dtype=np.int32)
@@ -311,37 +508,66 @@ def train_ppo_atari(game, game_id, n_games, cfg, seed, init_params=None) -> dict
             batch_size,
         )
         lr = _learning_rate(cfg, update, num_updates)
-        params, opt_state, rng, _ = ppo_update(
-            params,
-            opt_state,
-            batch,
-            game_onehot,
-            rng,
-            float(lr),
-            int(cfg.update_epochs),
-            int(cfg.num_minibatches),
-            int(minibatch_size),
-            float(cfg.clip_coef),
-            float(cfg.vf_coef),
-            float(cfg.ent_coef),
-            float(cfg.max_grad_norm),
-        )
+        if guard_host is None:
+            params, opt_state, rng, _ = ppo_update(
+                params,
+                opt_state,
+                batch,
+                game_onehot,
+                rng,
+                float(lr),
+                int(cfg.update_epochs),
+                int(cfg.num_minibatches),
+                int(minibatch_size),
+                float(cfg.clip_coef),
+                float(cfg.vf_coef),
+                float(cfg.ent_coef),
+                float(cfg.max_grad_norm),
+            )
+        else:
+            guard_batch = _sample_guard_batch_host(guard_host, guard_rng)
+            params, opt_state, rng, metrics = ppo_guard_update(
+                params,
+                opt_state,
+                batch,
+                game_onehot,
+                guard_batch,
+                rng,
+                float(lr),
+                int(cfg.update_epochs),
+                int(cfg.num_minibatches),
+                int(minibatch_size),
+                float(cfg.clip_coef),
+                float(cfg.vf_coef),
+                float(cfg.ent_coef),
+                float(cfg.max_grad_norm),
+                float(guard_host.guard_coef),
+                float(guard_host.value_coef),
+                float(guard_host.guard_tolerance),
+            )
+            metrics_np = np.asarray(jax.device_get(metrics), dtype=np.float32)
+            guard_curve.append(float(metrics_np[-1]))
 
     final_return = float(returns_curve[-1]) if returns_curve else 0.0
-    return {
+    result = {
         "params": params,
         "returns_curve": [float(v) for v in returns_curve],
         "final_return": final_return,
         "timesteps": int(num_updates * batch_size),
     }
+    if guard_host is not None:
+        result["guard_curve"] = [float(v) for v in guard_curve]
+    return result
 
 
 __all__ = [
     "AtariPPOConfig",
+    "GuardBatch",
     "TrainBatch",
     "gae",
     "jit_greedy_policy",
     "jit_policy",
+    "ppo_guard_update",
     "ppo_update",
     "train_ppo_atari",
 ]
