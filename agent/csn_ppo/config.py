@@ -176,7 +176,8 @@ LONG_RUN_PRESET = {
     "memory_batch_size": 4096,
     "synthetic_probe_batch_size": 4096,
     "sentinel_bank_size": 4096,
-    "sentinel_eval_interval": 25,
+    "sentinel_eval_interval": 100,
+    "validation_eval_interval": 100,
     "enable_holdout_early_stop": True,
     "enable_gradient_projection": True,
 }

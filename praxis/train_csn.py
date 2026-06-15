@@ -100,6 +100,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--sentinel-bank-size", type=int, default=CSNPPOConfig.sentinel_bank_size)
     p.add_argument("--sentinel-eval-interval", type=int,
                    default=CSNPPOConfig.sentinel_eval_interval)
+    p.add_argument("--validation-eval-interval", type=int,
+                   default=CSNPPOConfig.validation_eval_interval)
     p.add_argument("--synthetic-probe-batch-size", type=int,
                    default=CSNPPOConfig.synthetic_probe_batch_size)
     p.add_argument("--allow-no-sentinel-for-debug", action="store_true",
@@ -157,6 +159,7 @@ def resolve_config(
         enable_sentinel=bool(args.enable_sentinel),
         sentinel_bank_size=int(args.sentinel_bank_size),
         sentinel_eval_interval=int(args.sentinel_eval_interval),
+        validation_eval_interval=int(args.validation_eval_interval),
         synthetic_probe_batch_size=int(args.synthetic_probe_batch_size),
         allow_no_sentinel_for_debug=bool(args.allow_no_sentinel_for_debug),
     )

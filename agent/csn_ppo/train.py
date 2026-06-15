@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import functools
 import math
+import os
+import time
 from typing import Any
 
 import jax
@@ -238,6 +240,11 @@ def _champion_policy_id(policy_id):
     return -1 if policy_id is None else int(policy_id)
 
 
+def _profile_log(enabled: bool, name: str, started: float) -> None:
+    if enabled:
+        print(f"[prof] {name} {time.time() - started:.1f}s", flush=True)
+
+
 def _sync_sentinel_bank_from_champions(sentinel_bank, champions):
     return sentinel_bank.replace(
         best_coverage=jnp.asarray(
@@ -283,6 +290,7 @@ def _set_env_curriculum_info(
 
 def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
     """Runs Phase 1b CSN-PPO over an already wrapped coverage environment."""
+    profile_enabled = bool(os.environ.get("CSN_PROFILE"))
     rng = jax.random.PRNGKey(config.seed)
     normalize = (
         running_statistics.normalize
@@ -562,8 +570,9 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
             deterministic=config.eval_deterministic,
         )
 
+    eval_environment = eval_env or environment
     evaluator = Evaluator(
-        eval_env or environment,
+        eval_environment,
         eval_policy_fn,
         num_eval_envs=config.num_eval_envs,
         episode_length=config.episode_length,
@@ -571,9 +580,37 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
         key=eval_key,
     )
 
+    def run_sentinel_evaluation(eval_bank, eval_params, eval_normalizer_params):
+        return sentinel.evaluate_sentinel_bank(
+            eval_environment,
+            eval_bank,
+            make_policy,
+            eval_params,
+            eval_normalizer_params,
+            deterministic=True,
+        )
+
+    run_sentinel_evaluation = jax.jit(run_sentinel_evaluation)
+
+    def run_validation_evaluation(eval_bank, eval_params, eval_normalizer_params):
+        return evaluate_validation_bank(
+            eval_environment,
+            eval_bank,
+            eval_params,
+            eval_normalizer_params,
+            make_policy,
+            apply_policy_value,
+            config,
+        )
+
+    run_validation_evaluation = jax.jit(run_validation_evaluation)
+
     metrics = {}
     if progress_fn is not None:
+        profile_t = time.time() if profile_enabled else 0.0
         eval_metrics = evaluator.run_evaluation((normalizer_params, params.policy, params.value), {})
+        _profile_log(profile_enabled, "regular_eval", profile_t)
+        profile_t = time.time() if profile_enabled else 0.0
         champion, champion_metrics = mosaic_teacher.maybe_update_champion(
             champion,
             eval_metrics,
@@ -581,10 +618,12 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
             params,
             config,
         )
+        _profile_log(profile_enabled, "champion_update", profile_t)
         metrics = M.merge_metrics(eval_metrics, champion_metrics, {"env_steps": 0})
         progress_fn(0, M.to_float_dict(metrics))
 
     for update in range(num_updates):
+        update_profile_t = time.time() if profile_enabled else 0.0
         (
             rng,
             rollout_rng,
@@ -780,14 +819,13 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
             and int(config.sentinel_eval_interval) > 0
             and update % int(config.sentinel_eval_interval) == 0
         ):
-            raw_sentinel_metrics, sentinel_trajectories = sentinel.evaluate_sentinel_bank(
-                eval_env or environment,
+            profile_t = time.time() if profile_enabled else 0.0
+            raw_sentinel_metrics, sentinel_trajectories = run_sentinel_evaluation(
                 sentinel_bank,
-                make_policy,
                 params,
                 normalizer_params,
-                deterministic=True,
             )
+            _profile_log(profile_enabled, "sentinel_eval", profile_t)
             regressions = sentinel.detect_sentinel_regressions(
                 raw_sentinel_metrics,
                 sentinel_bank,
@@ -904,15 +942,13 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
             and int(config.validation_eval_interval) > 0
             and update % int(config.validation_eval_interval) == 0
         ):
-            raw_validation_metrics = evaluate_validation_bank(
-                eval_env or environment,
+            profile_t = time.time() if profile_enabled else 0.0
+            raw_validation_metrics = run_validation_evaluation(
                 validation_bank,
                 params,
                 normalizer_params,
-                make_policy,
-                apply_policy_value,
-                config,
             )
+            _profile_log(profile_enabled, "validation_eval", profile_t)
             best_validation = validation_best(validation_bank)
             validation_regressed_now = validation_regressed(
                 raw_validation_metrics,
@@ -990,8 +1026,11 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
         eval_metrics = {}
         champion_metrics = {}
         if do_eval:
+            profile_t = time.time() if profile_enabled else 0.0
             eval_metrics = evaluator.run_evaluation((normalizer_params, params.policy, params.value), {})
+            _profile_log(profile_enabled, "regular_eval", profile_t)
             if do_champion and config.enable_mosaic_teacher:
+                profile_t = time.time() if profile_enabled else 0.0
                 champion, champion_metrics = mosaic_teacher.maybe_update_champion(
                     champion,
                     eval_metrics,
@@ -999,6 +1038,7 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
                     params,
                     config,
                 )
+                _profile_log(profile_enabled, "champion_update", profile_t)
 
         base_memory_metrics = dict(guard_eval_metrics)
         base_memory_metrics.update(
@@ -1032,5 +1072,6 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
             progress_fn(env_steps, M.to_float_dict(metrics))
         elif progress_fn is None:
             print(M.to_float_dict(metrics))
+        _profile_log(profile_enabled, "full_update", update_profile_t)
 
     return make_policy, params, normalizer_params, (memory_fast, memory_slow), metrics
