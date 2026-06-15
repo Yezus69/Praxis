@@ -21,6 +21,9 @@ class PMAConfig:
 
     guard_lambda: float = 1.0
     guard_lambda_max: float = 64.0
+    guard_grad_clip: float = 1.0
+    max_grad_norm: float = 10.0
+    diag_interval: int = 25
 
     projection_enabled: bool = True
     stability_enabled: bool = True

@@ -26,7 +26,7 @@ from pmac.router import Router
 from pmac.scheduler import Scheduler
 from pmac.sentinels import SentinelStore
 from pmac.stability import scale_by_stability, update_omega, zeros_omega_like
-from pmac.tree_utils import tree_add_scaled
+from pmac.tree_utils import tree_add_scaled, tree_norm, tree_scale
 
 
 @dataclass
@@ -85,6 +85,68 @@ def _ce_loss(params, x, y):
 @partial(jax.jit)
 def _current_grad(params, x, y):
     return jax.grad(_ce_loss)(params, x, y)
+
+
+def clip_guard_grad(g_guard, g_new, k):
+    """Clip one guard gradient to k * ||g_new|| + 1e-8 global norm."""
+    if k is None or float(k) <= 0.0:
+        return g_guard
+    guard_norm = tree_norm(g_guard)
+    limit = jnp.asarray(k, dtype=guard_norm.dtype) * tree_norm(g_new) + 1e-8
+    scale = jnp.minimum(1.0, limit / (guard_norm + 1e-8))
+    return tree_scale(g_guard, scale)
+
+
+def clip_global(g, max_norm):
+    """Clip a pytree gradient to max_norm global norm."""
+    if max_norm is None or float(max_norm) <= 0.0:
+        return g
+    norm = tree_norm(g)
+    scale = jnp.minimum(1.0, jnp.asarray(max_norm, dtype=norm.dtype) / (norm + 1e-8))
+    return tree_scale(g, scale)
+
+
+def _to_float(value) -> float:
+    return float(np.asarray(value))
+
+
+def _finite_norm(norm) -> bool:
+    return bool(np.asarray(jnp.isfinite(norm)))
+
+
+def _would_clip(norm, max_norm) -> bool:
+    if max_norm is None or float(max_norm) <= 0.0:
+        return False
+    return bool(np.asarray(norm > float(max_norm)))
+
+
+def optimizer_step_if_finite(opt, g_total, opt_state, params, max_grad_norm):
+    """Apply an optimizer step unless the combined gradient norm is non-finite."""
+    g_total_norm_preclip = tree_norm(g_total)
+    if not _finite_norm(g_total_norm_preclip):
+        return (
+            params,
+            opt_state,
+            {
+                "nonfinite_steps": 1,
+                "clipped": False,
+                "g_total_norm_preclip": g_total_norm_preclip,
+            },
+        )
+
+    clipped = _would_clip(g_total_norm_preclip, max_grad_norm)
+    g_step = clip_global(g_total, max_grad_norm)
+    updates, cand_opt_state = opt.update(g_step, opt_state, params)
+    candidate = optax.apply_updates(params, updates)
+    return (
+        candidate,
+        cand_opt_state,
+        {
+            "nonfinite_steps": 0,
+            "clipped": clipped,
+            "g_total_norm_preclip": g_total_norm_preclip,
+        },
+    )
 
 
 def _guard_hinge_loss(params, gx, gteacher, gtol, gweight, temperature):
@@ -157,6 +219,67 @@ def _result(acc_matrix, mode, source_tag, extra=None):
         source_tag=source_tag,
         extra=dict(extra or {}),
     )
+
+
+_DIAG_KEYS = (
+    "g_new_norm",
+    "g_proj_norm",
+    "g_total_norm_preclip",
+    "guard_norm",
+    "clipped",
+    "max_abs_logit",
+)
+
+
+def _empty_diag_samples():
+    return {key: [] for key in _DIAG_KEYS}
+
+
+def _summarize_values(values):
+    if not values:
+        return {"min": None, "mean": None, "max": None}
+    arr = np.asarray(values, dtype=np.float64)
+    return {
+        "min": float(np.min(arr)),
+        "mean": float(np.mean(arr)),
+        "max": float(np.max(arr)),
+    }
+
+
+def _summarize_diag(diag_samples, nonfinite_steps, n_clipped):
+    diag = {key: _summarize_values(diag_samples[key]) for key in _DIAG_KEYS}
+    diag["nonfinite_steps"] = int(nonfinite_steps)
+    diag["n_clipped"] = int(n_clipped)
+    diag["n_diag_samples"] = int(len(diag_samples["g_new_norm"]))
+    return diag
+
+
+def _append_diag_sample(
+    diag_samples,
+    params,
+    x_train,
+    g_new,
+    g_projected,
+    g_total_norm_preclip,
+    guard_grads,
+    clipped,
+):
+    guard_norm = 0.0
+    for g_guard in guard_grads:
+        guard_norm += _to_float(tree_norm(g_guard))
+    probe_n = min(32, int(x_train.shape[0]))
+    if probe_n > 0:
+        logits = mlp_apply(params, jnp.asarray(x_train[:probe_n]))
+        max_abs_logit = _to_float(jnp.max(jnp.abs(logits)))
+    else:
+        max_abs_logit = 0.0
+
+    diag_samples["g_new_norm"].append(_to_float(tree_norm(g_new)))
+    diag_samples["g_proj_norm"].append(_to_float(tree_norm(g_projected)))
+    diag_samples["g_total_norm_preclip"].append(_to_float(g_total_norm_preclip))
+    diag_samples["guard_norm"].append(float(guard_norm))
+    diag_samples["clipped"].append(1.0 if clipped else 0.0)
+    diag_samples["max_abs_logit"].append(max_abs_logit)
 
 
 def run_baseline(tasks, exp_cfg, seed) -> ContinualResult:
@@ -409,6 +532,10 @@ def run_pmac(tasks, exp_cfg, pma_cfg, seed, ablation=None) -> ContinualResult:
     rollback_count = 0
     global_step = 0
     guard_loss_trace = []
+    diag_samples = _empty_diag_samples()
+    nonfinite_steps = 0
+    n_clipped = 0
+    diag_interval = max(0, int(getattr(pma_cfg, "diag_interval", 25)))
 
     for task_i, task in enumerate(tasks):
         current_skill_id = task.name
@@ -466,6 +593,9 @@ def run_pmac(tasks, exp_cfg, pma_cfg, seed, ablation=None) -> ContinualResult:
                                 gweight,
                                 float(exp_cfg.temperature),
                             )
+                        grad_value = clip_guard_grad(
+                            grad_value, g_new, getattr(pma_cfg, "guard_grad_clip", 1.0)
+                        )
                         guard_losses.append(float(loss_value))
                         guard_grads.append(grad_value)
                         active_guard_nodes.append(node)
@@ -475,9 +605,10 @@ def run_pmac(tasks, exp_cfg, pma_cfg, seed, ablation=None) -> ContinualResult:
                     and ablation != "no_projection"
                     and guard_grads
                 ):
-                    g_total = project_conflicts(g_new, guard_grads)
+                    g_projected = project_conflicts(g_new, guard_grads)
                 else:
-                    g_total = g_new
+                    g_projected = g_new
+                g_total = g_projected
 
                 if ablation != "no_conservation":
                     for node, g_guard in zip(active_guard_nodes, guard_grads):
@@ -489,8 +620,27 @@ def run_pmac(tasks, exp_cfg, pma_cfg, seed, ablation=None) -> ContinualResult:
                         g_total, omega, alpha=pma_cfg.stability_alpha
                     )
 
-                updates, cand_opt_state = opt.update(g_total, opt_state, params)
-                candidate = optax.apply_updates(params, updates)
+                if guard_losses:
+                    guard_loss_trace.append(float(np.mean(guard_losses)))
+
+                candidate, cand_opt_state, update_info = optimizer_step_if_finite(
+                    opt, g_total, opt_state, params, getattr(pma_cfg, "max_grad_norm", 10.0)
+                )
+                nonfinite_steps += int(update_info["nonfinite_steps"])
+                n_clipped += int(update_info["clipped"])
+                if diag_interval > 0 and global_step % diag_interval == 0:
+                    _append_diag_sample(
+                        diag_samples,
+                        params,
+                        x_train,
+                        g_new,
+                        g_projected,
+                        update_info["g_total_norm_preclip"],
+                        guard_grads,
+                        update_info["clipped"],
+                    )
+                if update_info["nonfinite_steps"]:
+                    continue
 
                 audit_ran = (
                     getattr(pma_cfg, "gate_enabled", True)
@@ -521,9 +671,6 @@ def run_pmac(tasks, exp_cfg, pma_cfg, seed, ablation=None) -> ContinualResult:
                 else:
                     params = candidate
                     opt_state = cand_opt_state
-
-                if guard_losses:
-                    guard_loss_trace.append(float(np.mean(guard_losses)))
 
                 if (
                     pma_cfg.consolidation_enabled
@@ -595,6 +742,7 @@ def run_pmac(tasks, exp_cfg, pma_cfg, seed, ablation=None) -> ContinualResult:
             "rollback_count": int(rollback_count),
             "protected_skills": list(atlas.nodes.keys()),
             "guard_loss_trace": guard_loss_trace,
+            "diag": _summarize_diag(diag_samples, nonfinite_steps, n_clipped),
             "optimizer": exp_cfg.optimizer,
             "use_jit": use_jit,
         },
@@ -607,4 +755,7 @@ __all__ = [
     "run_baseline",
     "run_pmac",
     "compute_metrics",
+    "clip_guard_grad",
+    "clip_global",
+    "optimizer_step_if_finite",
 ]

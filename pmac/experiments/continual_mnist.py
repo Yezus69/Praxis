@@ -86,7 +86,15 @@ def _run_timed(seed, run_fn):
     wall_s = time.perf_counter() - start
     result.extra = dict(result.extra)
     result.extra["wall_s"] = float(wall_s)
-    print(f"{result.mode} seed={int(seed)} wall_s={wall_s:.3f}")
+    diag = result.extra.get("diag", {})
+    nonfinite_steps = int(diag.get("nonfinite_steps", 0))
+    preclip_max = diag.get("g_total_norm_preclip", {}).get("max")
+    preclip_text = "nan" if preclip_max is None else f"{float(preclip_max):.6g}"
+    print(
+        f"{result.mode} seed={int(seed)} wall_s={wall_s:.3f} "
+        f"nonfinite_steps={nonfinite_steps} "
+        f"g_total_norm_preclip.max={preclip_text}"
+    )
     return result
 
 
@@ -105,11 +113,15 @@ def main(argv=None):
     parser.add_argument("--out", default="runs/pmac_mnist")
     parser.add_argument("--max-eval", type=int, default=2000)
     parser.add_argument("--guard-lambda", type=float, default=None)
+    parser.add_argument("--guard-grad-clip", type=float, default=None)
+    parser.add_argument("--max-grad-norm", type=float, default=None)
     parser.add_argument("--stability-alpha", type=float, default=None)
     parser.add_argument("--replay-batch", type=int, default=None)
     parser.add_argument("--num-guard-nodes", type=int, default=None)
     parser.add_argument("--audit-interval", type=int, default=None)
     parser.add_argument("--gate", choices=("sentinel", "loose", "off"), default="sentinel")
+    parser.add_argument("--allowed-regression", type=float, default=None,
+                        help="sentinel-accuracy regression tolerance for the gate (overrides gate preset)")
     parser.add_argument("--no-jit", action="store_true")
     parser.add_argument("--stability", choices=("on", "off"), default="on")
     parser.add_argument("--consolidation", choices=("on", "off"), default="on")
@@ -145,6 +157,10 @@ def main(argv=None):
     }
     if args.guard_lambda is not None:
         pma_overrides["guard_lambda"] = args.guard_lambda
+    if args.guard_grad_clip is not None:
+        pma_overrides["guard_grad_clip"] = args.guard_grad_clip
+    if args.max_grad_norm is not None:
+        pma_overrides["max_grad_norm"] = args.max_grad_norm
     if args.stability_alpha is not None:
         pma_overrides["stability_alpha"] = args.stability_alpha
     if args.num_guard_nodes is not None:
@@ -161,6 +177,8 @@ def main(argv=None):
         )
     elif args.gate == "off":
         pma_overrides["gate_enabled"] = False
+    if args.allowed_regression is not None:
+        pma_overrides["allowed_regression"] = args.allowed_regression
     pma_cfg = replace(PMAConfig(), **pma_overrides)
 
     results_by_mode = {}
