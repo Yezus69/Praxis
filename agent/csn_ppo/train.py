@@ -46,10 +46,12 @@ from agent.csn_ppo.guarded_loss import (
 )
 from agent.csn_ppo.memory import (
     BehavioralMemoryBatch,
+    age_memory,
     concat_memory_batches,
     init_behavioral_memory,
     insert_atoms,
-    sample_memory,
+    sample_memory_for_guard,
+    source_cluster_quotas,
 )
 from agent.csn_ppo.validation import (
     ValidationBank,
@@ -326,6 +328,7 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
         config.obs_dim,
         config.action_dim,
     )
+    memory_quotas = source_cluster_quotas(config.num_clusters)
     champion = mosaic_teacher.init_champion()
     sentinel_bank = None
     champions = None
@@ -616,6 +619,8 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
             split_rng,
             train_batch_size,
         )
+        memory_fast = age_memory(memory_fast)
+        memory_slow = age_memory(memory_slow)
 
         obs_flat = train_data.observation.reshape((-1, config.obs_dim))
         adv_abs = _estimate_advantage_abs(
@@ -635,10 +640,15 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
             champions=champions,
             global_champion=champion,
         )
-        memory_fast = insert_atoms(memory_fast, mined_batch)
+        memory_fast = insert_atoms(memory_fast, mined_batch, cfg=config, quotas=memory_quotas)
         slow_mined_batch = _filter_memory_batch_host(mined_batch, slow_mask)
         if slow_mined_batch is not None:
-            memory_slow = insert_atoms(memory_slow, slow_mined_batch)
+            memory_slow = insert_atoms(
+                memory_slow,
+                slow_mined_batch,
+                cfg=config,
+                quotas=memory_quotas,
+            )
 
         if update % int(config.synthetic_probe_insert_interval) == 0:
             probe_obs = coverage_probes.generate_cover_probes(
@@ -659,7 +669,12 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
                 probe_batch.weight > config.slow_memory_threshold,
             )
             if slow_probe_batch is not None:
-                memory_slow = insert_atoms(memory_slow, slow_probe_batch)
+                memory_slow = insert_atoms(
+                    memory_slow,
+                    slow_probe_batch,
+                    cfg=config,
+                    quotas=memory_quotas,
+                )
 
         env_steps = (update + 1) * env_steps_per_update
         guard_active = (
@@ -678,8 +693,18 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
 
         for epoch in range(int(config.max_updates_per_batch)):
             rng, mem_rng, slow_mem_rng, epoch_rng, holdout_rng = jax.random.split(rng, 5)
-            mb_fast = sample_memory(memory_fast, mem_rng, config.memory_batch_size // 2)
-            mb_slow = sample_memory(memory_slow, slow_mem_rng, config.memory_batch_size // 2)
+            mb_fast = sample_memory_for_guard(
+                memory_fast,
+                mem_rng,
+                config.memory_batch_size // 2,
+                memory_quotas,
+            )
+            mb_slow = sample_memory_for_guard(
+                memory_slow,
+                slow_mem_rng,
+                config.memory_batch_size // 2,
+                memory_quotas,
+            )
             memory_batch = concat_memory_batches(mb_fast, mb_slow)
             params_candidate, opt_state_candidate, epoch_metrics = sgd_epoch(
                 params,
@@ -806,7 +831,12 @@ def train(environment, config: CSNPPOConfig, progress_fn=None, eval_env=None):
                     cfg=config,
                 )
                 if failed_atoms is not None:
-                    memory_slow = insert_atoms(memory_slow, failed_atoms)
+                    memory_slow = insert_atoms(
+                        memory_slow,
+                        failed_atoms,
+                        cfg=config,
+                        quotas=memory_quotas,
+                    )
                 coverage_drop = sentinel_bank.best_coverage - raw_sentinel_metrics["coverage"]
                 collision_increase = (
                     raw_sentinel_metrics["collision_rate"]

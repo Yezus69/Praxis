@@ -1,6 +1,6 @@
 """CSN-PPO configuration."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from praxis import contract
 
@@ -44,6 +44,9 @@ class CSNPPOConfig:
     memory_batch_size: int = 2048
     min_memory_size_before_guard: int = 4096
     guard_warmup_steps: int = 0
+    mem_lambda_rare: float = 1.0
+    mem_lambda_sentinel: float = 4.0
+    mem_lambda_age: float = 0.01
 
     # Guard budgets
     guard_policy_coef: float = 1.0
@@ -158,3 +161,14 @@ def validate_long_run_safety(cfg):
             "Long CSN-PPO runs require --enable-sentinel. "
             "Use --allow-no-sentinel-for-debug only for ablations."
         )
+
+
+def resolve_long_run_config(cfg: CSNPPOConfig) -> CSNPPOConfig:
+    # P8 extends this preset.
+    return replace(
+        cfg,
+        memory_size_fast=1_048_576,
+        memory_size_slow=262_144,
+        memory_batch_size=4096,
+        enable_sentinel=True,
+    )

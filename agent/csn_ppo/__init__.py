@@ -1,6 +1,6 @@
 """Pure-functional CSN-PPO Phase 1 core."""
 
-from agent.csn_ppo.config import CSNPPOConfig
+from agent.csn_ppo.config import CSNPPOConfig, resolve_long_run_config
 from agent.csn_ppo.gradient_projection import (
     combine_safe_and_guard_grads,
     project_conflicting_gradient,
@@ -34,8 +34,13 @@ from agent.csn_ppo.memory import (
     age_memory,
     init_behavioral_memory,
     insert_atoms,
+    insert_atoms_stratified,
     sample_memory,
+    sample_memory_for_guard,
+    sample_memory_stratified,
     should_insert_slow_memory,
+    source_cluster_quotas,
+    stratified_memory_ready,
 )
 from agent.csn_ppo.synthetic_probes import (
     analytic_no_obstacle_teacher,
@@ -74,6 +79,7 @@ __all__ = [
     "init_guard_pressure_state",
     "init_behavioral_memory",
     "insert_atoms",
+    "insert_atoms_stratified",
     "kl_budget",
     "make_probe_blocked_path",
     "make_probe_no_obstacle",
@@ -83,8 +89,13 @@ __all__ = [
     "obstacle_distances",
     "pack_contract_obs",
     "project_conflicting_gradient",
+    "resolve_long_run_config",
     "sample_memory",
+    "sample_memory_for_guard",
+    "sample_memory_stratified",
     "should_insert_slow_memory",
+    "source_cluster_quotas",
+    "stratified_memory_ready",
     "sort_and_pad_obstacles",
     "success_proximity",
     "tree_add",
