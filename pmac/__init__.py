@@ -10,6 +10,7 @@ from pmac.behavior_distance import (
     value_abs,
 )
 from pmac.conservation import AnchorBatch, anchor_loss, conservation_loss, hinge_violation
+from pmac.config import ExperimentConfig, PMAConfig
 from pmac.growth import GrowthController, GrowthState, should_grow
 from pmac.projection import plasticity_ratio, project_conflicts
 from pmac.stability import scale_by_stability, update_omega, zeros_omega_like
@@ -28,6 +29,8 @@ __version__ = "0.1.0"
 
 __all__ = [
     "__version__",
+    "PMAConfig",
+    "ExperimentConfig",
     "DomainAdapter",
     "DISTANCES",
     "kl_categorical",
