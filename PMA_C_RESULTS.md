@@ -58,6 +58,28 @@ PMA-C forgets **6.8× less** than the baseline (0.035 vs 0.239) and turns backwa
 −0.03. The "Task-0-across-training" panel (right) shows the baseline degrading monotonically 0.96→0.51
 as new tasks arrive while PMA-C stays flat at ~0.95. `nonfinite_steps = 0` for all PMA-C runs.
 
+## 3b. Second benchmark — Split-MNIST, class-incremental (3 seeds)
+
+A different forgetting mechanism: 5 tasks of 2 digit classes each ({0,1},…,{8,9}), one shared 10-way
+head, **no task ID at test** (class-incremental — the hardest standard CL setting). Figure:
+`pma_c_results/split_mnist/fig_split.png`; data: `pma_c_results/split_mnist/results.json`.
+
+| mode | ACC | BWT | Forgetting | mean Retention | worst Retention |
+|---|---|---|---|---|---|
+| baseline | 0.197 ± 0.000 | −0.995 ± 0.001 | 0.995 ± 0.001 | 0.200 | **0.000** |
+| **PMA-C** | **0.962 ± 0.002** | −0.007 | 0.007 | 0.994 | 0.988 |
+| **PMA-C − replay** | **0.964 ± 0.001** | −0.015 | 0.015 | 0.988 | **0.976** |
+
+The baseline forgets **completely** — worst-task retention **0.000**, BWT −0.995 — collapsing to predict
+only the most recent task's classes (ACC 0.197 ≈ 1/5). PMA-C retains ~98%.
+
+**Decisive decomposition result:** **PMA-C *without replay* (ACC 0.964) is statistically identical to
+full PMA-C (0.962)**, and both ≈ near-perfect, versus baseline 0.197. This directly refutes the "it's
+just rehearsal" hypothesis: with *no* replay augmentation, the **gradient-geometry mechanisms alone**
+(hinge conservation to frozen teacher logits + tangent-cone projection + synaptic stability, all using
+the stored anchors only for the *guard gradient*, never mixed into the loss) retain ~98% while the
+baseline retains 0%. On this benchmark replay is not even necessary.
+
 ## 4. Credit decomposition — what actually drives the retention (3 seeds)
 
 Source: `pma_c_results/decomp_5task/results.json` (5-task, matched). This is the honest answer to
