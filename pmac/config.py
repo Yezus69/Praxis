@@ -25,6 +25,7 @@ class PMAConfig:
     projection_enabled: bool = True
     stability_enabled: bool = True
     consolidation_enabled: bool = True
+    gate_enabled: bool = True
     growth_enabled: bool = True
 
     growth_min_ratio: float = 0.10
@@ -42,8 +43,12 @@ class PMAConfig:
     full_audit_interval: int = 5_000
     audit_interval: int = 100
 
-    delta_current: float = 0.02
-    delta_cons: float = 1e-4
+    delta_current: float = 0.05
+    # Gate leniency: the principled regression signal is the sentinel-accuracy check
+    # (allowed_regression). The raw guard-loss epsilon must be loose or it vetoes nearly
+    # all new-task learning (an absolute 1e-4 caused ~83% of gate checks to roll back,
+    # collapsing plasticity). Keep it well above the typical per-step guard-loss increase.
+    delta_cons: float = 0.25
     allowed_regression: float = 0.05
     skill_solved_threshold: float = 0.95
     num_guard_nodes: int = 4
@@ -63,6 +68,7 @@ class ExperimentConfig:
     num_guard_nodes: int = 4
     seed: int = 0
     max_eval: int = 2_000
+    use_jit: bool = True
 
 
 __all__ = ["PMAConfig", "ExperimentConfig"]

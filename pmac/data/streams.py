@@ -225,7 +225,7 @@ def _seed_from_key(key) -> int:
     return int(seed)
 
 
-def iterate_minibatches(key, x, y, batch_size):
+def iterate_minibatches(key, x, y, batch_size, drop_last: bool = False):
     """Yield deterministic shuffled minibatches from host arrays."""
     x = np.asarray(x)
     y = np.asarray(y)
@@ -233,6 +233,8 @@ def iterate_minibatches(key, x, y, batch_size):
     indices = rng.permutation(x.shape[0])
     batch_size = int(batch_size)
     for start in range(0, indices.shape[0], batch_size):
+        if drop_last and start + batch_size > indices.shape[0]:
+            break
         batch_idx = indices[start : start + batch_size]
         yield x[batch_idx], y[batch_idx]
 

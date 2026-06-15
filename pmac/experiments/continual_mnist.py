@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -79,6 +80,16 @@ def _print_table(aggregate):
         print(row)
 
 
+def _run_timed(seed, run_fn):
+    start = time.perf_counter()
+    result = run_fn()
+    wall_s = time.perf_counter() - start
+    result.extra = dict(result.extra)
+    result.extra["wall_s"] = float(wall_s)
+    print(f"{result.mode} seed={int(seed)} wall_s={wall_s:.3f}")
+    return result
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--stream", choices=("permuted_mnist", "split_mnist", "synthetic"), default="permuted_mnist")
@@ -93,6 +104,15 @@ def main(argv=None):
     parser.add_argument("--ablations", default="none")
     parser.add_argument("--out", default="runs/pmac_mnist")
     parser.add_argument("--max-eval", type=int, default=2000)
+    parser.add_argument("--guard-lambda", type=float, default=None)
+    parser.add_argument("--stability-alpha", type=float, default=None)
+    parser.add_argument("--replay-batch", type=int, default=None)
+    parser.add_argument("--num-guard-nodes", type=int, default=None)
+    parser.add_argument("--audit-interval", type=int, default=None)
+    parser.add_argument("--gate", choices=("sentinel", "loose", "off"), default="sentinel")
+    parser.add_argument("--no-jit", action="store_true")
+    parser.add_argument("--stability", choices=("on", "off"), default="on")
+    parser.add_argument("--consolidation", choices=("on", "off"), default="on")
     args = parser.parse_args(argv)
 
     seeds = _parse_seeds(args.seeds)
@@ -109,8 +129,39 @@ def main(argv=None):
         temperature=args.temperature,
         seed=seeds[0] if seeds else 0,
         max_eval=args.max_eval,
+        use_jit=not args.no_jit,
     )
-    pma_cfg = PMAConfig()
+    exp_overrides = {}
+    if args.replay_batch is not None:
+        exp_overrides["replay_batch"] = args.replay_batch
+    if args.num_guard_nodes is not None:
+        exp_overrides["num_guard_nodes"] = args.num_guard_nodes
+    if exp_overrides:
+        exp_cfg = replace(exp_cfg, **exp_overrides)
+
+    pma_overrides = {
+        "stability_enabled": args.stability == "on",
+        "consolidation_enabled": args.consolidation == "on",
+    }
+    if args.guard_lambda is not None:
+        pma_overrides["guard_lambda"] = args.guard_lambda
+    if args.stability_alpha is not None:
+        pma_overrides["stability_alpha"] = args.stability_alpha
+    if args.num_guard_nodes is not None:
+        pma_overrides["num_guard_nodes"] = args.num_guard_nodes
+    if args.audit_interval is not None:
+        pma_overrides["audit_interval"] = args.audit_interval
+    if args.gate == "loose":
+        pma_overrides.update(
+            {
+                "delta_current": 1.0,
+                "delta_cons": 1e9,
+                "allowed_regression": 1.0,
+            }
+        )
+    elif args.gate == "off":
+        pma_overrides["gate_enabled"] = False
+    pma_cfg = replace(PMAConfig(), **pma_overrides)
 
     results_by_mode = {}
     first_seed_results = {}
@@ -124,18 +175,20 @@ def main(argv=None):
         seed_cfg = replace(exp_cfg, seed=seed)
 
         seed_results = {}
-        baseline = run_baseline(tasks, seed_cfg, seed)
+        baseline = _run_timed(seed, lambda: run_baseline(tasks, seed_cfg, seed))
         seed_results[baseline.mode] = baseline
         results_by_mode.setdefault(baseline.mode, []).append(baseline)
 
-        full = run_pmac(tasks, seed_cfg, pma_cfg, seed, ablation=None)
+        full = _run_timed(seed, lambda: run_pmac(tasks, seed_cfg, pma_cfg, seed, ablation=None))
         seed_results[full.mode] = full
         results_by_mode.setdefault(full.mode, []).append(full)
 
         for ablation in ablations:
             if ablation is None:
                 continue
-            result = run_pmac(tasks, seed_cfg, pma_cfg, seed, ablation=ablation)
+            result = _run_timed(
+                seed, lambda ablation=ablation: run_pmac(tasks, seed_cfg, pma_cfg, seed, ablation=ablation)
+            )
             seed_results[result.mode] = result
             results_by_mode.setdefault(result.mode, []).append(result)
 

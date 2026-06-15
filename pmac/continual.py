@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -19,7 +20,7 @@ from pmac.conservation import conservation_loss
 from pmac.consolidation import consolidate
 from pmac.data.streams import iterate_minibatches
 from pmac.memory_selector import importance_scores, select_indices
-from pmac.models.mlp import init_mlp
+from pmac.models.mlp import init_mlp, mlp_apply
 from pmac.projection import project_conflicts
 from pmac.router import Router
 from pmac.scheduler import Scheduler
@@ -71,6 +72,38 @@ def _make_optimizer(exp_cfg):
 
 def _batch(x, y):
     return {"x": jnp.asarray(x), "y": jnp.asarray(y, dtype=jnp.int32)}
+
+
+def _ce_loss(params, x, y):
+    logits = mlp_apply(params, x)
+    losses = optax.softmax_cross_entropy_with_integer_labels(
+        logits, jnp.asarray(y, dtype=jnp.int32)
+    )
+    return jnp.mean(losses)
+
+
+@partial(jax.jit)
+def _current_grad(params, x, y):
+    return jax.grad(_ce_loss)(params, x, y)
+
+
+def _guard_hinge_loss(params, gx, gteacher, gtol, gweight, temperature):
+    current = mlp_apply(params, gx)
+    d = kl_categorical(gteacher, current, temperature)
+    violation = jnp.maximum(d - jnp.asarray(gtol), 0.0)
+    return jnp.mean(jnp.asarray(gweight) * violation * violation)
+
+
+@partial(jax.jit, static_argnums=(5,))
+def _guard_grad(params, gx, gteacher, gtol, gweight, temperature):
+    return jax.grad(_guard_hinge_loss)(params, gx, gteacher, gtol, gweight, temperature)
+
+
+@partial(jax.jit, static_argnums=(5,))
+def _guard_value_and_grad(params, gx, gteacher, gtol, gweight, temperature):
+    return jax.value_and_grad(_guard_hinge_loss)(
+        params, gx, gteacher, gtol, gweight, temperature
+    )
 
 
 def _eval_set(task, max_eval):
@@ -130,6 +163,7 @@ def run_baseline(tasks, exp_cfg, seed) -> ContinualResult:
     from pmac.adapters.supervised import SupervisedAdapter
 
     exp_cfg = exp_cfg or ExperimentConfig(seed=seed)
+    use_jit = bool(getattr(exp_cfg, "use_jit", True))
     adapter = SupervisedAdapter(temperature=exp_cfg.temperature)
     params = _init_params(tasks, exp_cfg, seed)
     opt = _make_optimizer(exp_cfg)
@@ -140,10 +174,15 @@ def run_baseline(tasks, exp_cfg, seed) -> ContinualResult:
         for epoch in range(int(exp_cfg.epochs_per_task)):
             key = jax.random.PRNGKey(int(seed) + 10_007 * task_i + epoch)
             for x_np, y_np in iterate_minibatches(
-                key, task.train_x, task.train_y, exp_cfg.batch_size
+                key, task.train_x, task.train_y, exp_cfg.batch_size, drop_last=True
             ):
-                batch = _batch(x_np, y_np)
-                grads = jax.grad(adapter.current_loss)(params, batch)
+                if use_jit:
+                    grads = _current_grad(
+                        params, jnp.asarray(x_np), jnp.asarray(y_np, dtype=jnp.int32)
+                    )
+                else:
+                    batch = _batch(x_np, y_np)
+                    grads = jax.grad(adapter.current_loss)(params, batch)
                 updates, opt_state = opt.update(grads, opt_state, params)
                 params = optax.apply_updates(params, updates)
         acc_matrix[task_i] = evaluate_all_tasks(
@@ -154,7 +193,7 @@ def run_baseline(tasks, exp_cfg, seed) -> ContinualResult:
         acc_matrix,
         mode="baseline",
         source_tag=_source_tag(tasks),
-        extra={"seed": int(seed), "optimizer": exp_cfg.optimizer},
+        extra={"seed": int(seed), "optimizer": exp_cfg.optimizer, "use_jit": use_jit},
     )
 
 
@@ -170,6 +209,27 @@ def _guard_loss(params, node, adapter, temperature, key=None, n=None):
     return conservation_loss(behavior_fn, params, batch, distance_fn)
 
 
+def _rng_from_key(key):
+    if isinstance(key, np.random.Generator):
+        return key
+    if key is None:
+        return np.random.default_rng()
+    arr = np.asarray(key, dtype=np.uint32).reshape(-1)
+    seed = 0
+    for value in arr:
+        seed = (1664525 * seed + int(value) + 1013904223) % (2**32)
+    return np.random.default_rng(seed)
+
+
+def _sample_examples_no_replace(node, key, n):
+    if node.anchors.label is None or len(node.anchors) == 0 or n <= 0:
+        return None
+    n = min(int(n), len(node.anchors))
+    rng = _rng_from_key(key)
+    idx = rng.choice(len(node.anchors), size=n, replace=False)
+    return node.anchors.x[idx], node.anchors.label[idx]
+
+
 def _sample_replay(atlas, key, n):
     nodes = [node for node in atlas.protected_nodes() if node.anchors.label is not None]
     nodes = [node for node in nodes if len(node.anchors) > 0]
@@ -181,16 +241,28 @@ def _sample_replay(atlas, key, n):
     ys = []
     for node in nodes:
         sample_key = rng.integers(0, 2**31 - 1)
-        try:
-            x_old, y_old = node.anchors.sample_examples(sample_key, per_node)
-        except ValueError:
+        sampled = _sample_examples_no_replace(node, sample_key, per_node)
+        if sampled is None:
             continue
+        x_old, y_old = sampled
         xs.append(x_old)
         ys.append(y_old)
     if not xs:
-        return None
+        pool_x = np.concatenate([node.anchors.x for node in nodes], axis=0)
+        pool_y = np.concatenate([node.anchors.label for node in nodes], axis=0)
+        replace = pool_x.shape[0] < int(n)
+        idx = rng.choice(pool_x.shape[0], size=int(n), replace=replace)
+        return pool_x[idx], pool_y[idx]
     x = np.concatenate(xs, axis=0)[:n]
     y = np.concatenate(ys, axis=0)[:n]
+    if x.shape[0] < int(n):
+        pool_x = np.concatenate([node.anchors.x for node in nodes], axis=0)
+        pool_y = np.concatenate([node.anchors.label for node in nodes], axis=0)
+        remaining = int(n) - int(x.shape[0])
+        replace = pool_x.shape[0] < remaining
+        idx = rng.choice(pool_x.shape[0], size=remaining, replace=replace)
+        x = np.concatenate([x, pool_x[idx]], axis=0)
+        y = np.concatenate([y, pool_y[idx]], axis=0)
     return x, y
 
 
@@ -204,6 +276,32 @@ def _maybe_mix_replay(x_np, y_np, atlas, step, exp_cfg, ablation):
     x = np.concatenate([x_np, x_old], axis=0)
     y = np.concatenate([y_np, y_old], axis=0)
     return x, y
+
+
+def _guard_arrays_from_indices(node, idx):
+    anchors = node.anchors
+    return (
+        jnp.asarray(anchors.x[idx]),
+        jnp.asarray(anchors.teacher[idx]),
+        jnp.asarray(anchors.tolerance[idx]),
+        jnp.asarray(anchors.weight[idx]),
+    )
+
+
+def _sample_guard_arrays(node, key, n):
+    if len(node.anchors) == 0 or n <= 0:
+        return None
+    rng = _rng_from_key(key)
+    replace = len(node.anchors) < int(n)
+    idx = rng.choice(len(node.anchors), size=int(n), replace=replace)
+    return _guard_arrays_from_indices(node, idx)
+
+
+def _all_guard_arrays(node):
+    if len(node.anchors) == 0:
+        return None
+    idx = np.arange(len(node.anchors), dtype=np.int64)
+    return _guard_arrays_from_indices(node, idx)
 
 
 def _certify_task(
@@ -294,6 +392,7 @@ def run_pmac(tasks, exp_cfg, pma_cfg, seed, ablation=None) -> ContinualResult:
 
     exp_cfg = exp_cfg or ExperimentConfig(seed=seed)
     pma_cfg = pma_cfg or PMAConfig()
+    use_jit = bool(getattr(exp_cfg, "use_jit", True))
     adapter = SupervisedAdapter(temperature=exp_cfg.temperature)
     params = _init_params(tasks, exp_cfg, seed)
     omega = zeros_omega_like(params)
@@ -316,15 +415,20 @@ def run_pmac(tasks, exp_cfg, pma_cfg, seed, ablation=None) -> ContinualResult:
         for epoch in range(int(exp_cfg.epochs_per_task)):
             key = jax.random.PRNGKey(int(seed) + 10_007 * task_i + epoch)
             for x_np, y_np in iterate_minibatches(
-                key, task.train_x, task.train_y, exp_cfg.batch_size
+                key, task.train_x, task.train_y, exp_cfg.batch_size, drop_last=True
             ):
                 global_step += 1
                 x_train, y_train = _maybe_mix_replay(
                     x_np, y_np, atlas, global_step, exp_cfg, ablation
                 )
-                batch = _batch(x_train, y_train)
                 prev_params = params
-                g_new = jax.grad(adapter.current_loss)(params, batch)
+                if use_jit:
+                    g_new = _current_grad(
+                        params, jnp.asarray(x_train), jnp.asarray(y_train, dtype=jnp.int32)
+                    )
+                else:
+                    batch = _batch(x_train, y_train)
+                    g_new = jax.grad(adapter.current_loss)(params, batch)
 
                 guard_nodes = atlas.sample_protected_nodes(
                     current_skill_id,
@@ -332,20 +436,39 @@ def run_pmac(tasks, exp_cfg, pma_cfg, seed, ablation=None) -> ContinualResult:
                 )
                 guard_grads = []
                 guard_losses = []
+                active_guard_nodes = []
                 if ablation != "no_conservation":
                     for guard_i, node in enumerate(guard_nodes):
-                        n_guard = min(len(node.anchors), max(1, int(exp_cfg.replay_batch)))
-                        loss_fn = lambda p, n=node, gi=guard_i: _guard_loss(
-                            p,
-                            n,
-                            adapter,
-                            exp_cfg.temperature,
-                            key=global_step + gi * 997,
-                            n=n_guard,
+                        n_guard = max(1, int(exp_cfg.replay_batch))
+                        guard_arrays = _sample_guard_arrays(
+                            node, global_step + guard_i * 997, n_guard
                         )
-                        loss_value, grad_value = jax.value_and_grad(loss_fn)(params)
+                        if guard_arrays is None:
+                            continue
+                        gx, gteacher, gtol, gweight = guard_arrays
+                        if use_jit:
+                            loss_value, grad_value = _guard_value_and_grad(
+                                params,
+                                gx,
+                                gteacher,
+                                gtol,
+                                gweight,
+                                float(exp_cfg.temperature),
+                            )
+                        else:
+                            loss_value, grad_value = jax.value_and_grad(
+                                _guard_hinge_loss
+                            )(
+                                params,
+                                gx,
+                                gteacher,
+                                gtol,
+                                gweight,
+                                float(exp_cfg.temperature),
+                            )
                         guard_losses.append(float(loss_value))
                         guard_grads.append(grad_value)
+                        active_guard_nodes.append(node)
 
                 if (
                     pma_cfg.projection_enabled
@@ -357,7 +480,7 @@ def run_pmac(tasks, exp_cfg, pma_cfg, seed, ablation=None) -> ContinualResult:
                     g_total = g_new
 
                 if ablation != "no_conservation":
-                    for node, g_guard in zip(guard_nodes, guard_grads):
+                    for node, g_guard in zip(active_guard_nodes, guard_grads):
                         lam = min(float(node.guard_lambda), float(pma_cfg.guard_lambda_max))
                         g_total = tree_add_scaled(g_total, g_guard, lam)
 
@@ -370,7 +493,8 @@ def run_pmac(tasks, exp_cfg, pma_cfg, seed, ablation=None) -> ContinualResult:
                 candidate = optax.apply_updates(params, updates)
 
                 audit_ran = (
-                    ablation != "no_gate"
+                    getattr(pma_cfg, "gate_enabled", True)
+                    and ablation != "no_gate"
                     and pma_cfg.audit_interval > 0
                     and global_step % int(pma_cfg.audit_interval) == 0
                     and bool(atlas.protected_nodes())
@@ -433,11 +557,29 @@ def run_pmac(tasks, exp_cfg, pma_cfg, seed, ablation=None) -> ContinualResult:
             seed,
             ablation,
         )
-        grad_guard = jax.grad(
-            lambda p, n=node: _guard_loss(
-                p, n, adapter, exp_cfg.temperature, key=task_i + 1, n=None
-            )
-        )(params)
+        guard_arrays = _all_guard_arrays(node)
+        if guard_arrays is None:
+            grad_guard = zeros_omega_like(params)
+        else:
+            gx, gteacher, gtol, gweight = guard_arrays
+            if use_jit:
+                grad_guard = _guard_grad(
+                    params,
+                    gx,
+                    gteacher,
+                    gtol,
+                    gweight,
+                    float(exp_cfg.temperature),
+                )
+            else:
+                grad_guard = jax.grad(_guard_hinge_loss)(
+                    params,
+                    gx,
+                    gteacher,
+                    gtol,
+                    gweight,
+                    float(exp_cfg.temperature),
+                )
         omega = update_omega(omega, params, grad_guard, pma_cfg.stability_decay)
         safe = SafeCheckpoint(params)
         safe_opt_state = deep_copy_pytree(opt_state)
@@ -454,6 +596,7 @@ def run_pmac(tasks, exp_cfg, pma_cfg, seed, ablation=None) -> ContinualResult:
             "protected_skills": list(atlas.nodes.keys()),
             "guard_loss_trace": guard_loss_trace,
             "optimizer": exp_cfg.optimizer,
+            "use_jit": use_jit,
         },
     )
 
