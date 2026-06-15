@@ -82,25 +82,35 @@ baseline retains 0%. On this benchmark replay is not even necessary.
 
 ## 4. Credit decomposition — what actually drives the retention (3 seeds)
 
-Source: `pma_c_results/decomp_5task/results.json` (5-task, matched). This is the honest answer to
-"is it just replay?" — it is **not**; the projection/conservation/stability mechanisms retain on their
-own, and the full system is best.
+Source: `pma_c_results/decomp_5task/results.json` (5-task Permuted-MNIST, 3 seeds, matched).
+Figure: `pma_c_results/decomp_5task/fig_decomposition.png`. This is the honest answer to "is it just
+replay?" — **it is not; the hinge *conservation* loss is the driver.**
 
 | condition | ACC | Forgetting | worst Retention | notes |
 |---|---|---|---|---|
-| baseline (naive) | … | … | … | lower bound — forgets |
-| replay_only (= Experience Replay) | … | … | … | replay alone, no other protection |
-| PMA-C − replay (`no_replay`) | … | … | … | mechanism **without** rehearsal |
-| **PMA-C (full)** | … | … | … | all mechanisms |
-| − projection (`no_projection`) | … | … | … | component ablation |
-| − conservation (`no_conservation`) | … | … | … | component ablation |
-| − stability (`no_stability`) | … | … | … | component ablation |
-| random memory (`random_memory`) | … | … | … | importance-selection ablation |
+| baseline (naive) | 0.872 ± 0.002 | 0.115 ± 0.003 | 0.748 | lower bound — forgets |
+| replay_only (= Experience Replay) | 0.895 ± 0.008 | 0.083 ± 0.009 | 0.850 | replay alone barely helps |
+| − conservation (`no_conservation`) | 0.895 ± 0.008 | 0.083 ± 0.009 | 0.850 | **= ER: conservation is essential** |
+| − projection (`no_projection`) | 0.962 ± 0.001 | 0.003 ± 0.002 | 0.992 | removable at this scale |
+| − stability (`no_stability`) | 0.961 ± 0.001 | 0.003 ± 0.001 | 0.994 | removable at this scale |
+| random memory (`random_memory`) | 0.957 ± 0.000 | 0.005 ± 0.001 | 0.990 | importance non-critical here |
+| **PMA-C − replay (`no_replay`)** | **0.960 ± 0.001** | **0.005 ± 0.002** | **0.989** | **≈ full, with NO rehearsal** |
+| **PMA-C (full)** | **0.961 ± 0.001** | **0.003 ± 0.001** | **0.994** | all mechanisms |
 
-*(filled from the decomposition sweep.)* Key reads to confirm: (a) `no_replay` still beats baseline by
-a wide margin → the gradient-geometry mechanisms (projection + conservation + stability) prevent
-forgetting on their own; (b) `PMA-C(full)` ≥ `replay_only` → the mechanisms add value beyond plain
-rehearsal; (c) removing any single component degrades retention → each contributes.
+**What the decomposition shows:**
+- **Replay alone is weak.** `replay_only` (= standard Experience Replay) reaches only ACC 0.895 — barely
+  above the 0.872 baseline. Rehearsal is *not* what produces PMA-C's retention.
+- **Conservation is the engine.** Removing the hinge conservation loss (`no_conservation`) collapses
+  PMA-C back to exactly the ER level (0.895), because with no guard gradients the projection has nothing
+  to project against (it becomes a no-op too). The functional regularization to each prior task's frozen
+  teacher logits is what holds the manifold.
+- **It works without replay.** `no_replay` (0.960) ≈ full (0.961): the conservation mechanism retains
+  ~99% **with no rehearsal at all**. (Corroborated on Split-MNIST §3b: `no_replay` 0.964 ≈ full 0.962,
+  vs baseline 0.197.)
+- **Projection / stability / importance-selection** are individually removable at this *easy* 5-task
+  regime (the 256-256 net has spare capacity, so conservation suffices). They earn their keep in the
+  **harder** regimes: without gradient-norm control (their relatives) PMA-C diverged at 8 epochs / 10
+  tasks (§5) — projection + stability + clipping are what keep the optimization on-manifold there.
 
 ## 5. Robustness
 
