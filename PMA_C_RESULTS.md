@@ -135,8 +135,10 @@ replay?" — **it is not; the hinge *conservation* loss is the driver.**
   to project against (it becomes a no-op too). The functional regularization to each prior task's frozen
   teacher logits is what holds the manifold.
 - **It works without replay.** `no_replay` (0.960) ≈ full (0.961): the conservation mechanism retains
-  ~99% **with no rehearsal at all**. (Corroborated on Split-MNIST §3b: `no_replay` 0.964 ≈ full 0.962,
-  vs baseline 0.197.)
+  ~99% **with no rehearsal at all**. Corroborated at **two more scales**: Split-MNIST (§3b) `no_replay`
+  0.964 ≈ full 0.962 (vs baseline 0.197), and the dramatic **10-task Permuted-MNIST** `no_replay` ACC
+  0.933 ≈ full 0.932 (vs baseline 0.740) — so the mechanism-without-rehearsal result holds at the
+  headline scale too (`pma_c_results/noreplay_10task/`).
 - **Projection / stability / importance-selection** are individually removable at this *easy* 5-task
   regime (the 256-256 net has spare capacity, so conservation suffices). They earn their keep in the
   **harder** regimes: without gradient-norm control (their relatives) PMA-C diverged at 8 epochs / 10
