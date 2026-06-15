@@ -1,16 +1,20 @@
 # PMA-C Results — Catastrophic-Forgetting Resistance on Continual MNIST
 
-> **Status:** headline + decomposition numbers below are the committed 3-seed sweeps
-> (`pma_c_results/`). Single-seed validation values are noted where they corroborate.
+> **Status:** all numbers below are committed 3-seed sweeps in `pma_c_results/`
+> (`headline_10task/`, `split_mnist/`, `decomp_5task/`). Reproduce commands in §8.
 
 ## 1. Claim
 
-On a sequence of permuted-pixel MNIST tasks, a **naive baseline catastrophically forgets** earlier
-tasks while **PMA-C retains them** — with the *same* network, optimizer, learning rate, task order,
-and training data. PMA-C dominates the baseline on every standard continual-learning metric: higher
-**Average Accuracy (ACC)**, near-zero **Forgetting** / non-negative **Backward Transfer (BWT)**, and
-near-1.0 **Retention** (final/peak per task), while still **learning each new task as well as the
-baseline** (no loss of plasticity).
+On two standard continual-learning benchmarks — **Permuted-MNIST** (10 tasks) and **Split-MNIST**
+(class-incremental) — a **naive baseline catastrophically forgets** earlier tasks while **PMA-C retains
+them**, using the *same* network, optimizer, learning rate, task order, and training data. PMA-C
+dominates the baseline on every standard metric (Average Accuracy, Forgetting / Backward Transfer,
+Retention) while **still learning each new task as well as the baseline** (no loss of plasticity).
+
+Headlines: **10-task Permuted-MNIST** — ACC 0.749→0.930, worst-task retention 0.529→0.906, forgetting
+6.8× lower. **Split-MNIST** — ACC 0.197→0.962, the baseline forgets *completely* (worst retention
+0.000). An ablation decomposition (§4) shows the driver is the **hinge conservation loss**, not replay:
+PMA-C *without any rehearsal* retains ~99% (≈ full system), while plain Experience Replay barely helps.
 
 This is the empirical instantiation of the PMA-C spec
 (`PMA_C_GENERAL_CONTINUAL_LEARNING_SPEC.md`): protected behavior anchors + hinge **conservation loss**
@@ -116,7 +120,8 @@ replay?" — **it is not; the hinge *conservation* loss is the driver.**
 
 - **Across regimes:** PMA-C retains and the baseline forgets at 5 tasks/5 epochs, 5 tasks/8 epochs,
   and 10 tasks/5 epochs. More epochs / more tasks → the baseline forgets *more* (worst retention
-  0.76 → 0.71 → 0.42), PMA-C stays ≥0.90.
+  0.76 → 0.71 → 0.53), PMA-C stays ≥0.90. On class-incremental Split-MNIST the baseline's worst
+  retention is 0.00 (total collapse) while PMA-C is 0.99.
 - **Hardening (a real finding, fixed).** Without gradient-norm control, the squared-hinge conservation
   loss `∇ = 2·(KL−ε)·∇KL` becomes a positive-feedback runaway at lr 0.1 once an update pushes the net
   off-manifold; at 8 epochs / 10 tasks PMA-C collapsed to chance. Fix: clip each guard gradient to
@@ -144,11 +149,13 @@ A multi-agent adversarial audit of this result confirmed the phenomenon and the 
 exactly as the spec states. Consolidation/growth/router are implemented and unit-tested but are not the
 *active* drivers in this headline (the 256-256 MLP has ample capacity, so growth never triggers and the
 consolidation interval is not reached within these short runs); they are exercised by the unit suite and
-a separate full-system demo.
+the live full-system demo `pmac/experiments/full_system_demo.py` (sections A–D all PASS: champion
+immutability + non-deletion, no-op growth giving plasticity with zero old-task interference, slow-core
+consolidation, and context routing).
 
 ## 7. What is implemented (spec coverage)
 
-All PMA-C modules from the spec are implemented in `pmac/` with passing unit tests (52 tests,
+All PMA-C modules from the spec are implemented in `pmac/` with passing unit tests (53 tests,
 `tests/pmac/`):
 behavior distances §6, conservation §7, tangent-cone projection §8, synaptic stability §9, growth
 §10/§25.4, consolidation §11/§18, router §12, memory selection/anchors §13–14, scheduler §15, acceptance
@@ -169,12 +176,18 @@ python -m pmac.experiments.continual_mnist \
   --stream permuted_mnist --num-tasks 10 --seeds 0,1,2 \
   --epochs 5 --batch-size 128 --lr 0.1 --optimizer sgd --hidden 256,256 \
   --temperature 2.0 --gate off --out runs/pmac_headline
-# Credit decomposition (5-task, 3 seeds): all ablations
+# Second benchmark — Split-MNIST, class-incremental (3 seeds), incl. no-replay decomposition
+python -m pmac.experiments.continual_mnist \
+  --stream split_mnist --seeds 0,1,2 --epochs 5 --gate off \
+  --ablations no_replay --out runs/pmac_split
+# Credit decomposition (5-task Permuted, 3 seeds): all ablations
 python -m pmac.experiments.continual_mnist \
   --stream permuted_mnist --num-tasks 5 --seeds 0,1,2 --epochs 5 --gate off \
   --ablations no_replay,replay_only,no_projection,no_conservation,no_stability,random_memory \
   --out runs/pmac_decomp
 ```
-Each run writes `results.json` (all accuracy matrices + metrics + aggregate + config) and
-`comparison.png`. Unit tests: `JAX_PLATFORMS=cpu pytest tests/pmac -q` (52 passing).
-Committed artifacts: `pma_c_results/headline_10task/`, `pma_c_results/decomp_5task/`.
+Each run writes `results.json` (all accuracy matrices + metrics + aggregate + config echo proving
+gate/clip/val) and `comparison.png`. Figures regenerated via `pma_c_results/make_figures.py`. Unit
+tests: `JAX_PLATFORMS=cpu pytest tests/pmac -q` (53 passing). Full-system demo:
+`JAX_PLATFORMS=cpu python -m pmac.experiments.full_system_demo`. Committed artifacts under
+`pma_c_results/`: `headline_10task/`, `split_mnist/`, `decomp_5task/`.
