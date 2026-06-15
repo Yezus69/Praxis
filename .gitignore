@@ -27,7 +27,7 @@ videos/
 # JAX / cache
 .jax_cache/
 .cache/
-
+.codex/
 # OS / editor
 .DS_Store
 Thumbs.db
