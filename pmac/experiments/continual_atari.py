@@ -24,12 +24,23 @@ from pmac.checkpoint import ChampionStore
 from pmac.deployment import DeployedPolicy, DeploymentDecision
 from pmac.envs.atari_envpool import ACT_DIM, make_train_env
 from pmac.evaluation import aggregate_retention, make_skill_scores
+from pmac.rl_update import PMACUpdateConfig
 from pmac.sentinels import SentinelStore
 
 warnings.filterwarnings("ignore")
 
 
-ALLOWED_ATARI_ABLATIONS = {None, "none", "no_conservation", "no_replay"}
+ALLOWED_ATARI_ABLATIONS = {
+    None,
+    "none",
+    "no_conservation",
+    "champions_only",
+    "no_replay",
+    "projected_full",
+    "no_projection",
+    "no_stability",
+    "no_guard_correction",
+}
 ALLOWED_GUARD_NORMS = {"length", "none"}
 
 
@@ -65,6 +76,8 @@ class ContinualAtariConfig:
     cert_abs_floor: float = 0.0
     learned_delta_frac: float = 0.05
     allowed_regression_frac: float = 0.02
+    switch_margin_frac: float = 0.05
+    deployed_use_current: bool = False
 
 
 class AtariAnchorBuffer(NamedTuple):
@@ -150,6 +163,8 @@ def _validate_continual_config(cfg: ContinualAtariConfig) -> None:
         raise ValueError("learned_delta_frac must be non-negative")
     if float(cfg.allowed_regression_frac) < 0.0:
         raise ValueError("allowed_regression_frac must be non-negative")
+    if float(cfg.switch_margin_frac) < 0.0:
+        raise ValueError("switch_margin_frac must be non-negative")
     ablation = None if cfg.ablation == "none" else cfg.ablation
     if ablation not in ALLOWED_ATARI_ABLATIONS:
         raise ValueError(f"unknown Atari PMA-C ablation: {cfg.ablation}")
@@ -193,10 +208,40 @@ def _fresh_params(seed: int, n_games: int):
     return init_atari(jax.random.PRNGKey(_init_seed(seed)), int(n_games))
 
 
+def _atari_ablation_update_settings(ablation):
+    if ablation == "projected_full":
+        return "pmac_projected", PMACUpdateConfig(
+            projection=True,
+            stability=True,
+            guard_correction=True,
+        )
+    if ablation == "no_projection":
+        return "pmac_projected", PMACUpdateConfig(
+            projection=False,
+            stability=True,
+            guard_correction=True,
+        )
+    if ablation == "no_stability":
+        return "pmac_projected", PMACUpdateConfig(
+            projection=True,
+            stability=False,
+            guard_correction=True,
+        )
+    if ablation == "no_guard_correction":
+        return "pmac_projected", PMACUpdateConfig(
+            projection=True,
+            stability=True,
+            guard_correction=False,
+        )
+    return "guard_loss", None
+
+
 def _guard_from_buffers(
     buffers: list[AtariAnchorBuffer],
     cfg: ContinualAtariConfig,
     ablation,
+    *,
+    projected: bool = False,
 ):
     selected = [] if ablation == "no_conservation" else list(buffers)
     if ablation == "no_replay" and selected:
@@ -213,7 +258,7 @@ def _guard_from_buffers(
     else:
         effective_guard_coef = float(cfg.guard_coef)
 
-    return {
+    guard = {
         "obs_uint8": np.concatenate([buf.obs_uint8 for buf in selected], axis=0),
         "game_onehot": np.concatenate([buf.game_onehot for buf in selected], axis=0),
         "teacher_logits": np.concatenate([buf.teacher_logits for buf in selected], axis=0),
@@ -224,6 +269,13 @@ def _guard_from_buffers(
         "guard_tolerance": float(cfg.guard_tolerance),
         "guard_batch": int(cfg.guard_batch),
     }
+    if projected:
+        guard["guard_lambdas"] = np.full(
+            (n_prior,),
+            float(cfg.guard_coef) / float(n_prior),
+            dtype=np.float32,
+        )
+    return guard
 
 
 @jax.jit
@@ -451,17 +503,28 @@ def evaluate_deployment(
 ) -> dict:
     """Run the bounded deployed-vs-current Atari evaluation pass.
 
-    All scores (champion / current / random) are re-measured live under one consistent
-    protocol so the reported retentions cannot be gamed by seed/episode-count mismatch:
-      * sentinel seed A  -> ROUTE DECISION only (never reported)
-      * deploy seed B     -> reported champion_B / current_B / random_B
-    Honesty guarantees:
-      * best[g] = max(champion_B, current_B) (true peak under the deploy protocol) so a
-        current net that exceeds its champion can never inflate retention above 1.0.
-      * deployed_B = current_B iff the sentinel certified current (current_A >= champion_A
-        - cert_tol); else champion_B. This is a real route choice, NOT an offline max.
-      * a forgotten skill routes to its champion => deployed_B == champion_B == best =>
-        deployed_retention == 1.0 exactly (the no-forgetting safety invariant).
+    All scores (champion / current / random) are re-measured live under one deploy protocol
+    (seed B); routing is decided on an independent sentinel protocol (seed A) so the route
+    choice never peeks at the reported scores (no offline max / no oracle).
+
+    IMPORTANT — what each metric does and does NOT show (read with spec invariant I6):
+      * best[g] = champion_B for protected (pmac/champions) skills: the frozen *certified
+        champion* is the reference. The baseline branch (no champion) uses
+        max(return_matrix_peak, current_B). The two arms therefore use different references —
+        for the falsifiable cross-arm forgetting comparison use the return-matrix
+        `norm_retention` (compute_atari_metrics), which is the SAME eval protocol for both arms.
+      * deployed_retention is a STRUCTURAL SAFETY FLOOR, not a learning result. With the
+        default safety routing (deployed_use_current=False) every protected skill routes to its
+        champion, so deployed_B == champion_B == best => deployed_retention == 1.0 *by
+        construction*. This is the architectural no-forgetting invariant (== certified per-task
+        checkpointing + router); it is NOT evidence that the conservation guard reduces
+        forgetting. The champions_only arm (conservation OFF) also gets 1.0, proving this.
+      * current_retention (current_B / champion_B) is the falsifiable measure of how much the
+        *mutable shared net* retained of its own certified peak; this is where the conservation
+        guard's effect shows up. Headline this (and the return-matrix norm_retention), not the
+        tautological deployed_retention.
+      * routing: deployed_B = current_B iff (deployed_use_current and current_A >= champion_A +
+        switch_margin); else champion_B. A real sentinel-decided choice, not an offline max.
     """
     games = list(games)
     random_scores = np.asarray(random_scores, dtype=np.float32)
@@ -483,6 +546,7 @@ def evaluate_deployment(
     deployed_b_values = []
     random_b_values = []
     current_certified_values = []
+    current_safe_values = []
 
     for game_id, game in enumerate(games):
         skill_id = str(game)
@@ -518,6 +582,7 @@ def evaluate_deployment(
             champion_b = float(current_b)
             best = float(max(float(best_scores[game_id]), float(current_b)))
             current_certified = True
+            current_safe = True
             decision = DeploymentDecision(
                 skill_id=skill_id,
                 route_type="current",
@@ -562,15 +627,22 @@ def evaluate_deployment(
                 seed_b,
                 cfg,
             )
-            # True peak under the deploy protocol: the better of the certified champion and
-            # the current net. Guarantees retention in [0,1] and exact 1.0 for the route taken
-            # when it is the peak (forgotten skill -> champion is the peak -> retention 1.0).
-            best = float(max(float(champion_b), float(current_b)))
-            cert_tol = (
-                float(cfg.cert_frac) * max(float(champion_a) - float(random_score), 0.0)
-                + float(cfg.cert_abs_floor)
+            # The frozen certified champion is the protected-skill REFERENCE (100%). The deployed
+            # agent always retains it (route-to-champion => deployed==best==1.0). It only switches
+            # to the current shared net when the sentinel certifies current is CLEARLY better
+            # (by switch_margin), so a borderline current that is ~equal on sentinel but slightly
+            # worse on the deploy seed cannot drag deployed retention below the champion floor.
+            best = float(champion_b)
+            # current_safe: would the sentinel certify the current net as clearly better than the
+            # champion? Reported for transparency. SAFETY ROUTING (default deployed_use_current=False)
+            # always serves the frozen certified champion for protected skills, so deployed retention
+            # cannot dip below the champion floor due to eval noise on low-score/high-variance games
+            # (e.g. Breakout): deployed == champion == best == 1.0 by construction (mission spec).
+            switch_margin = float(cfg.switch_margin_frac) * max(
+                float(champion_a) - float(random_score), 0.0
             )
-            current_certified = bool(float(current_a) >= float(champion_a) - float(cert_tol))
+            current_safe = bool(float(current_a) >= float(champion_a) + float(switch_margin))
+            current_certified = bool(current_safe and bool(cfg.deployed_use_current))
             allowed_regression = _allowed_regression_for_game(best, random_score, cfg)
             route_id = getattr(champion, "route", None)
             node.current_certified = current_certified
@@ -606,6 +678,7 @@ def evaluate_deployment(
         deployed_b_values.append(float(deployed_b))
         random_b_values.append(float(random_score))
         current_certified_values.append(bool(current_certified))
+        current_safe_values.append(bool(current_safe))
 
     return {
         "skill_scores": [asdict(score) for score in skill_scores],
@@ -618,6 +691,7 @@ def evaluate_deployment(
         "deployed_B": deployed_b_values,
         "random_B": random_b_values,
         "current_certified": current_certified_values,
+        "current_safe": current_safe_values,
     }
 
 
@@ -787,6 +861,7 @@ def run_atari_pmac(
     ablation = None if ablation == "none" else ablation
     if ablation not in ALLOWED_ATARI_ABLATIONS:
         raise ValueError(f"unknown Atari PMA-C ablation: {ablation}")
+    update_mode, pmac_cfg = _atari_ablation_update_settings(ablation)
     _validate_continual_config(cfg)
     games = list(games)
     if not games:
@@ -810,14 +885,36 @@ def run_atari_pmac(
     return_matrix = np.zeros((n_games, n_games), dtype=np.float32)
     curves = {}
     guard_curves = {}
+    projection_curves = {}
     total_updates = 0
-    guard_enabled = ablation != "no_conservation"
+    # guard_loss_enabled: does the conservation loss affect training? (champions_only trains exactly
+    # like the naive baseline -> plasticity is preserved by construction). champions_enabled: are
+    # frozen champions certified + used by the deployed router? The deployed no-forgetting guarantee
+    # comes from champions, independent of the conservation guard.
+    guard_loss_enabled = ablation not in ("no_conservation", "champions_only")
+    champions_enabled = ablation != "no_conservation"
+    guard_enabled = guard_loss_enabled
     guard_effective_coefs: list[float] = []
     params = None
+    omega = None
 
     for task_i, game in enumerate(games):
-        guard = _guard_from_buffers(buffers, cfg, ablation) if guard_enabled else None
-        guard_effective_coefs.append(0.0 if guard is None else float(guard["guard_coef"]))
+        guard = (
+            _guard_from_buffers(
+                buffers,
+                cfg,
+                ablation,
+                projected=update_mode == "pmac_projected",
+            )
+            if guard_loss_enabled
+            else None
+        )
+        if guard is None:
+            guard_effective_coefs.append(0.0)
+        elif update_mode == "pmac_projected" and "guard_lambdas" in guard:
+            guard_effective_coefs.append(float(np.sum(np.asarray(guard["guard_lambdas"]))))
+        else:
+            guard_effective_coefs.append(float(guard["guard_coef"]))
         train = train_ppo_atari(
             game,
             task_i,
@@ -826,11 +923,16 @@ def run_atari_pmac(
             _train_seed(seed, task_i),
             init_params=params,
             guard=guard,
+            update_mode=update_mode,
+            pmac_cfg=pmac_cfg,
+            omega=omega,
         )
         params = train["params"]
+        omega = train.get("omega", omega)
         total_updates += _total_updates_from_train(train, ppo_cfg)
         curves[str(game)] = train["returns_curve"]
         guard_curves[str(game)] = train.get("guard_curve", [])
+        projection_curves[str(game)] = train.get("projection_curve", [])
         return_matrix[task_i] = _evaluate_all_games_with_cap(
             params,
             games,
@@ -842,7 +944,7 @@ def run_atari_pmac(
             cfg.eval_steps_cap,
         )
 
-        if guard_enabled:
+        if champions_enabled:
             buffer = _collect_anchor_buffer(
                 params,
                 game,
@@ -872,7 +974,7 @@ def run_atari_pmac(
         guard_source = "most_recent_prior"
     else:
         guard_source = "all_prior"
-    deployment_atlas = atlas if guard_enabled else None
+    deployment_atlas = atlas if champions_enabled else None
     deployment = evaluate_deployment(
         params,
         games,
@@ -884,6 +986,29 @@ def run_atari_pmac(
         best_scores=None if deployment_atlas is not None else np.max(return_matrix, axis=0),
         random_params=_fresh_params(seed, n_games),
     )
+    extra = {
+        "ablation": ablation,
+        "game_order": [str(game) for game in games],
+        "updates": int(total_updates),
+        "returns_curves": curves,
+        "guard_loss_curves": guard_curves,
+        "protected_skills": list(atlas.nodes.keys()),
+        "anchor_counts": [int(buf.obs_uint8.shape[0]) for buf in buffers],
+        "guard_enabled": bool(guard_loss_enabled),
+        "champions_enabled": bool(champions_enabled),
+        "guard_source": guard_source,
+        "guard_norm": str(cfg.guard_norm),
+        "guard_effective_coefs": [float(v) for v in guard_effective_coefs],
+        "deployment": deployment,
+    }
+    if update_mode == "pmac_projected":
+        extra.update(
+            {
+                "projection_curves": projection_curves,
+                "update_mode": update_mode,
+                "pmac_update_config": asdict(pmac_cfg),
+            }
+        )
     result = _result(
         return_matrix,
         random_scores,
@@ -891,20 +1016,7 @@ def run_atari_pmac(
         cfg,
         seed,
         wall_s,
-        extra={
-            "ablation": ablation,
-            "game_order": [str(game) for game in games],
-            "updates": int(total_updates),
-            "returns_curves": curves,
-            "guard_loss_curves": guard_curves,
-            "protected_skills": list(atlas.nodes.keys()),
-            "anchor_counts": [int(buf.obs_uint8.shape[0]) for buf in buffers],
-            "guard_enabled": bool(guard_enabled),
-            "guard_source": guard_source,
-            "guard_norm": str(cfg.guard_norm),
-            "guard_effective_coefs": [float(v) for v in guard_effective_coefs],
-            "deployment": deployment,
-        },
+        extra=extra,
     )
     result["metrics"]["deployed"] = deployment["aggregate"]
     return result
@@ -1013,9 +1125,14 @@ def _print_result(result: dict):
     deployed = metrics.get("deployed")
     deployed_text = ""
     if isinstance(deployed, dict):
+        # current_retention (mutable shared net) is the falsifiable forgetting measure;
+        # deployed_retention is the structural champion-routing floor (1.0 by construction).
         deployed_text = (
-            f" deployed_mean_retention={deployed['mean_deployed_retention']:.3f} "
-            f"deployed_worst_retention={deployed['worst_deployed_retention']:.3f}"
+            f" current_mean_retention={deployed['mean_current_retention']:.3f} "
+            f"current_worst_retention={deployed['worst_current_retention']:.3f} "
+            f"deployed_mean_retention(floor)={deployed['mean_deployed_retention']:.3f} "
+            f"deployed_worst_retention(floor)={deployed['worst_deployed_retention']:.3f} "
+            f"n_learned={deployed['n_learned']}/{deployed['n_total']}"
         )
     print(
         f"{result['mode']} seed={int(result['extra']['seed'])} "
@@ -1051,6 +1168,13 @@ def main(argv=None):
     parser.add_argument("--cert-abs-floor", type=float, default=0.0)
     parser.add_argument("--learned-delta-frac", type=float, default=0.05)
     parser.add_argument("--allowed-regression-frac", type=float, default=0.02)
+    parser.add_argument("--switch-margin-frac", type=float, default=0.05)
+    parser.add_argument(
+        "--deployed-use-current",
+        action="store_true",
+        help="Adaptive deployed routing: serve the current net when the sentinel certifies it "
+        "clearly better than the champion. Default off = pure champion routing (safety invariant).",
+    )
     parser.add_argument("--num-envs", type=int, default=64)
     parser.add_argument("--num-steps", type=int, default=128)
     parser.add_argument("--update-epochs", type=int, default=4)
@@ -1078,7 +1202,10 @@ def main(argv=None):
         parser.error(
             "unknown ablation(s): "
             + ", ".join(str(value) for value in invalid_ablations)
-            + "; valid values are none,no_conservation,no_replay"
+            + (
+                "; valid values are none,no_conservation,champions_only,no_replay,"
+                "projected_full,no_projection,no_stability,no_guard_correction"
+            )
         )
 
     cfg = ContinualAtariConfig(
@@ -1103,6 +1230,8 @@ def main(argv=None):
         cert_abs_floor=float(args.cert_abs_floor),
         learned_delta_frac=float(args.learned_delta_frac),
         allowed_regression_frac=float(args.allowed_regression_frac),
+        switch_margin_frac=float(args.switch_margin_frac),
+        deployed_use_current=bool(args.deployed_use_current),
         guard_coef=float(args.guard_coef),
         guard_norm=str(args.guard_norm),
         guard_batch=int(args.guard_batch),

@@ -57,6 +57,7 @@ class GuardHost(NamedTuple):
     teacher_logits: np.ndarray
     teacher_value: np.ndarray
     prior_offsets: np.ndarray | None
+    guard_lambdas: np.ndarray | None
     guard_coef: float
     value_coef: float
     guard_tolerance: float
@@ -197,6 +198,7 @@ def _prepare_guard_host(guard, n_games: int) -> GuardHost:
     teacher_value = np.asarray(_guard_get(guard, "teacher_value"), dtype=np.float32).reshape(-1)
     guard_batch = int(_guard_get(guard, "guard_batch"))
     prior_offsets = _guard_get_optional(guard, "prior_offsets")
+    guard_lambdas = _guard_get_optional(guard, "guard_lambdas")
 
     if obs_uint8.ndim != 4 or obs_uint8.shape[1:] != (4, 84, 84):
         raise ValueError(f"guard obs_uint8 must have shape [M,4,84,84], got {obs_uint8.shape}")
@@ -219,6 +221,13 @@ def _prepare_guard_host(guard, n_games: int) -> GuardHost:
             raise ValueError("guard prior_offsets must start at 0 and end at the guard size")
         if np.any(np.diff(prior_offsets) <= 0):
             raise ValueError("guard prior_offsets must define non-empty increasing slices")
+    if guard_lambdas is not None:
+        guard_lambdas = np.asarray(guard_lambdas, dtype=np.float32).reshape(-1)
+        expected = 1 if prior_offsets is None else int(prior_offsets.shape[0] - 1)
+        if int(guard_lambdas.shape[0]) != expected:
+            raise ValueError(
+                f"guard_lambdas must have length {expected}, got {guard_lambdas.shape[0]}"
+            )
 
     return GuardHost(
         obs_uint8=obs_uint8,
@@ -226,6 +235,7 @@ def _prepare_guard_host(guard, n_games: int) -> GuardHost:
         teacher_logits=teacher_logits,
         teacher_value=teacher_value,
         prior_offsets=prior_offsets,
+        guard_lambdas=guard_lambdas,
         guard_coef=float(_guard_get(guard, "guard_coef")),
         value_coef=float(_guard_get(guard, "value_coef")),
         guard_tolerance=float(_guard_get(guard, "guard_tolerance")),
@@ -271,6 +281,52 @@ def _sample_guard_batch_host(guard: GuardHost, rng: np.random.Generator) -> Guar
         game_onehot=jnp.asarray(guard.game_onehot[idx], dtype=jnp.float32),
         teacher_logits=jnp.asarray(guard.teacher_logits[idx], dtype=jnp.float32),
         teacher_value=jnp.asarray(guard.teacher_value[idx], dtype=jnp.float32),
+    )
+
+
+def _projected_guard_offsets(guard: GuardHost) -> np.ndarray:
+    if guard.prior_offsets is None:
+        return np.asarray([0, int(guard.obs_uint8.shape[0])], dtype=np.int64)
+    return np.asarray(guard.prior_offsets, dtype=np.int64)
+
+
+def _projected_guard_lambdas(guard: GuardHost) -> jnp.ndarray:
+    offsets = _projected_guard_offsets(guard)
+    num_priors = int(offsets.shape[0] - 1)
+    if guard.guard_lambdas is not None:
+        return jnp.asarray(guard.guard_lambdas, dtype=jnp.float32)
+    return jnp.full(
+        (num_priors,),
+        float(guard.guard_coef) / float(max(num_priors, 1)),
+        dtype=jnp.float32,
+    )
+
+
+def _sample_stacked_guard_batch_host(guard: GuardHost, rng: np.random.Generator) -> GuardBatch:
+    offsets = _projected_guard_offsets(guard)
+    num_priors = int(offsets.shape[0] - 1)
+    per_skill_batch = int(guard.guard_batch) // max(num_priors, 1)
+    if per_skill_batch <= 0:
+        raise ValueError("guard_batch must be at least the number of prior skills for pmac_projected")
+
+    obs_parts = []
+    game_parts = []
+    logits_parts = []
+    value_parts = []
+    for prior_i in range(num_priors):
+        start = int(offsets[prior_i])
+        stop = int(offsets[prior_i + 1])
+        idx = rng.integers(start, stop, size=per_skill_batch, endpoint=False)
+        obs_parts.append(norm_obs(guard.obs_uint8[idx]))
+        game_parts.append(guard.game_onehot[idx])
+        logits_parts.append(guard.teacher_logits[idx])
+        value_parts.append(guard.teacher_value[idx])
+
+    return GuardBatch(
+        obs=jnp.asarray(np.stack(obs_parts, axis=0), dtype=jnp.float32),
+        game_onehot=jnp.asarray(np.stack(game_parts, axis=0), dtype=jnp.float32),
+        teacher_logits=jnp.asarray(np.stack(logits_parts, axis=0), dtype=jnp.float32),
+        teacher_value=jnp.asarray(np.stack(value_parts, axis=0), dtype=jnp.float32),
     )
 
 
@@ -465,9 +521,23 @@ def _mean_or_previous(recent_returns, previous: float) -> float:
     return float(np.mean(np.asarray(recent_returns, dtype=np.float32)))
 
 
-def train_ppo_atari(game, game_id, n_games, cfg, seed, init_params=None, *, guard=None) -> dict:
+def train_ppo_atari(
+    game,
+    game_id,
+    n_games,
+    cfg,
+    seed,
+    init_params=None,
+    *,
+    guard=None,
+    update_mode: str = "guard_loss",
+    pmac_cfg=None,
+    omega=None,
+) -> dict:
     """Train one Atari game using bounded host envpool rollouts and jitted updates."""
     cfg = cfg or AtariPPOConfig()
+    if str(update_mode) not in {"guard_loss", "pmac_projected"}:
+        raise ValueError(f"unknown Atari PPO update_mode: {update_mode}")
     num_updates = _validate_config(cfg)
     batch_size = int(cfg.num_envs) * int(cfg.num_steps)
     minibatch_size = batch_size // int(cfg.num_minibatches)
@@ -479,6 +549,16 @@ def train_ppo_atari(game, game_id, n_games, cfg, seed, init_params=None, *, guar
     params = init_params
     if params is None:
         params = init_atari(init_key, int(n_games))
+    omega_state = omega
+    if str(update_mode) == "pmac_projected":
+        from pmac.rl_update import PMACUpdateConfig, PPO_PMAC_METRIC_NAMES, ppo_pmac_update
+        from pmac.stability import zeros_omega_like
+
+        pmac_cfg = PMACUpdateConfig() if pmac_cfg is None else pmac_cfg
+        omega_state = zeros_omega_like(params) if omega_state is None else omega_state
+        pmac_metric_index = {name: i for i, name in enumerate(PPO_PMAC_METRIC_NAMES)}
+    else:
+        pmac_metric_index = {}
 
     tx = optax.chain(
         optax.clip_by_global_norm(float(cfg.max_grad_norm)),
@@ -493,6 +573,7 @@ def train_ppo_atari(game, game_id, n_games, cfg, seed, init_params=None, *, guar
     recent_returns = deque(maxlen=100)
     returns_curve: list[float] = []
     guard_curve: list[float] = []
+    projection_curve: list[float] = []
     last_curve_value = 0.0
     guard_rng = None
     if guard_host is not None:
@@ -567,7 +648,7 @@ def train_ppo_atari(game, game_id, n_games, cfg, seed, init_params=None, *, guar
                 float(cfg.ent_coef),
                 float(cfg.max_grad_norm),
             )
-        else:
+        elif str(update_mode) == "guard_loss":
             guard_batch = _sample_guard_batch_host(guard_host, guard_rng)
             params, opt_state, rng, metrics = ppo_guard_update(
                 params,
@@ -590,6 +671,36 @@ def train_ppo_atari(game, game_id, n_games, cfg, seed, init_params=None, *, guar
             )
             metrics_np = np.asarray(jax.device_get(metrics), dtype=np.float32)
             guard_curve.append(float(metrics_np[-1]))
+        else:
+            guard_batch = _sample_stacked_guard_batch_host(guard_host, guard_rng)
+            guard_lambdas = _projected_guard_lambdas(guard_host)
+            params, opt_state, rng, metrics = ppo_pmac_update(
+                params,
+                opt_state,
+                batch,
+                game_onehot,
+                guard_batch.obs,
+                guard_batch.game_onehot,
+                guard_batch.teacher_logits,
+                guard_batch.teacher_value,
+                guard_lambdas,
+                omega_state,
+                rng,
+                float(lr),
+                int(cfg.update_epochs),
+                int(cfg.num_minibatches),
+                int(minibatch_size),
+                float(cfg.clip_coef),
+                float(cfg.vf_coef),
+                float(cfg.ent_coef),
+                float(cfg.max_grad_norm),
+                float(guard_host.value_coef),
+                float(guard_host.guard_tolerance),
+                pmac_cfg,
+            )
+            metrics_np = np.asarray(jax.device_get(metrics), dtype=np.float32)
+            guard_curve.append(float(metrics_np[pmac_metric_index["guard_loss"]]))
+            projection_curve.append(float(metrics_np[pmac_metric_index["projection_ratio"]]))
 
     final_return = float(returns_curve[-1]) if returns_curve else 0.0
     result = {
@@ -600,6 +711,9 @@ def train_ppo_atari(game, game_id, n_games, cfg, seed, init_params=None, *, guar
     }
     if guard_host is not None:
         result["guard_curve"] = [float(v) for v in guard_curve]
+    if str(update_mode) == "pmac_projected":
+        result["projection_curve"] = [float(v) for v in projection_curve]
+        result["omega"] = omega_state
     return result
 
 

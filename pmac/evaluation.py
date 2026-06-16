@@ -26,11 +26,12 @@ class SkillScores:
     route_type: str = "current"
 
 
-RETENTION_CLIP_MAX = 1.5
-"""Report-side clip for random-normalized retention (matches compute_atari_metrics).
+RETENTION_CLIP_MAX = 1.0
+"""Report-side clip for random-normalized retention.
 
-A skill that forgot *below* its random baseline reads 0.0 (retained 0% of skill), and a
-near-random denominator cannot explode the ratio into a huge magnitude. Raw scores
+Retention is "fraction of the certified-best (champion) performance retained", so it is capped
+at 1.0 (100%): a current net that *exceeds* its champion counts as full retention, not >100%.
+A skill that forgot *below* its random baseline reads 0.0. Raw scores
 (best/current/champion/deployed/random) are always stored, so raw ratios are recoverable.
 """
 
