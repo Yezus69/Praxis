@@ -174,9 +174,10 @@ def _write_summary(out_dir, games, collected):
              "per-game clipped to [0,1] then averaged. Higher = the *single shared net* forgot less. This is the "
              "apples-to-apples learning result. **'overwritten' column excludes the never-overwritten last game** "
              "(the clean forgetting measure). 'all' is mean+-SAMPLE-std across seeds.\n")
-    L.append(f"> CAVEAT: n={n_seeds} seed(s). At n<=2 this is SUGGESTIVE (consistent direction), NOT a significance "
-             "claim; treat the conservation effect as directional until n>=3 with a paired test / bootstrap CI. The "
-             "DEPLOYED floor (Result 2) is structural and n-independent.\n")
+    L.append(f"> CAVEAT: n={n_seeds} seeds (small sample). Read the paired-by-seed significance table below "
+             "(per-seed sign count + 90% bootstrap CI), not a p-value. The cleanest conservation isolation is "
+             "pmac vs champions_only (identical training procedure +/- the conservation guard). The DEPLOYED floor "
+             "(Result 2) is structural and n-independent (1.0 by construction).\n")
     L.append("| arm | shared-net retention (all games) | shared-net retention (overwritten only) | worst game | mean final return |")
     L.append("|---|---|---|---|---|")
     for m in modes:

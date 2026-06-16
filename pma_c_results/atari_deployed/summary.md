@@ -6,22 +6,22 @@ Games (sequential): Breakout-v5, SpaceInvaders-v5, BeamRider-v5, Asterix-v5, Qbe
 
 Random-normalized `norm_retention` from the return matrix (same greedy eval protocol for every arm), per-game clipped to [0,1] then averaged. Higher = the *single shared net* forgot less. This is the apples-to-apples learning result. **'overwritten' column excludes the never-overwritten last game** (the clean forgetting measure). 'all' is mean+-SAMPLE-std across seeds.
 
-> CAVEAT: n=2 seed(s). At n<=2 this is SUGGESTIVE (consistent direction), NOT a significance claim; treat the conservation effect as directional until n>=3 with a paired test / bootstrap CI. The DEPLOYED floor (Result 2) is structural and n-independent.
+> CAVEAT: n=4 seeds (small sample). Read the paired-by-seed significance table below (per-seed sign count + 90% bootstrap CI), not a p-value. The cleanest conservation isolation is pmac vs champions_only (identical training procedure +/- the conservation guard). The DEPLOYED floor (Result 2) is structural and n-independent (1.0 by construction).
 
 | arm | shared-net retention (all games) | shared-net retention (overwritten only) | worst game | mean final return |
 |---|---|---|---|---|
-| baseline | 0.342 ± 0.156 | 0.177 ± 0.196 | 0.006 ± 0.008 | 337.888 ± 98.907 |
-| pmac_champions_only | 0.352 ± 0.025 | 0.190 ± 0.032 | 0.024 ± 0.034 | 354.375 ± 10.076 |
-| pmac | 0.759 ± 0.004 | 0.699 ± 0.005 | 0.384 ± 0.127 | 602.288 ± 196.558 |
+| baseline | 0.375 ± 0.098 | 0.219 ± 0.123 | 0.003 ± 0.006 | 367.638 ± 80.035 |
+| pmac_champions_only | 0.301 ± 0.063 | 0.126 ± 0.078 | 0.012 ± 0.024 | 322.475 ± 41.707 |
+| pmac | 0.676 ± 0.176 | 0.595 ± 0.219 | 0.280 ± 0.201 | 537.856 ± 136.616 |
 
 ### Significance of the conservation effect (paired by seed, shared-net retention)
 
 | contrast | metric | per-seed diffs | mean diff | 90% bootstrap CI | seeds with diff>0 |
 |---|---|---|---|---|---|
-| pmac − baseline | all 5 | +0.310, +0.525 | +0.417 | [+0.310, +0.525] | 2/2 |
-| pmac − baseline | overwritten 4 | +0.387, +0.656 | +0.522 | [+0.387, +0.656] | 2/2 |
-| pmac − pmac_champions_only | all 5 | +0.392, +0.422 | +0.407 | [+0.392, +0.422] | 2/2 |
-| pmac − pmac_champions_only | overwritten 4 | +0.491, +0.528 | +0.509 | [+0.491, +0.528] | 2/2 |
+| pmac − baseline | all 5 | +0.310, +0.525, +0.373, -0.003 | +0.301 | [+0.129, +0.449] | 3/4 |
+| pmac − baseline | overwritten 4 | +0.387, +0.656, +0.466, -0.004 | +0.376 | [+0.161, +0.561] | 3/4 |
+| pmac − pmac_champions_only | all 5 | +0.392, +0.422, +0.503, +0.183 | +0.375 | [+0.263, +0.463] | 4/4 |
+| pmac − pmac_champions_only | overwritten 4 | +0.491, +0.528, +0.629, +0.229 | +0.469 | [+0.329, +0.579] | 4/4 |
 
 (Positive = conservation retains more. At small n read the CI and the sign count, not a p-value; a consistent positive sign across all seeds + a CI excluding 0 is the bar.)
 
@@ -31,7 +31,7 @@ With default safety routing the deployed agent serves each protected skill from 
 
 | arm | has champion store? | deployed floor mean | deployed floor worst |
 |---|---|---|---|
-| baseline | no (single net) | 0.332 ± 0.119 | 0.000 ± 0.000 |
+| baseline | no (single net) | 0.365 ± 0.080 | 0.000 ± 0.000 |
 | pmac_champions_only | yes | 1.000 ± 0.000 | 1.000 ± 0.000 |
 | pmac | yes | 1.000 ± 0.000 | 1.000 ± 0.000 |
 
@@ -39,9 +39,9 @@ With default safety routing the deployed agent serves each protected skill from 
 
 | arm | per-game learned (peak) mean over seeds | ratio vs baseline |
 |---|---|---|
-| baseline | 575.4 | 1.000 |
-| pmac_champions_only | 683.2 | 1.187 |
-| pmac | 649.5 | 1.129 |
+| baseline | 578.6 | 1.000 |
+| pmac_champions_only | 661.0 | 1.142 |
+| pmac | 570.7 | 0.986 |
 
 (Both champion arms learn new games at >= baseline level on average — ratio >= ~1.0 — so neither the champion/deployed guarantee nor the conservation guard sacrifices plasticity. champions_only uses the identical training procedure as baseline (conservation off); per-game scores differ only by GPU/envpool nondeterminism over 4M steps, not bit-identical. Per-game scores below.)
 
@@ -49,28 +49,28 @@ With default safety routing the deployed agent serves each protected skill from 
 
 | game | learned | final(shared) | shared norm_ret | champion | deployed | deployed_ret(floor) | route |
 |---|---|---|---|---|---|---|---|
-| Breakout-v5 | 15.8 | 1.3 | 0.007 | 1.3 | 1.3 | 0.034 | current |
-| SpaceInvaders-v5 | 430.6 | 133.8 | 0.118 | 203.5 | 203.5 | 0.038 | current |
-| BeamRider-v5 | 690.0 | 645.0 | 0.730 | 625.2 | 625.2 | 0.500 | current |
-| Asterix-v5 | 937.5 | 106.2 | 0.044 | 133.3 | 133.3 | 0.086 | current |
-| Qbert-v5 | 803.1 | 803.1 | 1.000 | 1719.8 | 1719.8 | 1.000 | current |
+| Breakout-v5 | 19.5 | 0.8 | 0.003 | 0.9 | 0.9 | 0.017 | current |
+| SpaceInvaders-v5 | 432.8 | 146.6 | 0.059 | 180.6 | 180.6 | 0.019 | current |
+| BeamRider-v5 | 673.5 | 670.5 | 0.876 | 653.6 | 653.6 | 0.580 | current |
+| Asterix-v5 | 971.9 | 225.0 | 0.156 | 281.3 | 281.3 | 0.207 | current |
+| Qbert-v5 | 795.3 | 795.3 | 1.000 | 1257.3 | 1257.3 | 1.000 | current |
 
 ## Per-game (pmac_champions_only) — mean over seeds
 
 | game | learned | final(shared) | shared norm_ret | champion | deployed | deployed_ret(floor) | route |
 |---|---|---|---|---|---|---|---|
-| Breakout-v5 | 28.6 | 1.5 | 0.024 | 37.4 | 37.4 | 1.000 | champion |
-| SpaceInvaders-v5 | 459.4 | 240.6 | 0.324 | 515.2 | 515.2 | 1.000 | champion |
-| BeamRider-v5 | 972.0 | 561.0 | 0.309 | 959.7 | 959.7 | 1.000 | champion |
-| Asterix-v5 | 1181.2 | 193.8 | 0.101 | 1164.6 | 1164.6 | 1.000 | champion |
-| Qbert-v5 | 775.0 | 775.0 | 1.000 | 776.0 | 776.0 | 1.000 | champion |
+| Breakout-v5 | 29.8 | 1.3 | 0.022 | 36.0 | 36.0 | 1.000 | champion |
+| SpaceInvaders-v5 | 448.1 | 160.3 | 0.162 | 486.1 | 486.1 | 1.000 | champion |
+| BeamRider-v5 | 902.0 | 407.0 | 0.154 | 1006.7 | 1006.7 | 1.000 | champion |
+| Asterix-v5 | 1140.6 | 259.4 | 0.165 | 1282.3 | 1282.3 | 1.000 | champion |
+| Qbert-v5 | 784.4 | 784.4 | 1.000 | 758.9 | 758.9 | 1.000 | champion |
 
 ## Per-game (pmac) — mean over seeds
 
 | game | learned | final(shared) | shared norm_ret | champion | deployed | deployed_ret(floor) | route |
 |---|---|---|---|---|---|---|---|
-| Breakout-v5 | 18.7 | 14.9 | 0.594 | 22.4 | 22.4 | 1.000 | champion |
-| SpaceInvaders-v5 | 316.2 | 227.5 | 0.481 | 370.4 | 370.4 | 1.000 | champion |
-| BeamRider-v5 | 612.5 | 594.0 | 1.073 | 648.0 | 648.0 | 1.000 | champion |
-| Asterix-v5 | 1168.8 | 1043.8 | 0.884 | 1116.7 | 1116.7 | 1.000 | champion |
-| Qbert-v5 | 1131.2 | 1131.2 | 1.000 | 1102.1 | 1102.1 | 1.000 | champion |
+| Breakout-v5 | 23.8 | 15.5 | 0.561 | 27.8 | 27.8 | 1.000 | champion |
+| SpaceInvaders-v5 | 296.2 | 181.2 | 0.329 | 352.7 | 352.7 | 1.000 | champion |
+| BeamRider-v5 | 460.2 | 616.0 | 0.912 | 567.8 | 567.8 | 1.000 | champion |
+| Asterix-v5 | 1181.2 | 984.4 | 0.822 | 1194.8 | 1194.8 | 1.000 | champion |
+| Qbert-v5 | 892.2 | 892.2 | 1.000 | 875.0 | 875.0 | 1.000 | champion |

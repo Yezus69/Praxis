@@ -13,13 +13,13 @@ and training data. The same atlas + conservation + projection + stability + memo
 across all via different domain adapters — the approach is genuinely domain-general, scaling from supervised
 learning to full Atari. On the easier benchmarks PMA-C retains ~95–100%; on full ALE Atari (the hardest
 regime) the *mutable shared net* substantially reduces but does not fully eliminate forgetting (see §3e),
-so the **deployed PMA-C system** (5 games, 2 seeds, §3f) adds the spec's system-level guarantee: it routes
+so the **deployed PMA-C system** (5 games, 4 seeds, §3f) adds the spec's system-level guarantee: it routes
 each protected skill to a frozen **certified champion**, giving **deployed retention 1.000 for every
-protected skill, both seeds** (the architectural no-forgetting invariant — structural, n-independent) while
-the matched naive baseline's deployed agent forgets (0.332). Separately and directionally (n=2,
-suggestive), the conservation guard reduces the *shared* net's forgetting (norm-retention 0.76 vs 0.34
-baseline; 0.70 vs 0.18 on overwritten games; the conservation-OFF `champions_only` ablation ≈ baseline
-isolates the guard as the driver).
+protected skill, all 4 seeds** (the architectural no-forgetting invariant — structural, n-independent) while
+the matched naive baseline's deployed agent forgets (0.365). Separately (n=4; paired 90% bootstrap CI
+excludes 0 vs the conservation-OFF arm), the conservation guard reduces the *shared* net's forgetting
+(norm-retention 0.68 vs 0.38 baseline; 0.60 vs 0.22 on overwritten games; the conservation-OFF
+`champions_only` ablation ≈ baseline isolates the guard as the driver).
 
 Headlines: **10-task Permuted-MNIST** — ACC 0.749→0.930, worst-task retention 0.529→0.906. **Split-MNIST**
 — ACC 0.197→0.962, baseline forgets *completely* (worst retention 0.000). **Atari-derived RL — Continual
@@ -240,7 +240,7 @@ PMA-C clearly *reduces* catastrophic forgetting on real ALE Atari with metrics a
   SpaceInvaders/BeamRider/Asterix). Pong was dropped — its sparse reward makes the *greedy* eval score converge
   too slowly under 5M frames. envpool setup is reproducible: `pmac/envs/setup_envpool.sh`.
 
-## 3f. FULL ALE Atari — DEPLOYED no-forgetting via certified champions, and conservation reduces shared-net forgetting (5 games, 2 seeds)
+## 3f. FULL ALE Atari — DEPLOYED no-forgetting via certified champions, and conservation reduces shared-net forgetting (5 games, 4 seeds)
 
 §3e showed PMA-C's *mutable shared net* reduces but does not eliminate forgetting (a single net
 provably cannot retain many conflicting hard games). The complete PMA-C guarantee is **system-level**
@@ -248,41 +248,43 @@ provably cannot retain many conflicting hard games). The complete PMA-C guarante
 to it at deploy time. We report **two distinct results separately** (spec I6), having hardened the
 framing against an adversarial multi-agent review that (correctly) flagged that conflating them would
 overclaim. Sequence: **Breakout→SpaceInvaders→BeamRider→Asterix→Qbert**, 4M env-steps/game, real ALE
-(envpool), single shared Nature-DQN CNN, sequential warm-start, **2 seeds**, both RTX 4090s. Three matched
+(envpool), single shared Nature-DQN CNN, sequential warm-start, **4 seeds**, both RTX 4090s. Three matched
 arms (identical nets/optimizer/lr/order/seeds/data): **baseline** (single net, no champions),
 **champions_only** (identical training procedure, conservation OFF, but keeps+routes to champions),
 **pmac-full** (adds the behavior-conservation guard). Data + figure + per-game tables:
 `pma_c_results/atari_deployed/` (`summary.md`, `results_merged.json`, `fig_atari_deployed.png`).
 
-**Result 1 — conservation reduces forgetting in the shared net (directional; n=2).** Random-normalized
-`norm_retention` from the return matrix, the *same* greedy eval protocol for every arm, per-game clipped
-to [0,1] then averaged (± sample std across seeds). The "overwritten-only" column excludes the
-never-overwritten last game (Qbert), i.e. the clean forgetting measure:
+**Result 1 — conservation reduces forgetting in the shared net (n=4).** Random-normalized `norm_retention`
+from the return matrix, the *same* greedy eval protocol for every arm, per-game clipped to [0,1] then
+averaged (± sample std across 4 seeds). The "overwritten-only" column excludes the never-overwritten last
+game (Qbert), i.e. the clean forgetting measure:
 
 | arm | shared-net retention (all 5) | shared-net retention (overwritten 4) | worst game | mean final return |
 |---|---|---|---|---|
-| baseline | 0.342 ± 0.156 | 0.177 ± 0.196 | 0.006 | 337.9 ± 98.9 |
-| champions_only (conservation OFF) | 0.352 ± 0.025 | 0.190 ± 0.032 | 0.024 | 354.4 ± 10.1 |
-| **pmac-full (conservation ON)** | **0.759 ± 0.004** | **0.699 ± 0.005** | **0.384** | **602.3 ± 196.6** |
+| baseline | 0.375 ± 0.098 | 0.219 ± 0.123 | 0.003 | 367.6 ± 80.0 |
+| champions_only (conservation OFF) | 0.301 ± 0.063 | 0.126 ± 0.078 | 0.012 | 322.5 ± 41.7 |
+| **pmac-full (conservation ON)** | **0.676 ± 0.176** | **0.595 ± 0.219** | **0.280** | **537.9 ± 136.6** |
 
-The shared net trained with the conservation guard retains **0.76** of its per-game learned peaks (**0.70**
-on the 4 overwritten games) vs **0.34 / 0.18** for the naive baseline; `champions_only` (conservation OFF,
-otherwise identical) sits at 0.35 / 0.19 ≈ baseline, **isolating the conservation guard as the driver** of
-the shared-net improvement (not the champion store). PMA-C also has +78% mean final return (602 vs 338).
-**Honest scope: this is n=2 — a consistent direction across both seeds (pmac std ±0.004), SUGGESTIVE not
-statistically established** (a 3rd seed and a paired test / bootstrap CI are the next step; §3e's 4-game
-3-seed run is the corroborating evidence that conservation drives shared-net retention). The structural
-Result 2 below is n-independent.
+The shared net trained with the conservation guard retains **0.68** of its per-game learned peaks (**0.60**
+on the 4 overwritten games) vs **0.38 / 0.22** for the naive baseline; `champions_only` (conservation OFF,
+otherwise identical) sits at 0.30 / 0.13 ≈ baseline, **isolating the conservation guard as the driver** of
+the shared-net improvement (not the champion store). PMA-C also has +46% mean final return (538 vs 368).
+
+**Paired-by-seed significance** (the clean conservation isolation, pmac vs `champions_only`, is identical
+training procedure ± the guard): mean Δ **+0.375**, 90% bootstrap CI **[+0.263, +0.463]** (excludes 0),
+**4/4 seeds positive** (overwritten: +0.469, [+0.329, +0.579]). vs baseline: mean Δ +0.301, CI
+[+0.129, +0.449], 3/4 seeds positive (one seed tie). Small-sample (n=4) but a consistent, CI-supported
+positive effect; §3e (4-game, 3-seed) corroborates. The structural Result 2 below is n-independent.
 
 **Result 2 — the deployed system does not lose protected skills (structural safety invariant).**
 
 | arm | champion store? | deployed retention | new-game plasticity (learned ÷ baseline) |
 |---|---|---|---|
-| baseline | no (single net) | 0.332 ± 0.084 (forgets) | 1.000 (ref) |
-| **champions_only** | yes | **1.000 ± 0.000** | **1.187** |
-| **pmac-full** | yes | **1.000 ± 0.000** | 1.129 |
+| baseline | no (single net) | 0.365 ± 0.080 (forgets) | 1.000 (ref) |
+| **champions_only** | yes | **1.000 ± 0.000** | **1.142** |
+| **pmac-full** | yes | **1.000 ± 0.000** | 0.986 |
 
-`deployed_retention = 1.000` for **every** protected skill across **both** seeds (worst-game = 1.000 ≥
+`deployed_retention = 1.000` for **every** protected skill across **all 4** seeds (worst-game = 1.000 ≥
 0.98): the deployed router serves each skill from its frozen certified champion, **re-evaluated live** in
 the real ALE env. This is the spec's no-forgetting safety invariant. **Honesty (from the review):** this
 `1.0` is a *structural identity* (deployed ≡ champion ≡ reference) — the standard trivial upper bound for
@@ -290,12 +292,13 @@ continual RL (certified per-task checkpointing + a router), **expected by constr
 that the conservation loss prevents forgetting**. We prove it is architectural by the `champions_only` arm
 (conservation OFF) also reaching 1.0. Because `champions_only` uses the identical training procedure as
 baseline, its champions are baseline-strength, so the no-forgetting guarantee costs **no plasticity**
-(new games learned 1.19× baseline on average). The matched **baseline has no champion store**, so its
-deployed agent is the single mutable net and it catastrophically forgets (deployed 0.332; e.g. Asterix
-937→106, SpaceInvaders 430→134, Breakout 16→1.3 — full per-game tables committed).
+(new games learned 1.14× baseline on average; pmac-full 0.99×). The matched **baseline has no champion
+store**, so its deployed agent is the single mutable net and it catastrophically forgets (deployed 0.365;
+e.g. per the committed per-game tables, mid-sequence games collapse toward random while the
+champion-routed deployed agent holds them at their certified peak).
 
 **What is and is NOT shown.** The novel content is (a) the conservation guard reducing forgetting in the
-*shared* net (Result 1, directional at n=2) and (b) certified, gated freezing under the spec's invariants;
+*shared* net (Result 1, n=4; paired CI excludes 0 vs the conservation-OFF arm) and (b) certified, gated freezing under the spec's invariants;
 the deployed `1.0` is the architectural safety floor (Result 2), reported per I6 but never attributed to
 the guard. Caveats (all disclosed, several from an adversarial review):
 - **Plasticity ratios >1.0 are not a learning advantage:** `champions_only` learns 1.19× baseline only
@@ -458,7 +461,7 @@ python -m pmac.experiments.continual_atari \
   --games Breakout-v5,SpaceInvaders-v5,BeamRider-v5,Asterix-v5 \
   --per-game-steps 4000000 --seeds 0,1,2 --ablations no_conservation --out runs/pmac_atari
 # (single-game learnability check: python -m pmac.experiments.atari_smoke --game Breakout-v5)
-# DEPLOYED no-forgetting (§3f) — 5 games, 2 seeds, 3 arms (baseline + champions_only + pmac-full).
+# DEPLOYED no-forgetting (§3f) — 5 games, 4 seeds, 3 arms (baseline + champions_only + pmac-full).
 # Run each seed on its own 4090 (seed 0 -> CUDA_VISIBLE_DEVICES=1, seed 1 -> =2), ~4h/seed:
 python -m pmac.experiments.continual_atari \
   --games Breakout-v5,SpaceInvaders-v5,BeamRider-v5,Asterix-v5,Qbert-v5 \
