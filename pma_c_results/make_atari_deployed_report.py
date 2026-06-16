@@ -50,12 +50,16 @@ def _iter_mode_results(runs, mode):
 
 def _stat(values):
     arr = np.asarray(values, dtype=np.float64)
-    return {"mean": float(np.mean(arr)), "std": float(np.std(arr)), "values": [float(v) for v in arr]}
+    # sample std (ddof=1) so small-n uncertainty is not understated; 0.0 for n<=1.
+    std = float(np.std(arr, ddof=1)) if arr.size > 1 else 0.0
+    return {"mean": float(np.mean(arr)), "std": std, "n": int(arr.size),
+            "values": [float(v) for v in arr]}
 
 
 def _collect_mode(runs, mode):
     seeds = []
-    norm_mean, norm_worst = [], []        # shared-net retention (return matrix, consistent protocol)
+    norm_mean, norm_worst = [], []        # shared-net retention (return matrix, consistent protocol), per-game CLIPPED to [0,1]
+    norm_excl_last = []                   # shared-net retention over OVERWRITTEN games only (exclude never-overwritten last game)
     dep_mean, dep_worst = [], []          # deployed champion-routing floor (structural)
     cur_mean, cur_worst = [], []          # deploy-protocol current retention (cross-check)
     mean_final = []                       # mean final return of the shared net (last row)
@@ -65,8 +69,16 @@ def _collect_mode(runs, mode):
     for seed, res in _iter_mode_results(runs, mode):
         seeds.append(seed)
         m = res["metrics"]
-        norm_mean.append(m["mean_norm_retention"])
-        norm_worst.append(m["worst_norm_retention"])
+        # Clip per-game norm_retention to [0,1] before averaging: a game whose shared-net score
+        # ends ABOVE its learned peak (positive transfer / eval noise, e.g. baseline BeamRider
+        # seed0 final>peak) must read as full (1.0) retention, not >100%, so it cannot inflate the
+        # mean. The last game in the sequence is never overwritten (learned==final -> ~1.0), so we
+        # also report retention over the OVERWRITTEN games only (the clean forgetting measure).
+        pg_norm = [min(1.0, max(0.0, float(v))) for v in m.get("norm_retention", [])]
+        norm_mean.append(float(np.mean(pg_norm)) if pg_norm else 0.0)
+        norm_worst.append(float(np.min(pg_norm)) if pg_norm else 0.0)
+        norm_excl_last.append(float(np.mean(pg_norm[:-1])) if len(pg_norm) > 1 else
+                              (float(np.mean(pg_norm)) if pg_norm else 0.0))
         mean_final.append(m["mean_final_return"])
         learned_diag.append([float(v) for v in res["learned"]])
         dep = m.get("deployed", {})
@@ -102,6 +114,7 @@ def _collect_mode(runs, mode):
     return {
         "seeds": seeds, "n_seeds": len(seeds),
         "norm_retention": _stat(norm_mean), "norm_worst": _stat(norm_worst),
+        "norm_retention_overwritten": _stat(norm_excl_last),
         "deployed_floor": _stat([v for v in dep_mean if v == v]),
         "deployed_floor_worst": _stat([v for v in dep_worst if v == v]),
         "current_ret_deploy": _stat([v for v in cur_mean if v == v]),
@@ -127,13 +140,20 @@ def _write_summary(out_dir, games, collected):
     L.append("# Continual Full-ALE Atari — does PMA-C stop forgetting?\n")
     L.append(f"Games (sequential): {', '.join(games)}\n")
     L.append("## 1. PRIMARY (falsifiable): shared mutable-net retention — does the conservation guard reduce forgetting?\n")
-    L.append("Random-normalized `norm_retention` from the return matrix (same greedy eval protocol for every arm). "
-             "Higher = the *single shared net* forgot less. This is the apples-to-apples learning result.\n")
-    L.append("| arm | shared-net mean retention | shared-net worst retention | mean final return |")
-    L.append("|---|---|---|---|")
+    n_seeds = max((collected[m]["n_seeds"] for m in modes), default=0)
+    L.append("Random-normalized `norm_retention` from the return matrix (same greedy eval protocol for every arm), "
+             "per-game clipped to [0,1] then averaged. Higher = the *single shared net* forgot less. This is the "
+             "apples-to-apples learning result. **'overwritten' column excludes the never-overwritten last game** "
+             "(the clean forgetting measure). 'all' is mean+-SAMPLE-std across seeds.\n")
+    L.append(f"> CAVEAT: n={n_seeds} seed(s). At n<=2 this is SUGGESTIVE (consistent direction), NOT a significance "
+             "claim; treat the conservation effect as directional until n>=3 with a paired test / bootstrap CI. The "
+             "DEPLOYED floor (Result 2) is structural and n-independent.\n")
+    L.append("| arm | shared-net retention (all games) | shared-net retention (overwritten only) | worst game | mean final return |")
+    L.append("|---|---|---|---|---|")
     for m in modes:
         c = collected[m]
-        L.append(f"| {m} | {_fmt(c['norm_retention'])} | {_fmt(c['norm_worst'])} | {_fmt(c['mean_final_return'])} |")
+        L.append(f"| {m} | {_fmt(c['norm_retention'])} | {_fmt(c['norm_retention_overwritten'])} | "
+                 f"{_fmt(c['norm_worst'])} | {_fmt(c['mean_final_return'])} |")
     L.append("")
     L.append("## 2. SECONDARY (structural): deployed champion-routing floor\n")
     L.append("With default safety routing the deployed agent serves each protected skill from its frozen certified "

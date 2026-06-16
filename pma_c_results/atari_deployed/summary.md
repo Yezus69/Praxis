@@ -4,13 +4,15 @@ Games (sequential): Breakout-v5, SpaceInvaders-v5, BeamRider-v5, Asterix-v5, Qbe
 
 ## 1. PRIMARY (falsifiable): shared mutable-net retention — does the conservation guard reduce forgetting?
 
-Random-normalized `norm_retention` from the return matrix (same greedy eval protocol for every arm). Higher = the *single shared net* forgot less. This is the apples-to-apples learning result.
+Random-normalized `norm_retention` from the return matrix (same greedy eval protocol for every arm), per-game clipped to [0,1] then averaged. Higher = the *single shared net* forgot less. This is the apples-to-apples learning result. **'overwritten' column excludes the never-overwritten last game** (the clean forgetting measure). 'all' is mean+-SAMPLE-std across seeds.
 
-| arm | shared-net mean retention | shared-net worst retention | mean final return |
-|---|---|---|---|
-| baseline | 0.380 ± 0.149 | 0.006 ± 0.006 | 337.888 ± 69.938 |
-| pmac_champions_only | 0.352 ± 0.018 | 0.024 ± 0.024 | 354.375 ± 7.125 |
-| pmac | 0.806 ± 0.044 | 0.384 ± 0.090 | 602.288 ± 138.988 |
+> CAVEAT: n=2 seed(s). At n<=2 this is SUGGESTIVE (consistent direction), NOT a significance claim; treat the conservation effect as directional until n>=3 with a paired test / bootstrap CI. The DEPLOYED floor (Result 2) is structural and n-independent.
+
+| arm | shared-net retention (all games) | shared-net retention (overwritten only) | worst game | mean final return |
+|---|---|---|---|---|
+| baseline | 0.342 ± 0.156 | 0.177 ± 0.196 | 0.006 ± 0.008 | 337.888 ± 98.907 |
+| pmac_champions_only | 0.352 ± 0.025 | 0.190 ± 0.032 | 0.024 ± 0.034 | 354.375 ± 10.076 |
+| pmac | 0.759 ± 0.004 | 0.699 ± 0.005 | 0.384 ± 0.127 | 602.288 ± 196.558 |
 
 ## 2. SECONDARY (structural): deployed champion-routing floor
 
@@ -18,7 +20,7 @@ With default safety routing the deployed agent serves each protected skill from 
 
 | arm | has champion store? | deployed floor mean | deployed floor worst |
 |---|---|---|---|
-| baseline | no (single net) | 0.332 ± 0.084 | 0.000 ± 0.000 |
+| baseline | no (single net) | 0.332 ± 0.119 | 0.000 ± 0.000 |
 | pmac_champions_only | yes | 1.000 ± 0.000 | 1.000 ± 0.000 |
 | pmac | yes | 1.000 ± 0.000 | 1.000 ± 0.000 |
 

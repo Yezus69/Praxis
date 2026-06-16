@@ -15,9 +15,10 @@ learning to full Atari. On the easier benchmarks PMA-C retains ~95–100%; on fu
 regime) the *mutable shared net* substantially reduces but does not fully eliminate forgetting (see §3e),
 so the **deployed PMA-C system** (5 games, 2 seeds, §3f) adds the spec's system-level guarantee: it routes
 each protected skill to a frozen **certified champion**, giving **deployed retention 1.000 for every
-protected skill** (the architectural no-forgetting invariant) while the matched naive baseline's deployed
-agent forgets (0.332). Separately and falsifiably, the conservation guard reduces the *shared* net's
-forgetting (norm-retention 0.81 vs 0.38 baseline; the conservation-OFF `champions_only` ablation ≈ baseline
+protected skill, both seeds** (the architectural no-forgetting invariant — structural, n-independent) while
+the matched naive baseline's deployed agent forgets (0.332). Separately and directionally (n=2,
+suggestive), the conservation guard reduces the *shared* net's forgetting (norm-retention 0.76 vs 0.34
+baseline; 0.70 vs 0.18 on overwritten games; the conservation-OFF `champions_only` ablation ≈ baseline
 isolates the guard as the driver).
 
 Headlines: **10-task Permuted-MNIST** — ACC 0.749→0.930, worst-task retention 0.529→0.906. **Split-MNIST**
@@ -253,20 +254,25 @@ arms (identical nets/optimizer/lr/order/seeds/data): **baseline** (single net, n
 **pmac-full** (adds the behavior-conservation guard). Data + figure + per-game tables:
 `pma_c_results/atari_deployed/` (`summary.md`, `results_merged.json`, `fig_atari_deployed.png`).
 
-**Result 1 — conservation reduces forgetting in the shared net (falsifiable, apples-to-apples).** Random-
-normalized `norm_retention` from the return matrix, the *same* greedy eval protocol for every arm:
+**Result 1 — conservation reduces forgetting in the shared net (directional; n=2).** Random-normalized
+`norm_retention` from the return matrix, the *same* greedy eval protocol for every arm, per-game clipped
+to [0,1] then averaged (± sample std across seeds). The "overwritten-only" column excludes the
+never-overwritten last game (Qbert), i.e. the clean forgetting measure:
 
-| arm | shared-net mean retention | worst | mean final return |
-|---|---|---|---|
-| baseline | 0.380 ± 0.149 | 0.006 | 337.9 ± 69.9 |
-| champions_only (conservation OFF) | 0.352 ± 0.018 | 0.024 | 354.4 ± 7.1 |
-| **pmac-full (conservation ON)** | **0.806 ± 0.044** | **0.384** | **602.3 ± 139.0** |
+| arm | shared-net retention (all 5) | shared-net retention (overwritten 4) | worst game | mean final return |
+|---|---|---|---|---|
+| baseline | 0.342 ± 0.156 | 0.177 ± 0.196 | 0.006 | 337.9 ± 98.9 |
+| champions_only (conservation OFF) | 0.352 ± 0.025 | 0.190 ± 0.032 | 0.024 | 354.4 ± 10.1 |
+| **pmac-full (conservation ON)** | **0.759 ± 0.004** | **0.699 ± 0.005** | **0.384** | **602.3 ± 196.6** |
 
-The single shared net trained with the conservation guard retains **0.81** of its per-game learned peaks
-vs **0.38** for the naive baseline; `champions_only` (conservation OFF, otherwise identical) sits at 0.35
-≈ baseline, **isolating the conservation guard as the driver** of the shared-net improvement (not the
-champion store). PMA-C also has +78% mean final return (602 vs 338) because retaining old games lifts
-cumulative performance.
+The shared net trained with the conservation guard retains **0.76** of its per-game learned peaks (**0.70**
+on the 4 overwritten games) vs **0.34 / 0.18** for the naive baseline; `champions_only` (conservation OFF,
+otherwise identical) sits at 0.35 / 0.19 ≈ baseline, **isolating the conservation guard as the driver** of
+the shared-net improvement (not the champion store). PMA-C also has +78% mean final return (602 vs 338).
+**Honest scope: this is n=2 — a consistent direction across both seeds (pmac std ±0.004), SUGGESTIVE not
+statistically established** (a 3rd seed and a paired test / bootstrap CI are the next step; §3e's 4-game
+3-seed run is the corroborating evidence that conservation drives shared-net retention). The structural
+Result 2 below is n-independent.
 
 **Result 2 — the deployed system does not lose protected skills (structural safety invariant).**
 
@@ -289,14 +295,23 @@ deployed agent is the single mutable net and it catastrophically forgets (deploy
 937→106, SpaceInvaders 430→134, Breakout 16→1.3 — full per-game tables committed).
 
 **What is and is NOT shown.** The novel content is (a) the conservation guard reducing forgetting in the
-*shared* net (Result 1, falsifiable) and (b) certified, gated freezing under the spec's invariants; the
-deployed `1.0` is the architectural safety floor (Result 2), reported per I6 but never attributed to the
-guard. Per-game transparency: the last game (Qbert) is retained trivially (`learned==final`, no later
-overwrite), and low-score/high-variance games (Breakout) are weakly learned by *both* arms — retention is
-reported per game and over learned skills only (`n_learned` shown). Champion cost: one frozen net
-snapshot per protected skill (~7 MB); spec consolidation (P6) folds the O(N) store back into one net.
-2 seeds (per-seed numbers in `results_merged.json`); routing is sentinel-decided and reported on an
-independent deploy seed (no offline `max`/oracle); retention clipped to [0,1]. Reproduce: see §8.
+*shared* net (Result 1, directional at n=2) and (b) certified, gated freezing under the spec's invariants;
+the deployed `1.0` is the architectural safety floor (Result 2), reported per I6 but never attributed to
+the guard. Caveats (all disclosed, several from an adversarial review):
+- **Plasticity ratios >1.0 are not a learning advantage:** `champions_only` learns 1.19× baseline only
+  because GPU/envpool is non-deterministic over 4M steps (it uses the identical training procedure as
+  baseline, conservation off); read it as "≈ baseline, no plasticity sacrifice," not "better."
+- **Last-game retention is trivial:** the last game (Qbert) is never overwritten (`learned==final`→~1.0),
+  inflating the all-games means uniformly; the "overwritten-only" column (4 games) is the clean measure.
+- **Deployed-floor table is within-arm, not clean cross-arm:** the baseline floor normalizes against the
+  return-matrix peak while the champion arms normalize against `champion_b`; the apples-to-apples cross-arm
+  comparison is Result 1's `norm_retention` (same protocol all arms). The floor table shows each arm's own
+  deployed safety (champions=1.0 by construction; baseline single-net forgets).
+- Low-score/high-variance games (Breakout) are weakly learned by *both* arms; retention is reported per
+  game and over learned skills only (`n_learned` shown), so failure-to-learn cannot masquerade as retention.
+- Champion cost: one frozen net snapshot per protected skill (~7 MB); spec consolidation (P6) folds the
+  O(N) store back into one net. Routing is sentinel-decided / deploy-seed-reported (no offline `max`/oracle);
+  retention clipped to [0,1]. The committed arm name is `pmac_champions_only`. Reproduce: see §8.
 
 ## 4. Credit decomposition — what actually drives the retention (3 seeds)
 
@@ -449,6 +464,8 @@ python -m pmac.experiments.continual_atari \
   --games Breakout-v5,SpaceInvaders-v5,BeamRider-v5,Asterix-v5,Qbert-v5 \
   --per-game-steps 4000000 --seeds 0 --ablations champions_only \
   --guard-norm length --guard-coef 1.0 --out runs/atari_headline_s0
+# seed 1 on the other 4090 (CUDA_VISIBLE_DEVICES=2, --seeds 1, --out runs/atari_headline_s1); same flags.
+# Each main run does 3 arms: baseline + pmac(full) + pmac_champions_only. Then merge:
 python pma_c_results/make_atari_deployed_report.py pma_c_results/atari_deployed \
   runs/atari_headline_s0/results.json runs/atari_headline_s1/results.json
 ```
