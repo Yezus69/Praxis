@@ -10,6 +10,26 @@
 
 ---
 
+## STATUS (2026-06-16, overnight autonomous run — commits up to 14c83af on `pma-c`)
+
+**DONE + GPU-verified (the hard criterion is MET, committed, twice adversarially reviewed):**
+- **P0** `pmac/evaluation.py` — deployed/current/champion SkillScores, random-normalized retention (clip [0,1]), learned-gate, aggregate.
+- **P4** `pmac/deployment.py` — `DeployedPolicy` champion-fallback router; `InvariantViolation` if no executable impl (I0/I2).
+- Wired into `pmac/experiments/continual_atari.py`: deployment eval pass (sentinel-seed route decision / deploy-seed report, no oracle), `champions_only` ablation (decouples champion certification from the conservation guard), pure-champion safety routing.
+- **HEADLINE RESULT** (`pma_c_results/atari_deployed/`, PMA_C_RESULTS.md §3f), 5 games × 2 seeds (n=3,4 runs in progress):
+  - Deployed retention **1.000 for every protected skill** (structural champion-routing safety invariant; n-independent).
+  - Matched baseline (no champions) deployed **0.332** (catastrophically forgets).
+  - Conservation reduces *shared-net* forgetting **0.76 vs 0.34** (0.70 vs 0.18 overwritten-only); `champions_only` ≈ baseline isolates the guard. Plasticity preserved (≥ baseline). **HONESTY: deployed=1.0 is a structural identity (≡ certified checkpointing + router), NOT a learning result — headline the shared-net `norm_retention` instead. The conservation effect is directional at small n (paired sign 2/2; n=3/4 runs added significance).**
+
+**BUILT + CPU-tested, but NOT yet wired into the hot loop / GPU-learning-verified (next-session work):**
+- **P1** `pmac/rl_update.py` — full projected PMA-C PPO update (per-skill guard grads, tangent-cone projection, omega scaling, bounded correction). Opt-in `update_mode=pmac_projected`; default `guard_loss` path byte-unchanged. CPU tests pass; **GPU learning-verify TIMED OUT (projected ~2× slower than guard_loss) — re-run smaller (2 games, longer timeout) and confirm it learns before relying.**
+- **P2** `pmac/guard_pressure.py` — risk-adaptive per-skill guard λ with length floor + recovery patience. CPU-tested.
+- **P3** `pmac/rl_sentinels.py` + `pmac/rl_audit.py` — sentinel sets + audit (PASS/CURRENT_REGRESSION/HARD_FAILURE) + rollback via SafeCheckpoint. CPU-tested.
+
+**NEXT (priority order):** (1) fold in n=3/4 seeds + paired significance; (2) GPU-verify P1 projected learns, then wire P1/P2/P3 into `continual_atari` as an opt-in full-PMA-C path + GPU-verify it still learns AND improves current_unified_retention; (3) P5 growth/adapters (the real fix for the retention–plasticity tradeoff + removes the O(N) champion-store cost via P6 consolidation); (4) 8-game stress (P11) and a second domain (extend the deployed router to MinAtar `continual_minatar.py` — reuses P0/P4 — then MuJoCo/LLM). Keep the verified `train_ppo_atari`/`evaluate_atari` path; add mechanisms as opt-in hooks; always GPU-verify learning before relying.
+
+---
+
 ## 0. Read this first: the exact problem we are solving
 
 The current `pma-c` branch shows a real signal, but it is not yet the complete PMA-C system in RL.
