@@ -49,6 +49,15 @@ def value_abs(v, v_star) -> jnp.ndarray:
     return jnp.reshape(diff, (diff.shape[0], -1)).sum(axis=-1)
 
 
+def huber(x, delta=1.0) -> jnp.ndarray:
+    """Elementwise Huber loss on a residual."""
+    dtype = jnp.result_type(x, delta, jnp.float32)
+    x = jnp.asarray(x, dtype=dtype)
+    delta = jnp.asarray(delta, dtype=dtype)
+    abs_x = jnp.abs(x)
+    return jnp.where(abs_x <= delta, 0.5 * x * x, delta * (abs_x - 0.5 * delta))  # spec §11
+
+
 def mean_distance(per_example) -> jnp.ndarray:
     """Mean of a per-example distance vector."""
     return jnp.mean(jnp.asarray(per_example))
@@ -59,6 +68,7 @@ DISTANCES = {
     "mse": mse,
     "cosine": cosine_distance,
     "value_abs": value_abs,
+    "huber": huber,
 }
 
 
@@ -67,6 +77,7 @@ __all__ = [
     "mse",
     "cosine_distance",
     "value_abs",
+    "huber",
     "mean_distance",
     "DISTANCES",
 ]

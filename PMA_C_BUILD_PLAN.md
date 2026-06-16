@@ -62,3 +62,9 @@ pressure normalized as games grow · key-space drift controlled · deletion requ
 
 ## Status log (update as modules land)
 - M0 done: infra confirmed, plan written, 5 games chosen.
+- M1 done (5b39034): pmac/memory core; adversarial review SHIP; 42 tests.
+- M2 done (817765d): memory-conditioned agent + reader + blend; 2 reviews SHIP;
+  GPU jit smoke on 4090 (empty→b=0=base policy, populated→blend active); 49 tests.
+  Note: inference-time hot bank kept modest (few-k atoms) for 100k SPS; warm bank
+  serves slower training-time conservation. Reader is capacity-parametric.
+- M3 in progress: write rule (§8 importance I_t).
