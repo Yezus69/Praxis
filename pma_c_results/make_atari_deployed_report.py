@@ -122,7 +122,36 @@ def _collect_mode(runs, mode):
         "mean_final_return": _stat(mean_final),
         "n_learned": _stat(n_learned),
         "learned_diag": np.asarray(learned_diag, dtype=np.float64),
+        "seed_norm": dict(zip(seeds, norm_mean)),
+        "seed_norm_overwritten": dict(zip(seeds, norm_excl_last)),
         "per_game": per_game,
+    }
+
+
+def _paired(collected, mode_a, mode_b, key):
+    """Paired (by seed) difference mode_a - mode_b on per-seed metric `key`; bootstrap 90% CI + sign test."""
+    if mode_a not in collected or mode_b not in collected:
+        return None
+    a, b = collected[mode_a], collected[mode_b]
+    if a is None or b is None:
+        return None
+    seeds = sorted(set(a[key]) & set(b[key]))
+    if not seeds:
+        return None
+    diffs = np.asarray([a[key][s] - b[key][s] for s in seeds], dtype=np.float64)
+    n = diffs.size
+    # paired bootstrap (resample seeds with replacement); fixed rng for reproducibility.
+    rng = np.random.default_rng(12345)
+    if n > 1:
+        boot = np.array([rng.choice(diffs, size=n, replace=True).mean() for _ in range(10000)])
+        lo, hi = float(np.percentile(boot, 5)), float(np.percentile(boot, 95))
+    else:
+        lo = hi = float(diffs[0])
+    n_pos = int(np.sum(diffs > 0))
+    return {
+        "seeds": seeds, "diffs": [float(d) for d in diffs],
+        "mean_diff": float(diffs.mean()), "ci90": [lo, hi],
+        "n_pos": n_pos, "n": n, "direction_consistent": bool(n_pos == n or n_pos == 0),
     }
 
 
@@ -155,6 +184,22 @@ def _write_summary(out_dir, games, collected):
         L.append(f"| {m} | {_fmt(c['norm_retention'])} | {_fmt(c['norm_retention_overwritten'])} | "
                  f"{_fmt(c['norm_worst'])} | {_fmt(c['mean_final_return'])} |")
     L.append("")
+    # Paired significance of the conservation effect (pmac vs baseline, and pmac vs champions_only).
+    pm = "pmac" if "pmac" in collected else None
+    if pm:
+        L.append("### Significance of the conservation effect (paired by seed, shared-net retention)\n")
+        L.append("| contrast | metric | per-seed diffs | mean diff | 90% bootstrap CI | seeds with diff>0 |")
+        L.append("|---|---|---|---|---|---|")
+        for other in ["baseline", "pmac_champions_only"]:
+            for key, label in [("seed_norm", "all 5"), ("seed_norm_overwritten", "overwritten 4")]:
+                p = _paired(collected, pm, other, key)
+                if p is None:
+                    continue
+                diffs = ", ".join(f"{d:+.3f}" for d in p["diffs"])
+                L.append(f"| pmac − {other} | {label} | {diffs} | {p['mean_diff']:+.3f} | "
+                         f"[{p['ci90'][0]:+.3f}, {p['ci90'][1]:+.3f}] | {p['n_pos']}/{p['n']} |")
+        L.append("\n(Positive = conservation retains more. At small n read the CI and the sign count, not a p-value; "
+                 "a consistent positive sign across all seeds + a CI excluding 0 is the bar.)\n")
     L.append("## 2. SECONDARY (structural): deployed champion-routing floor\n")
     L.append("With default safety routing the deployed agent serves each protected skill from its frozen certified "
              "champion, so **deployed_retention = 1.0 BY CONSTRUCTION** (deployed≡champion≡best). This is the "

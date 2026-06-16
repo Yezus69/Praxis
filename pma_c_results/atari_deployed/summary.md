@@ -14,6 +14,17 @@ Random-normalized `norm_retention` from the return matrix (same greedy eval prot
 | pmac_champions_only | 0.352 ± 0.025 | 0.190 ± 0.032 | 0.024 ± 0.034 | 354.375 ± 10.076 |
 | pmac | 0.759 ± 0.004 | 0.699 ± 0.005 | 0.384 ± 0.127 | 602.288 ± 196.558 |
 
+### Significance of the conservation effect (paired by seed, shared-net retention)
+
+| contrast | metric | per-seed diffs | mean diff | 90% bootstrap CI | seeds with diff>0 |
+|---|---|---|---|---|---|
+| pmac − baseline | all 5 | +0.310, +0.525 | +0.417 | [+0.310, +0.525] | 2/2 |
+| pmac − baseline | overwritten 4 | +0.387, +0.656 | +0.522 | [+0.387, +0.656] | 2/2 |
+| pmac − pmac_champions_only | all 5 | +0.392, +0.422 | +0.407 | [+0.392, +0.422] | 2/2 |
+| pmac − pmac_champions_only | overwritten 4 | +0.491, +0.528 | +0.509 | [+0.491, +0.528] | 2/2 |
+
+(Positive = conservation retains more. At small n read the CI and the sign count, not a p-value; a consistent positive sign across all seeds + a CI excluding 0 is the bar.)
+
 ## 2. SECONDARY (structural): deployed champion-routing floor
 
 With default safety routing the deployed agent serves each protected skill from its frozen certified champion, so **deployed_retention = 1.0 BY CONSTRUCTION** (deployed≡champion≡best). This is the architectural no-forgetting invariant (≡ certified per-task checkpointing + router), NOT a product of the conservation loss — the `champions_only` arm (conservation OFF) also reaches 1.0. The baseline has no champion store, so its deployed agent is the single mutable net and it forgets.
