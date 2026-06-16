@@ -488,6 +488,8 @@ class MemoryBank:
             "teacher_value": np.ascontiguousarray(self.teacher_value[indices].astype(np.float32)),
             "importance": np.ascontiguousarray(self.importance[indices].astype(np.float32)),
             "game_id": np.ascontiguousarray(self.game_id[indices].astype(np.int32)),
+            "source_flags": np.ascontiguousarray(self.source_flags[indices].astype(np.int32)),
+            "age": np.ascontiguousarray(self.age[indices].astype(np.float32)),
         }
 
     def sample(self, rng, n) -> dict[str, np.ndarray]:
