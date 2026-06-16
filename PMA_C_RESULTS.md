@@ -5,14 +5,14 @@
 
 ## 1. Claim
 
-On **four** continual-learning settings spanning supervised AND reinforcement learning — Permuted-MNIST
-(10 tasks), Split-MNIST (class-incremental), continual-RL gridworld, and **pixel-based RL: continual
-MinAtar** (miniaturized-Atari, shared CNN, 4 games) — a **naive baseline catastrophically forgets** earlier
-tasks while **PMA-C retains them**, using the *same* network, optimizer, learning rate, task order, and
-training data. PMA-C dominates on every standard metric while **still learning each new task as well as
-(or better than) the baseline** (no loss of plasticity). The same atlas + conservation + projection +
-stability + memory machinery is reused across all four via different domain adapters — the approach is
-genuinely domain-general.
+On **five** continual-learning settings spanning supervised AND reinforcement learning — Permuted-MNIST
+(10 tasks), Split-MNIST (class-incremental), continual-RL gridworld, MinAtar (miniaturized-Atari), and
+**FULL ALE Atari** (real 84×84 pixels, shared CNN, 4 games) — a **naive baseline catastrophically forgets**
+earlier tasks while **PMA-C retains them**, using the *same* network, optimizer, learning rate, task order,
+and training data. The same atlas + conservation + projection + stability + memory machinery is reused
+across all via different domain adapters — the approach is genuinely domain-general, scaling from supervised
+learning to full Atari. On the easier benchmarks PMA-C retains ~95–100%; on full ALE Atari (the hardest
+regime) it *substantially reduces but does not fully eliminate* forgetting (see §3e).
 
 Headlines: **10-task Permuted-MNIST** — ACC 0.749→0.930, worst-task retention 0.529→0.906. **Split-MNIST**
 — ACC 0.197→0.962, baseline forgets *completely* (worst retention 0.000). **Atari-derived RL — Continual
@@ -183,6 +183,56 @@ return is higher in all three seeds (the *unpaired* std is large only because ga
 - **Scope:** this is *miniaturized* Atari (MinAtar), genuinely harder than §3c (shared CNN, pixels, sparse
   reward) but not full-scale ALE; it answers the easy-task critique without claiming Atari-scale generality.
 
+## 3e. FULL ALE Atari — Continual learning on real Atari (4 games, 3 seeds)
+
+The hardest test: **real Arcade Learning Environment Atari** — full 84×84×4 pixel frames (not miniaturized),
+via `envpool` (C++-vectorized ALE, ~16k steps/s) driving a CleanRL-style jitted PPO (bounded `lax.scan`/
+fixed loops — cannot hang). A **single shared Nature-DQN CNN** (Conv 32-64-64 → Dense512 → policy+value,
+game-id conditioned, universal 18-action head) is trained **sequentially** on 4 distinct games
+(Breakout→SpaceInvaders→BeamRider→Asterix), 4M env-steps each, 3 seeds, split across two RTX 4090s. The shared
+conv encoder is genuinely overwritten across games. Returns are signed/varied (Pong [−21,21], Asterix ~1000s),
+so the metric is **random-normalized retention** = (final−random)/(learned−random), plus raw mean final return.
+Figure: `pma_c_results/atari_hard/fig_atari.png`; per-seed data: `pma_c_results/atari_hard/`.
+
+| mode | mean norm. retention | worst-game retention | mean final return |
+|---|---|---|---|
+| baseline | 0.361 ± 0.026 | 0.000 | 437 ± 95 |
+| **PMA-C** | **0.675 ± 0.058** | **0.288** | **610 ± 20** |
+| − conservation | 0.345 ± 0.000 | 0.000 | 574 |
+
+Per-game (mean over seeds, learned→final greedy score; the baseline *forgets*, PMA-C *retains*):
+
+| game | baseline learned→final | PMA-C learned→final |
+|---|---|---|
+| Breakout (1st) | 35 → **4** | 42 → **11** |
+| SpaceInvaders | 484 → **186** | 349 → **339** |
+| BeamRider | 659 → **322** | 417 → **684** |
+| Asterix (last) | 1237 → 1237 | 1407 → 1407 |
+
+**Reading.** The naive PPO agent **catastrophically forgets** earlier games when the shared CNN is overwritten
+— SpaceInvaders 484→186, BeamRider 659→322, Breakout 35→4 (retention 0.36 overall). **PMA-C nearly DOUBLES
+retention (0.36 → 0.68)** and achieves a **+40% higher mean final return (610±20 vs 437±95)** — and far more
+*consistently* (1/5 the variance), because retaining old games stabilizes cumulative performance. It retains
+SpaceInvaders almost fully (339 vs 186) and BeamRider entirely (684 vs 322). Removing the conservation loss
+(`no_conservation`) drops retention back to baseline (0.345) — **conservation is the driver on full Atari too.**
+PMA-C clearly *reduces* catastrophic forgetting on real ALE Atari with metrics and committed evidence.
+
+**Honest notes & limitations.**
+- **This is full ALE (84×84), not MinAtar** — the genuinely hard regime. Over 4 hard games PMA-C *substantially
+  reduces but does not fully eliminate* forgetting (mean retention 0.68, not ~1.0 as on MinAtar/MNIST): the
+  *first* game (Breakout) is only partially retained over 4 overwrites (0.29 vs baseline 0.14).
+- **Retention-plasticity tradeoff is real here.** At guard_coef=1.0 the accumulated conservation can sometimes
+  over-constrain a *middle* game in a given seed (learned score depressed) — the same tradeoff seen on MinAtar.
+  The principled fix is a **length-normalized guard** (pressure ÷ number of prior games) so guard_coef need not
+  be retuned per sequence length; it is implemented neither here nor on MinAtar (a clear TODO). We report
+  guard_coef=1.0, 3 seeds.
+- **Metric:** per-game normalized retention is noisy when a game's learned score is near its random baseline
+  (degenerate ratio), so we exclude not-learned games from the per-game retention and headline the robust
+  **mean final return** alongside it.
+- **Budget:** 4M frames/game (each game clearly learns); games chosen for frequent rewards (Breakout/
+  SpaceInvaders/BeamRider/Asterix). Pong was dropped — its sparse reward makes the *greedy* eval score converge
+  too slowly under 5M frames. envpool setup is reproducible: `pmac/envs/setup_envpool.sh`.
+
 ## 4. Credit decomposition — what actually drives the retention (3 seeds)
 
 Source: `pma_c_results/decomp_5task/results.json` (5-task Permuted-MNIST, 3 seeds, matched).
@@ -322,6 +372,12 @@ python -m pmac.experiments.continual_minatar \
   --games Breakout-MinAtar,Asterix-MinAtar,Freeway-MinAtar,SpaceInvaders-MinAtar \
   --per-game-steps 5000000 --seeds 0,1,2 --ablations no_conservation --out runs/pmac_minatar
 # (single-game learnability check: python -m pmac.experiments.rl_minatar_smoke --game Breakout-MinAtar)
+# FULL ALE ATARI — continual real Atari (4 games, shared Nature-CNN, 3 seeds, ~2h/seed on a 4090).
+# First set up envpool (real ALE via C++ vectorization): bash pmac/envs/setup_envpool.sh
+python -m pmac.experiments.continual_atari \
+  --games Breakout-v5,SpaceInvaders-v5,BeamRider-v5,Asterix-v5 \
+  --per-game-steps 4000000 --seeds 0,1,2 --ablations no_conservation --out runs/pmac_atari
+# (single-game learnability check: python -m pmac.experiments.atari_smoke --game Breakout-v5)
 ```
 Each run writes `results.json` (all accuracy matrices + metrics + aggregate + config echo proving
 gate/clip/val) and `comparison.png`. Figures regenerated via `pma_c_results/make_figures.py`. Unit
