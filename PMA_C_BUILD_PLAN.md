@@ -67,4 +67,9 @@ pressure normalized as games grow · key-space drift controlled · deletion requ
   GPU jit smoke on 4090 (empty→b=0=base policy, populated→blend active); 49 tests.
   Note: inference-time hot bank kept modest (few-k atoms) for 100k SPS; warm bank
   serves slower training-time conservation. Reader is capacity-parametric.
-- M3 in progress: write rule (§8 importance I_t).
+- M3 done (8460433): write rule §8; review SHIP.
+- M4 done (2046b06): latent conservation §11 + Huber, visual sentinel §12, retrieval alignment §13; review SHIP.
+- M5 done: risk-normalized guard §16 + closed-loop review §18 + rollback gate §19/§26; self-reviewed.
+- Next M6: split into M6a (single living-memory PPO train step) + M6b (continual driver,
+  eval=live+memory only, §18 review, §19 gate). Live GPU smoke each. Hot bank stays GPU-resident
+  + bounded (~4k) so per-step retrieval is cheap (~13 TFLOP/s @ 100k SPS).
