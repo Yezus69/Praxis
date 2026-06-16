@@ -15,7 +15,8 @@ learning to full Atari. On the easier benchmarks PMA-C retains ~95–100%; on fu
 regime) the *mutable shared net* substantially reduces but does not fully eliminate forgetting (see §3e),
 so the **deployed PMA-C system** (5 games, 4 seeds, §3f) adds the spec's system-level guarantee: it routes
 each protected skill to a frozen **certified champion**, giving **deployed retention 1.000 for every
-protected skill, all 4 seeds** (the architectural no-forgetting invariant — structural, n-independent) while
+protected skill, all 4 seeds** (the architectural no-forgetting invariant — structural, n-independent; also
+reproduced in a 2nd domain, MinAtar, §3g) while
 the matched naive baseline's deployed agent forgets (0.365). Separately (n=4; paired 90% bootstrap CI
 excludes 0 vs the conservation-OFF arm), the conservation guard reduces the *shared* net's forgetting
 (norm-retention 0.68 vs 0.38 baseline; 0.60 vs 0.22 on overwritten games; the conservation-OFF
@@ -315,6 +316,28 @@ the guard. Caveats (all disclosed, several from an adversarial review):
 - Champion cost: one frozen net snapshot per protected skill (~7 MB); spec consolidation (P6) folds the
   O(N) store back into one net. Routing is sentinel-decided / deploy-seed-reported (no offline `max`/oracle);
   retention clipped to [0,1]. The committed arm name is `pmac_champions_only`. Reproduce: see §8.
+
+## 3g. Second domain — MinAtar: the deployed champion-routing guarantee is domain-general (4 games, 2 seeds)
+
+The *same* P0/P4 deployment machinery (`pmac/deployment.py` + `pmac/evaluation.py`) applied to a second
+domain — MinAtar (gymnax, shared CNN, 4 games Breakout→Asterix→Freeway→SpaceInvaders, 3M steps/game) —
+reproduces the full-ALE-Atari result. Data: `pma_c_results/minatar_deployed/`.
+
+| arm | deployed retention (champion routing) | shared-net (current) retention | mean final return |
+|---|---|---|---|
+| baseline (no champion store) | 0.389 ± 0.038 (forgets) | 0.389 | 13.0 |
+| **champions_only** (conservation OFF) | **1.000 ± 0.000** | 0.389 ≈ baseline | 13.0 |
+| **pmac-full** (conservation ON) | **1.000 ± 0.000** | **0.995 ± 0.005** | 9.9 |
+
+Deployed champion routing gives `deployed_retention = 1.000` for every protected skill across both seeds
+(baseline, with no champion store, forgets — 0.389). Conservation retains the *shared* net nearly
+perfectly on MinAtar (0.995 vs the conservation-OFF 0.389; corroborates §3d's 0.947). As in Atari,
+`champions_only` (baseline training + champions) gives the deployed no-forgetting guarantee at **zero
+plasticity cost** (mean final 13.0 = baseline), while pmac-full's conservation trades some absolute
+performance (9.9) for shared-net retention — the intrinsic retention–plasticity trade-off of a single
+mutable net (which growth/consolidation, P5/P6, are designed to relax). This confirms the deployed
+no-forgetting guarantee (structural) AND the conservation effect are **domain-general**, exactly as the
+spec's domain-adapter design intends.
 
 ## 4. Credit decomposition — what actually drives the retention (3 seeds)
 
