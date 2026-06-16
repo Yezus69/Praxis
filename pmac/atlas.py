@@ -22,6 +22,11 @@ class SkillNode:
     current_score: float = 0.0
     retention: float = 1.0
     allowed_regression: float = 0.05
+    current_certified: bool = True
+    current_last_score: float = 0.0
+    fallback_route_id: str | None = None
+    fallback_score: float = 0.0
+    needs_repair: bool = False
     last_certified_step: int = 0
     prototype_embedding: Any = None
     local_radius: float = 1.0

@@ -21,7 +21,9 @@ from pmac.agents.ppo_atari import AtariPPOConfig, train_ppo_atari
 from pmac.anchors import AnchorStore
 from pmac.atlas import Atlas
 from pmac.checkpoint import ChampionStore
+from pmac.deployment import DeployedPolicy, DeploymentDecision
 from pmac.envs.atari_envpool import ACT_DIM, make_train_env
+from pmac.evaluation import aggregate_retention, make_skill_scores
 from pmac.sentinels import SentinelStore
 
 warnings.filterwarnings("ignore")
@@ -57,6 +59,12 @@ class ContinualAtariConfig:
     value_coef: float = 1.0
     guard_tolerance: float = 0.01
     ablation: str | None = None
+    deploy_eval_episodes: int = 12
+    sentinel_eval_episodes: int = 8
+    cert_frac: float = 0.05
+    cert_abs_floor: float = 0.0
+    learned_delta_frac: float = 0.05
+    allowed_regression_frac: float = 0.02
 
 
 class AtariAnchorBuffer(NamedTuple):
@@ -124,12 +132,24 @@ def _validate_continual_config(cfg: ContinualAtariConfig) -> None:
         raise ValueError("eval_max_steps_per_episode must be positive")
     if int(cfg.eval_steps_cap) <= 0:
         raise ValueError("eval_steps_cap must be positive")
+    if int(cfg.deploy_eval_episodes) <= 0:
+        raise ValueError("deploy_eval_episodes must be positive")
+    if int(cfg.sentinel_eval_episodes) <= 0:
+        raise ValueError("sentinel_eval_episodes must be positive")
     if int(cfg.guard_batch) <= 0:
         raise ValueError("guard_batch must be positive")
     if int(cfg.anchor_buffer_per_game) <= 0:
         raise ValueError("anchor_buffer_per_game must be positive")
     if int(cfg.num_envs) <= 0:
         raise ValueError("num_envs must be positive")
+    if float(cfg.cert_frac) < 0.0:
+        raise ValueError("cert_frac must be non-negative")
+    if float(cfg.cert_abs_floor) < 0.0:
+        raise ValueError("cert_abs_floor must be non-negative")
+    if float(cfg.learned_delta_frac) < 0.0:
+        raise ValueError("learned_delta_frac must be non-negative")
+    if float(cfg.allowed_regression_frac) < 0.0:
+        raise ValueError("allowed_regression_frac must be non-negative")
     ablation = None if cfg.ablation == "none" else cfg.ablation
     if ablation not in ALLOWED_ATARI_ABLATIONS:
         raise ValueError(f"unknown Atari PMA-C ablation: {cfg.ablation}")
@@ -147,6 +167,18 @@ def _train_seed(seed: int, task_i: int) -> int:
 
 def _eval_seed(seed: int, task_i: int) -> int:
     return int(seed) + 200_003 * int(task_i) + 17
+
+
+def _sentinel_eval_seed(seed: int, game_id: int) -> int:
+    return int(seed) + 600_011 * int(game_id) + 53
+
+
+def _deploy_eval_seed(seed: int, game_id: int) -> int:
+    return int(seed) + 700_001 * int(game_id) + 71
+
+
+def _random_deploy_seed(seed: int, game_id: int) -> int:
+    return int(seed) + 800_011 * int(game_id) + 97
 
 
 def _anchor_seed(seed: int, task_i: int) -> int:
@@ -304,6 +336,11 @@ def _certify_game(
         current_score=float(eval_score),
         retention=1.0,
         allowed_regression=0.0,
+        current_certified=True,
+        current_last_score=float(eval_score),
+        fallback_route_id=str(game),
+        fallback_score=float(eval_score),
+        needs_repair=False,
         last_certified_step=int(task_i),
         guard_lambda=float(cfg.guard_coef),
         certified_impls=[str(game)],
@@ -362,6 +399,226 @@ def evaluate_all_games(
         eval_envs,
         eval_steps_cap,
     )
+
+
+def _deployment_eval_score(
+    params,
+    game,
+    game_id: int,
+    n_games: int,
+    eval_episodes: int,
+    seed: int,
+    cfg: ContinualAtariConfig,
+) -> float:
+    return float(
+        evaluate_atari(
+            params,
+            game,
+            int(game_id),
+            int(n_games),
+            n_episodes=int(eval_episodes),
+            seed=int(seed),
+            max_steps_per_episode=int(cfg.eval_max_steps_per_episode),
+            eval_envs=int(cfg.eval_envs),
+            eval_steps_cap=int(cfg.eval_steps_cap),
+        )
+    )
+
+
+def _learned_delta_for_game(best: float, random_score: float, cfg: ContinualAtariConfig) -> float:
+    """Use an absolute Atari margin so low peaks cannot count as learned."""
+    del best
+    return float(max(1.0, float(cfg.learned_delta_frac) * abs(float(random_score))))
+
+
+def _allowed_regression_for_game(
+    best: float, random_score: float, cfg: ContinualAtariConfig
+) -> float:
+    return float(float(cfg.allowed_regression_frac) * max(float(best) - float(random_score), 0.0))
+
+
+def evaluate_deployment(
+    current_params,
+    games,
+    n_games,
+    random_scores,
+    *,
+    atlas,
+    cfg,
+    seed,
+    best_scores=None,
+    random_params=None,
+) -> dict:
+    """Run the bounded deployed-vs-current Atari evaluation pass.
+
+    All scores (champion / current / random) are re-measured live under one consistent
+    protocol so the reported retentions cannot be gamed by seed/episode-count mismatch:
+      * sentinel seed A  -> ROUTE DECISION only (never reported)
+      * deploy seed B     -> reported champion_B / current_B / random_B
+    Honesty guarantees:
+      * best[g] = max(champion_B, current_B) (true peak under the deploy protocol) so a
+        current net that exceeds its champion can never inflate retention above 1.0.
+      * deployed_B = current_B iff the sentinel certified current (current_A >= champion_A
+        - cert_tol); else champion_B. This is a real route choice, NOT an offline max.
+      * a forgotten skill routes to its champion => deployed_B == champion_B == best =>
+        deployed_retention == 1.0 exactly (the no-forgetting safety invariant).
+    """
+    games = list(games)
+    random_scores = np.asarray(random_scores, dtype=np.float32)
+    if random_scores.shape[0] != len(games):
+        raise ValueError("random_scores must match games")
+    if atlas is None:
+        if best_scores is None:
+            raise ValueError("best_scores are required when atlas is None")
+        best_scores = np.asarray(best_scores, dtype=np.float32)
+        if best_scores.shape[0] != len(games):
+            raise ValueError("best_scores must match games")
+
+    policy = None if atlas is None else DeployedPolicy(current_params, atlas)
+    skill_scores = []
+    decisions = []
+    best_values = []
+    champion_b_values = []
+    current_b_values = []
+    deployed_b_values = []
+    random_b_values = []
+    current_certified_values = []
+
+    for game_id, game in enumerate(games):
+        skill_id = str(game)
+        seed_a = _sentinel_eval_seed(seed, game_id)
+        seed_b = _deploy_eval_seed(seed, game_id)
+
+        # Stable random baseline under the SAME deploy protocol (fresh-init net), so the
+        # normalization denominator is not corrupted by the coarse per-game eval random.
+        if random_params is not None:
+            random_score = _deployment_eval_score(
+                random_params,
+                game,
+                game_id,
+                n_games,
+                int(cfg.deploy_eval_episodes),
+                _random_deploy_seed(seed, game_id),
+                cfg,
+            )
+        else:
+            random_score = float(random_scores[game_id])
+
+        current_b = _deployment_eval_score(
+            current_params,
+            game,
+            game_id,
+            n_games,
+            int(cfg.deploy_eval_episodes),
+            seed_b,
+            cfg,
+        )
+
+        if atlas is None:
+            champion_b = float(current_b)
+            best = float(max(float(best_scores[game_id]), float(current_b)))
+            current_certified = True
+            decision = DeploymentDecision(
+                skill_id=skill_id,
+                route_type="current",
+                route_id="current",
+                reason="baseline_no_champion",
+                current_certified=True,
+                fallback_used=False,
+            )
+        else:
+            assert policy is not None
+            if skill_id not in atlas.nodes:
+                policy.select_route(skill_id, False)
+            node = atlas.nodes[skill_id]
+            champion = getattr(node, "champion_ref", None)
+            if champion is None or not hasattr(champion, "params") or champion.params is None:
+                policy.select_route(skill_id, False)
+            champion_params = champion.params
+            champion_a = _deployment_eval_score(
+                champion_params,
+                game,
+                game_id,
+                n_games,
+                int(cfg.sentinel_eval_episodes),
+                seed_a,
+                cfg,
+            )
+            current_a = _deployment_eval_score(
+                current_params,
+                game,
+                game_id,
+                n_games,
+                int(cfg.sentinel_eval_episodes),
+                seed_a,
+                cfg,
+            )
+            champion_b = _deployment_eval_score(
+                champion_params,
+                game,
+                game_id,
+                n_games,
+                int(cfg.deploy_eval_episodes),
+                seed_b,
+                cfg,
+            )
+            # True peak under the deploy protocol: the better of the certified champion and
+            # the current net. Guarantees retention in [0,1] and exact 1.0 for the route taken
+            # when it is the peak (forgotten skill -> champion is the peak -> retention 1.0).
+            best = float(max(float(champion_b), float(current_b)))
+            cert_tol = (
+                float(cfg.cert_frac) * max(float(champion_a) - float(random_score), 0.0)
+                + float(cfg.cert_abs_floor)
+            )
+            current_certified = bool(float(current_a) >= float(champion_a) - float(cert_tol))
+            allowed_regression = _allowed_regression_for_game(best, random_score, cfg)
+            route_id = getattr(champion, "route", None)
+            node.current_certified = current_certified
+            node.current_last_score = float(current_a)
+            node.current_score = float(current_b)
+            node.best_score = float(best)
+            node.allowed_regression = float(allowed_regression)
+            node.fallback_route_id = str(route_id if route_id is not None else skill_id)
+            node.fallback_score = float(champion_b)
+            decision = policy.select_route(skill_id, current_certified)
+            policy.resolve_params(decision)
+
+        deployed_b = float(current_b if decision.route_type == "current" else champion_b)
+        allowed_regression = _allowed_regression_for_game(best, random_score, cfg)
+        learned_delta = _learned_delta_for_game(best, random_score, cfg)
+        scores = make_skill_scores(
+            skill_id,
+            best=best,
+            current=current_b,
+            champion=champion_b,
+            deployed=deployed_b,
+            random_score=random_score,
+            route_type=decision.route_type,
+            current_certified=current_certified,
+            learned_delta=learned_delta,
+            allowed_regression=allowed_regression,
+        )
+        skill_scores.append(scores)
+        decisions.append(decision)
+        best_values.append(float(best))
+        champion_b_values.append(float(champion_b))
+        current_b_values.append(float(current_b))
+        deployed_b_values.append(float(deployed_b))
+        random_b_values.append(float(random_score))
+        current_certified_values.append(bool(current_certified))
+
+    return {
+        "skill_scores": [asdict(score) for score in skill_scores],
+        "decisions": [asdict(decision) for decision in decisions],
+        "route_usage": DeployedPolicy.route_usage(decisions),
+        "aggregate": aggregate_retention(skill_scores),
+        "best": best_values,
+        "champion_B": champion_b_values,
+        "current_B": current_b_values,
+        "deployed_B": deployed_b_values,
+        "random_B": random_b_values,
+        "current_certified": current_certified_values,
+    }
 
 
 def compute_atari_metrics(return_matrix, random_scores) -> dict:
@@ -486,7 +743,18 @@ def run_atari_baseline(
         )
 
     wall_s = time.perf_counter() - started
-    return _result(
+    deployment = evaluate_deployment(
+        params,
+        games,
+        n_games,
+        random_scores,
+        atlas=None,
+        cfg=cfg,
+        seed=seed,
+        best_scores=np.max(return_matrix, axis=0),
+        random_params=_fresh_params(seed, n_games),
+    )
+    result = _result(
         return_matrix,
         random_scores,
         "baseline",
@@ -499,8 +767,11 @@ def run_atari_baseline(
             "returns_curves": curves,
             "guard_enabled": False,
             "guard_source": "none",
+            "deployment": deployment,
         },
     )
+    result["metrics"]["deployed"] = deployment["aggregate"]
+    return result
 
 
 def run_atari_pmac(
@@ -601,7 +872,19 @@ def run_atari_pmac(
         guard_source = "most_recent_prior"
     else:
         guard_source = "all_prior"
-    return _result(
+    deployment_atlas = atlas if guard_enabled else None
+    deployment = evaluate_deployment(
+        params,
+        games,
+        n_games,
+        random_scores,
+        atlas=deployment_atlas,
+        cfg=cfg,
+        seed=seed,
+        best_scores=None if deployment_atlas is not None else np.max(return_matrix, axis=0),
+        random_params=_fresh_params(seed, n_games),
+    )
+    result = _result(
         return_matrix,
         random_scores,
         mode,
@@ -620,8 +903,11 @@ def run_atari_pmac(
             "guard_source": guard_source,
             "guard_norm": str(cfg.guard_norm),
             "guard_effective_coefs": [float(v) for v in guard_effective_coefs],
+            "deployment": deployment,
         },
     )
+    result["metrics"]["deployed"] = deployment["aggregate"]
+    return result
 
 
 def _jsonify_result(result: dict) -> dict:
@@ -644,10 +930,27 @@ def _aggregate(results_by_mode):
     for mode, results in results_by_mode.items():
         stats = {}
         for key, value in results[0]["metrics"].items():
+            if isinstance(value, dict):
+                continue
             if isinstance(value, (list, tuple)):
                 continue
             arr = np.asarray([result["metrics"][key] for result in results], dtype=np.float64)
             stats[key] = {"mean": float(np.mean(arr)), "std": float(np.std(arr))}
+        deployed = results[0]["metrics"].get("deployed")
+        if isinstance(deployed, dict):
+            deployed_stats = {}
+            for key, value in deployed.items():
+                if isinstance(value, (dict, list, tuple, str)):
+                    continue
+                arr = np.asarray(
+                    [result["metrics"]["deployed"][key] for result in results],
+                    dtype=np.float64,
+                )
+                deployed_stats[key] = {
+                    "mean": float(np.mean(arr)),
+                    "std": float(np.std(arr)),
+                }
+            stats["deployed"] = deployed_stats
         wall = np.asarray([result["wall_s"] for result in results], dtype=np.float64)
         stats["wall_s"] = {"mean": float(np.mean(wall)), "std": float(np.std(wall))}
         aggregate[mode] = stats
@@ -707,6 +1010,13 @@ def _print_result(result: dict):
     metrics = result["metrics"]
     learned = ", ".join(f"{v:.3f}" for v in np.asarray(result["learned"]))
     final = ", ".join(f"{v:.3f}" for v in np.asarray(result["final"]))
+    deployed = metrics.get("deployed")
+    deployed_text = ""
+    if isinstance(deployed, dict):
+        deployed_text = (
+            f" deployed_mean_retention={deployed['mean_deployed_retention']:.3f} "
+            f"deployed_worst_retention={deployed['worst_deployed_retention']:.3f}"
+        )
     print(
         f"{result['mode']} seed={int(result['extra']['seed'])} "
         f"wall_s={float(result['wall_s']):.3f} "
@@ -715,6 +1025,7 @@ def _print_result(result: dict):
         f"worst_norm_retention={metrics['worst_norm_retention']:.3f} "
         f"norm_forgetting={metrics['norm_forgetting']:.3f} "
         f"mean_final_return={metrics['mean_final_return']:.3f}"
+        f"{deployed_text}"
     )
 
 
@@ -734,6 +1045,12 @@ def main(argv=None):
     parser.add_argument("--eval-envs", type=int, default=16)
     parser.add_argument("--eval-max-steps-per-episode", type=int, default=30_000)
     parser.add_argument("--eval-steps-cap", type=int, default=6_000)
+    parser.add_argument("--deploy-eval-episodes", type=int, default=12)
+    parser.add_argument("--sentinel-eval-episodes", type=int, default=8)
+    parser.add_argument("--cert-frac", type=float, default=0.05)
+    parser.add_argument("--cert-abs-floor", type=float, default=0.0)
+    parser.add_argument("--learned-delta-frac", type=float, default=0.05)
+    parser.add_argument("--allowed-regression-frac", type=float, default=0.02)
     parser.add_argument("--num-envs", type=int, default=64)
     parser.add_argument("--num-steps", type=int, default=128)
     parser.add_argument("--update-epochs", type=int, default=4)
@@ -780,6 +1097,12 @@ def main(argv=None):
         eval_envs=int(args.eval_envs),
         eval_max_steps_per_episode=int(args.eval_max_steps_per_episode),
         eval_steps_cap=int(args.eval_steps_cap),
+        deploy_eval_episodes=int(args.deploy_eval_episodes),
+        sentinel_eval_episodes=int(args.sentinel_eval_episodes),
+        cert_frac=float(args.cert_frac),
+        cert_abs_floor=float(args.cert_abs_floor),
+        learned_delta_frac=float(args.learned_delta_frac),
+        allowed_regression_frac=float(args.allowed_regression_frac),
         guard_coef=float(args.guard_coef),
         guard_norm=str(args.guard_norm),
         guard_batch=int(args.guard_batch),
@@ -846,6 +1169,7 @@ __all__ = [
     "ContinualAtariConfig",
     "compute_atari_metrics",
     "evaluate_all_games",
+    "evaluate_deployment",
     "run_atari_baseline",
     "run_atari_pmac",
 ]
