@@ -1,36 +1,16 @@
-# Praxis Phase-0 dependencies (Python >= 3.11, Linux/WSL2/container only).
+# PMA-C full-ALE-Atari continual PPO (deployed certified-champion routing).
+# Python >= 3.11, Linux / WSL2 + CUDA (JAX has no native-Windows CUDA wheel).
 #
-# JAX GPU has NO native-Windows wheel — install inside the Docker image (see Dockerfile)
-# or a Linux/WSL2 venv. Install order matters: install everything below, THEN run
-#     pip install -U "jax[cuda12]"
-# LAST so the CUDA jaxlib overrides any CPU jaxlib pulled in transitively.
-#
-# A pinned lockfile (exact resolved versions) is captured to requirements.lock.txt
-# after the first green GPU run — use that for reproducibility.
+# Install order:
+#   pip install -r requirements.txt
+#   pip install -U "jax[cuda12]==0.9.2"        # LAST, so the CUDA jaxlib wins
+#   bash pmac/envs/setup_envpool.sh            # real ALE via envpool + ALE ROMs (installed --no-deps)
 
-# --- simulator ---
-playground            # PyPI name; imports as `mujoco_playground`
-mujoco>=3.0
-mujoco-mjx
-
-# --- trainer (Brax PPO; physics deprecated, training maintained — 0.14.x) ---
-brax>=0.12
+numpy
 flax
 optax
-orbax-checkpoint
-
-# --- config / logging / plotting ---
-ml_collections
 matplotlib
-tensorboardX
-
-# --- rollout video ---
-mediapy
-imageio[ffmpeg]
-
-# --- test ---
 pytest
 
-# --- JAX (install LAST, with CUDA 12 wheels) ---
-# pip install -U "jax[cuda12]"
-jax[cuda12]
+# jax[cuda12]==0.9.2   # install separately, last (see above)
+# envpool              # installed by pmac/envs/setup_envpool.sh

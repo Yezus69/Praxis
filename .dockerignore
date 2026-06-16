@@ -1,8 +1,0 @@
-.git
-ckpts
-runs
-*.mp4
-outputs
-__pycache__
-*.pyc
-.pytest_cache
