@@ -28,6 +28,7 @@ warnings.filterwarnings("ignore")
 
 
 ALLOWED_ATARI_ABLATIONS = {None, "none", "no_conservation", "no_replay"}
+ALLOWED_GUARD_NORMS = {"length", "none"}
 
 
 @dataclass(frozen=True)
@@ -45,9 +46,12 @@ class ContinualAtariConfig:
     max_grad_norm: float = 0.5
     lr: float = 2.5e-4
     anneal_lr: bool = True
-    eval_episodes: int = 5
+    eval_episodes: int = 4
+    eval_envs: int = 16
     eval_max_steps_per_episode: int = 30_000
+    eval_steps_cap: int = 6_000
     guard_coef: float = 1.0
+    guard_norm: str = "length"
     guard_batch: int = 256
     anchor_buffer_per_game: int = 2048
     value_coef: float = 1.0
@@ -114,8 +118,12 @@ def _validate_continual_config(cfg: ContinualAtariConfig) -> None:
         raise ValueError("num_envs*num_steps must be divisible by num_minibatches")
     if int(cfg.eval_episodes) <= 0:
         raise ValueError("eval_episodes must be positive")
+    if int(cfg.eval_envs) <= 0:
+        raise ValueError("eval_envs must be positive")
     if int(cfg.eval_max_steps_per_episode) <= 0:
         raise ValueError("eval_max_steps_per_episode must be positive")
+    if int(cfg.eval_steps_cap) <= 0:
+        raise ValueError("eval_steps_cap must be positive")
     if int(cfg.guard_batch) <= 0:
         raise ValueError("guard_batch must be positive")
     if int(cfg.anchor_buffer_per_game) <= 0:
@@ -125,6 +133,8 @@ def _validate_continual_config(cfg: ContinualAtariConfig) -> None:
     ablation = None if cfg.ablation == "none" else cfg.ablation
     if ablation not in ALLOWED_ATARI_ABLATIONS:
         raise ValueError(f"unknown Atari PMA-C ablation: {cfg.ablation}")
+    if str(cfg.guard_norm) not in ALLOWED_GUARD_NORMS:
+        raise ValueError(f"unknown Atari guard_norm: {cfg.guard_norm}")
 
 
 def _init_seed(seed: int) -> int:
@@ -161,13 +171,23 @@ def _guard_from_buffers(
         selected = selected[-1:]
     if not selected:
         return None
+    lengths = [int(buf.obs_uint8.shape[0]) for buf in selected]
+    prior_offsets = np.concatenate(
+        [np.asarray([0], dtype=np.int32), np.cumsum(np.asarray(lengths, dtype=np.int32))]
+    )
+    n_prior = max(1, len(selected))
+    if str(cfg.guard_norm) == "length":
+        effective_guard_coef = float(cfg.guard_coef) / float(n_prior)
+    else:
+        effective_guard_coef = float(cfg.guard_coef)
 
     return {
         "obs_uint8": np.concatenate([buf.obs_uint8 for buf in selected], axis=0),
         "game_onehot": np.concatenate([buf.game_onehot for buf in selected], axis=0),
         "teacher_logits": np.concatenate([buf.teacher_logits for buf in selected], axis=0),
         "teacher_value": np.concatenate([buf.teacher_value for buf in selected], axis=0),
-        "guard_coef": float(cfg.guard_coef),
+        "prior_offsets": prior_offsets,
+        "guard_coef": float(effective_guard_coef),
         "value_coef": float(cfg.value_coef),
         "guard_tolerance": float(cfg.guard_tolerance),
         "guard_batch": int(cfg.guard_batch),
@@ -297,6 +317,8 @@ def _evaluate_all_games_with_cap(
     eval_episodes,
     seed,
     max_steps_per_episode: int,
+    eval_envs: int,
+    eval_steps_cap: int,
 ) -> np.ndarray:
     games = list(games)
     if not games:
@@ -313,12 +335,22 @@ def _evaluate_all_games_with_cap(
                 n_episodes=int(eval_episodes),
                 seed=base_seed + 9973 * int(game_id),
                 max_steps_per_episode=int(max_steps_per_episode),
+                eval_envs=int(eval_envs),
+                eval_steps_cap=int(eval_steps_cap),
             )
         )
     return np.asarray(scores, dtype=np.float32)
 
 
-def evaluate_all_games(params, games, n_games, eval_episodes, seed) -> np.ndarray:
+def evaluate_all_games(
+    params,
+    games,
+    n_games,
+    eval_episodes,
+    seed,
+    eval_envs: int = 16,
+    eval_steps_cap: int = 6_000,
+) -> np.ndarray:
     """Greedy true-score evaluation on every Atari game."""
     return _evaluate_all_games_with_cap(
         params,
@@ -327,6 +359,8 @@ def evaluate_all_games(params, games, n_games, eval_episodes, seed) -> np.ndarra
         eval_episodes,
         seed,
         30_000,
+        eval_envs,
+        eval_steps_cap,
     )
 
 
@@ -420,6 +454,8 @@ def run_atari_baseline(
         cfg.eval_episodes,
         _random_eval_seed(seed),
         cfg.eval_max_steps_per_episode,
+        cfg.eval_envs,
+        cfg.eval_steps_cap,
     )
     return_matrix = np.zeros((n_games, n_games), dtype=np.float32)
     curves = {}
@@ -445,6 +481,8 @@ def run_atari_baseline(
             cfg.eval_episodes,
             _eval_seed(seed, task_i),
             cfg.eval_max_steps_per_episode,
+            cfg.eval_envs,
+            cfg.eval_steps_cap,
         )
 
     wall_s = time.perf_counter() - started
@@ -492,6 +530,8 @@ def run_atari_pmac(
         cfg.eval_episodes,
         _random_eval_seed(seed),
         cfg.eval_max_steps_per_episode,
+        cfg.eval_envs,
+        cfg.eval_steps_cap,
     )
     atlas = Atlas()
     champions = ChampionStore()
@@ -501,10 +541,12 @@ def run_atari_pmac(
     guard_curves = {}
     total_updates = 0
     guard_enabled = ablation != "no_conservation"
+    guard_effective_coefs: list[float] = []
     params = None
 
     for task_i, game in enumerate(games):
         guard = _guard_from_buffers(buffers, cfg, ablation) if guard_enabled else None
+        guard_effective_coefs.append(0.0 if guard is None else float(guard["guard_coef"]))
         train = train_ppo_atari(
             game,
             task_i,
@@ -525,6 +567,8 @@ def run_atari_pmac(
             cfg.eval_episodes,
             _eval_seed(seed, task_i),
             cfg.eval_max_steps_per_episode,
+            cfg.eval_envs,
+            cfg.eval_steps_cap,
         )
 
         if guard_enabled:
@@ -574,6 +618,8 @@ def run_atari_pmac(
             "anchor_counts": [int(buf.obs_uint8.shape[0]) for buf in buffers],
             "guard_enabled": bool(guard_enabled),
             "guard_source": guard_source,
+            "guard_norm": str(cfg.guard_norm),
+            "guard_effective_coefs": [float(v) for v in guard_effective_coefs],
         },
     )
 
@@ -682,9 +728,12 @@ def main(argv=None):
     parser.add_argument("--seeds", default="0")
     parser.add_argument("--ablations", default="none")
     parser.add_argument("--guard-coef", type=float, default=1.0)
+    parser.add_argument("--guard-norm", choices=sorted(ALLOWED_GUARD_NORMS), default="length")
     parser.add_argument("--out", default="runs/atari_continual")
-    parser.add_argument("--eval-episodes", type=int, default=5)
+    parser.add_argument("--eval-episodes", type=int, default=4)
+    parser.add_argument("--eval-envs", type=int, default=16)
     parser.add_argument("--eval-max-steps-per-episode", type=int, default=30_000)
+    parser.add_argument("--eval-steps-cap", type=int, default=6_000)
     parser.add_argument("--num-envs", type=int, default=64)
     parser.add_argument("--num-steps", type=int, default=128)
     parser.add_argument("--update-epochs", type=int, default=4)
@@ -728,8 +777,11 @@ def main(argv=None):
         max_grad_norm=float(args.max_grad_norm),
         anneal_lr=bool(args.anneal_lr),
         eval_episodes=int(args.eval_episodes),
+        eval_envs=int(args.eval_envs),
         eval_max_steps_per_episode=int(args.eval_max_steps_per_episode),
+        eval_steps_cap=int(args.eval_steps_cap),
         guard_coef=float(args.guard_coef),
+        guard_norm=str(args.guard_norm),
         guard_batch=int(args.guard_batch),
         anchor_buffer_per_game=int(args.anchor_buffer_per_game),
         guard_tolerance=float(args.guard_tolerance),
@@ -789,6 +841,7 @@ if __name__ == "__main__":
 
 __all__ = [
     "ALLOWED_ATARI_ABLATIONS",
+    "ALLOWED_GUARD_NORMS",
     "AtariAnchorBuffer",
     "ContinualAtariConfig",
     "compute_atari_metrics",

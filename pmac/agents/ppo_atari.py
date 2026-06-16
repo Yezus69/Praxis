@@ -56,6 +56,7 @@ class GuardHost(NamedTuple):
     game_onehot: np.ndarray
     teacher_logits: np.ndarray
     teacher_value: np.ndarray
+    prior_offsets: np.ndarray | None
     guard_coef: float
     value_coef: float
     guard_tolerance: float
@@ -183,12 +184,19 @@ def _guard_get(guard, name: str):
     return getattr(guard, name)
 
 
+def _guard_get_optional(guard, name: str, default=None):
+    if isinstance(guard, Mapping):
+        return guard.get(name, default)
+    return getattr(guard, name, default)
+
+
 def _prepare_guard_host(guard, n_games: int) -> GuardHost:
     obs_uint8 = np.asarray(_guard_get(guard, "obs_uint8"), dtype=np.uint8)
     game_onehot = np.asarray(_guard_get(guard, "game_onehot"), dtype=np.float32)
     teacher_logits = np.asarray(_guard_get(guard, "teacher_logits"), dtype=np.float32)
     teacher_value = np.asarray(_guard_get(guard, "teacher_value"), dtype=np.float32).reshape(-1)
     guard_batch = int(_guard_get(guard, "guard_batch"))
+    prior_offsets = _guard_get_optional(guard, "prior_offsets")
 
     if obs_uint8.ndim != 4 or obs_uint8.shape[1:] != (4, 84, 84):
         raise ValueError(f"guard obs_uint8 must have shape [M,4,84,84], got {obs_uint8.shape}")
@@ -203,12 +211,21 @@ def _prepare_guard_host(guard, n_games: int) -> GuardHost:
         raise ValueError(f"guard teacher_value must have shape [{m}], got {teacher_value.shape}")
     if guard_batch <= 0:
         raise ValueError("guard_batch must be positive")
+    if prior_offsets is not None:
+        prior_offsets = np.asarray(prior_offsets, dtype=np.int64).reshape(-1)
+        if int(prior_offsets.shape[0]) < 2:
+            raise ValueError("guard prior_offsets must contain at least one slice")
+        if int(prior_offsets[0]) != 0 or int(prior_offsets[-1]) != m:
+            raise ValueError("guard prior_offsets must start at 0 and end at the guard size")
+        if np.any(np.diff(prior_offsets) <= 0):
+            raise ValueError("guard prior_offsets must define non-empty increasing slices")
 
     return GuardHost(
         obs_uint8=obs_uint8,
         game_onehot=game_onehot,
         teacher_logits=teacher_logits,
         teacher_value=teacher_value,
+        prior_offsets=prior_offsets,
         guard_coef=float(_guard_get(guard, "guard_coef")),
         value_coef=float(_guard_get(guard, "value_coef")),
         guard_tolerance=float(_guard_get(guard, "guard_tolerance")),
@@ -216,13 +233,39 @@ def _prepare_guard_host(guard, n_games: int) -> GuardHost:
     )
 
 
+def _sample_balanced_guard_indices(guard: GuardHost, rng: np.random.Generator) -> np.ndarray:
+    offsets = np.asarray(guard.prior_offsets, dtype=np.int64)
+    num_priors = int(offsets.shape[0] - 1)
+    batch_size = int(guard.guard_batch)
+    counts = np.full((num_priors,), batch_size // num_priors, dtype=np.int64)
+    remainder = int(batch_size % num_priors)
+    if remainder:
+        order = rng.permutation(num_priors)
+        counts[order[:remainder]] += 1
+
+    parts = []
+    for prior_i, count in enumerate(counts):
+        count = int(count)
+        if count <= 0:
+            continue
+        start = int(offsets[prior_i])
+        stop = int(offsets[prior_i + 1])
+        parts.append(rng.integers(start, stop, size=count, endpoint=False))
+    idx = np.concatenate(parts, axis=0).astype(np.int64, copy=False)
+    rng.shuffle(idx)
+    return idx
+
+
 def _sample_guard_batch_host(guard: GuardHost, rng: np.random.Generator) -> GuardBatch:
-    idx = rng.integers(
-        0,
-        int(guard.obs_uint8.shape[0]),
-        size=int(guard.guard_batch),
-        endpoint=False,
-    )
+    if guard.prior_offsets is None:
+        idx = rng.integers(
+            0,
+            int(guard.obs_uint8.shape[0]),
+            size=int(guard.guard_batch),
+            endpoint=False,
+        )
+    else:
+        idx = _sample_balanced_guard_indices(guard, rng)
     return GuardBatch(
         obs=jnp.asarray(norm_obs(guard.obs_uint8[idx]), dtype=jnp.float32),
         game_onehot=jnp.asarray(guard.game_onehot[idx], dtype=jnp.float32),

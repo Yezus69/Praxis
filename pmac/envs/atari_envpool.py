@@ -15,6 +15,8 @@ ATARI_GAMES = [
     "BeamRider-v5",
     "Asterix-v5",
     "Seaquest-v5",
+    "Qbert-v5",
+    "DemonAttack-v5",
 ]
 ACT_DIM = 18
 
