@@ -34,13 +34,15 @@ from pmac.behavior_distance import kl_categorical
 from pmac.checkpoint import ChampionStore
 from pmac.conservation import AnchorBatch, conservation_loss
 from pmac.continual import clip_global
+from pmac.deployment import DeployedPolicy, DeploymentDecision
 from pmac.envs.minatar_gymnax import GAMES, GameSpec, make_games, pad_obs, vreset, vstep
+from pmac.evaluation import aggregate_retention, make_skill_scores
 from pmac.sentinels import SentinelStore
 
 warnings.filterwarnings("ignore")
 
 
-ALLOWED_MINATAR_ABLATIONS = {None, "none", "no_conservation", "no_replay"}
+ALLOWED_MINATAR_ABLATIONS = {None, "none", "no_conservation", "champions_only", "no_replay"}
 
 
 @dataclass(frozen=True)
@@ -66,6 +68,13 @@ class ContinualRLConfig:
     guard_tolerance: float = 0.005
     value_coef: float = 1.0
     ablation: str | None = None
+    deploy_eval_episodes: int = 64
+    sentinel_eval_episodes: int = 32
+    cert_frac: float = 0.05
+    learned_delta_frac: float = 0.05
+    allowed_regression_frac: float = 0.02
+    switch_margin_frac: float = 0.05
+    deployed_use_current: bool = False
 
 
 class GuardPool(NamedTuple):
@@ -126,12 +135,27 @@ def _to_ppo_config(cfg: ContinualRLConfig) -> PPOConfig:
 def _validate_continual_config(cfg: ContinualRLConfig) -> int:
     if int(cfg.eval_episodes) <= 0:
         raise ValueError("eval_episodes must be positive")
+    if int(cfg.deploy_eval_episodes) <= 0:
+        raise ValueError("deploy_eval_episodes must be positive")
+    if int(cfg.sentinel_eval_episodes) <= 0:
+        raise ValueError("sentinel_eval_episodes must be positive")
     if int(cfg.guard_batch) <= 0:
         raise ValueError("guard_batch must be positive")
     if int(cfg.anchor_buffer_per_game) <= 0:
         raise ValueError("anchor_buffer_per_game must be positive")
     if cfg.eval_horizon is not None and int(cfg.eval_horizon) <= 0:
         raise ValueError("eval_horizon must be positive when set")
+    if float(cfg.cert_frac) < 0.0:
+        raise ValueError("cert_frac must be non-negative")
+    if float(cfg.learned_delta_frac) < 0.0:
+        raise ValueError("learned_delta_frac must be non-negative")
+    if float(cfg.allowed_regression_frac) < 0.0:
+        raise ValueError("allowed_regression_frac must be non-negative")
+    if float(cfg.switch_margin_frac) < 0.0:
+        raise ValueError("switch_margin_frac must be non-negative")
+    ablation = None if cfg.ablation == "none" else cfg.ablation
+    if ablation not in ALLOWED_MINATAR_ABLATIONS:
+        raise ValueError(f"unknown MinAtar PMA-C ablation: {cfg.ablation}")
     return _validate_config(_to_ppo_config(cfg))
 
 
@@ -286,8 +310,24 @@ def _eval_seed(seed: int, task_i: int) -> int:
     return int(seed) + 200_003 * int(task_i) + 17
 
 
+def _sentinel_eval_seed_minatar(seed: int, game_id: int) -> int:
+    return int(seed) + 600_011 * int(game_id) + 53
+
+
+def _deploy_eval_seed_minatar(seed: int, game_id: int) -> int:
+    return int(seed) + 700_001 * int(game_id) + 71
+
+
+def _random_deploy_seed_minatar(seed: int, game_id: int) -> int:
+    return int(seed) + 800_011 * int(game_id) + 97
+
+
 def _anchor_seed(seed: int, task_i: int) -> int:
     return int(seed) + 300_007 * int(task_i) + 31
+
+
+def _fresh_minatar_params(seed: int, c_in: int, n_games: int, act_max: int):
+    return init_ac(jax.random.PRNGKey(int(seed) + 7), int(c_in), int(n_games), int(act_max))
 
 
 def _train_minatar_game(
@@ -528,6 +568,66 @@ def _eval_horizon_for_spec(spec: GameSpec, eval_horizon) -> int:
     return 1000
 
 
+def evaluate_one_minatar(
+    params,
+    spec: GameSpec,
+    specs,
+    n_games,
+    act_max,
+    key,
+    eval_episodes,
+    eval_horizon,
+) -> float:
+    """Greedy fixed-horizon evaluation on one MinAtar game using full-set dims."""
+    specs = list(specs)
+    n_games = int(n_games)
+    act_max = int(act_max)
+    c_in = _c_max(specs)
+    eval_episodes = int(eval_episodes)
+    if not hasattr(key, "shape"):
+        key = jax.random.PRNGKey(int(key))
+    action_masks = _action_masks_for_specs(specs, n_games, act_max)
+    params = _force_action_masks(params, action_masks)
+    game_onehot = jax.nn.one_hot(int(spec.game_id), n_games, dtype=jnp.float32)
+    horizon = _eval_horizon_for_spec(spec, eval_horizon)
+
+    def eval_one(params, key):
+        reset_keys = jax.random.split(key, eval_episodes)
+        raw_obs, env_state = vreset(spec.env, spec.params, reset_keys)
+        obs = pad_obs(raw_obs, c_in)
+        done_seen = jnp.zeros((eval_episodes,), dtype=bool)
+        returns = jnp.zeros((eval_episodes,), dtype=jnp.float32)
+
+        def step(carry, _):
+            env_state, obs, done_seen, returns, rng = carry
+            rng, step_key = jax.random.split(rng)
+            logits, _ = ac_apply(params, obs, game_onehot)
+            actions = jnp.argmax(logits, axis=-1).astype(jnp.int32)
+            step_keys = jax.random.split(step_key, eval_episodes)
+            next_obs_raw, next_state, reward, done, _ = vstep(
+                spec.env,
+                spec.params,
+                step_keys,
+                env_state,
+                actions,
+            )
+            active = jnp.logical_not(done_seen)
+            returns = returns + jnp.where(active, reward.astype(jnp.float32), 0.0)
+            done_seen = jnp.logical_or(done_seen, done)
+            next_obs = pad_obs(next_obs_raw, c_in)
+            return (next_state, next_obs, done_seen, returns, rng), None
+
+        (_, _, _, returns, _), _ = jax.lax.scan(
+            step,
+            (env_state, obs, done_seen, returns, key),
+            None,
+            length=int(horizon),
+        )
+        return jnp.mean(returns)
+
+    return float(jax.device_get(jax.jit(eval_one)(params, key)))
+
+
 def evaluate_all_games(
     params,
     specs,
@@ -543,55 +643,204 @@ def evaluate_all_games(
         return np.asarray([], dtype=np.float32)
     n_games = int(n_games)
     act_max = int(act_max)
-    c_in = _c_max(specs)
     eval_episodes = int(eval_episodes)
     if not hasattr(key, "shape"):
         key = jax.random.PRNGKey(int(key))
-    action_masks = _action_masks_for_specs(specs, n_games, act_max)
-    params = _force_action_masks(params, action_masks)
     game_keys = jax.random.split(key, len(specs))
     scores = []
 
     for game_key, spec in zip(game_keys, specs):
-        game_onehot = jax.nn.one_hot(int(spec.game_id), n_games, dtype=jnp.float32)
-        horizon = _eval_horizon_for_spec(spec, eval_horizon)
-
-        def eval_one(params, key):
-            reset_keys = jax.random.split(key, eval_episodes)
-            raw_obs, env_state = vreset(spec.env, spec.params, reset_keys)
-            obs = pad_obs(raw_obs, c_in)
-            done_seen = jnp.zeros((eval_episodes,), dtype=bool)
-            returns = jnp.zeros((eval_episodes,), dtype=jnp.float32)
-
-            def step(carry, _):
-                env_state, obs, done_seen, returns, rng = carry
-                rng, step_key = jax.random.split(rng)
-                logits, _ = ac_apply(params, obs, game_onehot)
-                actions = jnp.argmax(logits, axis=-1).astype(jnp.int32)
-                step_keys = jax.random.split(step_key, eval_episodes)
-                next_obs_raw, next_state, reward, done, _ = vstep(
-                    spec.env,
-                    spec.params,
-                    step_keys,
-                    env_state,
-                    actions,
-                )
-                active = jnp.logical_not(done_seen)
-                returns = returns + jnp.where(active, reward.astype(jnp.float32), 0.0)
-                done_seen = jnp.logical_or(done_seen, done)
-                next_obs = pad_obs(next_obs_raw, c_in)
-                return (next_state, next_obs, done_seen, returns, rng), None
-
-            (_, _, _, returns, _), _ = jax.lax.scan(
-                step,
-                (env_state, obs, done_seen, returns, key),
-                None,
-                length=int(horizon),
+        scores.append(
+            evaluate_one_minatar(
+                params,
+                spec,
+                specs,
+                n_games,
+                act_max,
+                game_key,
+                eval_episodes,
+                eval_horizon,
             )
-            return jnp.mean(returns)
-
-        scores.append(float(jax.device_get(jax.jit(eval_one)(params, game_key))))
+        )
     return np.asarray(scores, dtype=np.float32)
+
+
+def _learned_delta_for_minatar(best: float, random_score: float, cfg: ContinualRLConfig) -> float:
+    return float(float(cfg.learned_delta_frac) * max(float(best) - float(random_score), 0.0))
+
+
+def _allowed_regression_for_minatar(
+    best: float, random_score: float, cfg: ContinualRLConfig
+) -> float:
+    return float(float(cfg.allowed_regression_frac) * max(float(best) - float(random_score), 0.0))
+
+
+def evaluate_minatar_deployment(
+    current_params,
+    specs,
+    n_games,
+    act_max,
+    random_params,
+    *,
+    atlas,
+    cfg,
+    seed,
+    best_scores=None,
+) -> dict:
+    """Run the bounded deployed-vs-current MinAtar evaluation pass."""
+    specs = list(specs)
+    if atlas is None:
+        if best_scores is None:
+            raise ValueError("best_scores are required when atlas is None")
+        best_scores = np.asarray(best_scores, dtype=np.float32)
+        if best_scores.shape[0] != len(specs):
+            raise ValueError("best_scores must match specs")
+
+    policy = None if atlas is None else DeployedPolicy(current_params, atlas)
+    skill_scores = []
+    decisions = []
+    best_values = []
+    champion_b_values = []
+    current_b_values = []
+    deployed_b_values = []
+    random_b_values = []
+    current_certified_values = []
+    current_safe_values = []
+
+    for game_index, spec in enumerate(specs):
+        skill_id = str(spec.name)
+        game_id = int(spec.game_id)
+        seed_a = _sentinel_eval_seed_minatar(seed, game_id)
+        seed_b = _deploy_eval_seed_minatar(seed, game_id)
+        random_score = evaluate_one_minatar(
+            random_params,
+            spec,
+            specs,
+            n_games,
+            act_max,
+            jax.random.PRNGKey(_random_deploy_seed_minatar(seed, game_id)),
+            int(cfg.deploy_eval_episodes),
+            cfg.eval_horizon,
+        )
+        current_b = evaluate_one_minatar(
+            current_params,
+            spec,
+            specs,
+            n_games,
+            act_max,
+            jax.random.PRNGKey(seed_b),
+            int(cfg.deploy_eval_episodes),
+            cfg.eval_horizon,
+        )
+
+        if atlas is None:
+            champion_b = float(current_b)
+            best = float(max(float(best_scores[game_index]), float(current_b)))
+            current_certified = True
+            current_safe = True
+            decision = DeploymentDecision(
+                skill_id=skill_id,
+                route_type="current",
+                route_id="current",
+                reason="baseline_no_champion",
+                current_certified=True,
+                fallback_used=False,
+            )
+        else:
+            assert policy is not None
+            if skill_id not in atlas.nodes:
+                policy.select_route(skill_id, False)
+            node = atlas.nodes[skill_id]
+            champion = getattr(node, "champion_ref", None)
+            if champion is None or not hasattr(champion, "params") or champion.params is None:
+                policy.select_route(skill_id, False)
+            champion_params = champion.params
+            champion_a = evaluate_one_minatar(
+                champion_params,
+                spec,
+                specs,
+                n_games,
+                act_max,
+                jax.random.PRNGKey(seed_a),
+                int(cfg.sentinel_eval_episodes),
+                cfg.eval_horizon,
+            )
+            current_a = evaluate_one_minatar(
+                current_params,
+                spec,
+                specs,
+                n_games,
+                act_max,
+                jax.random.PRNGKey(seed_a),
+                int(cfg.sentinel_eval_episodes),
+                cfg.eval_horizon,
+            )
+            champion_b = evaluate_one_minatar(
+                champion_params,
+                spec,
+                specs,
+                n_games,
+                act_max,
+                jax.random.PRNGKey(seed_b),
+                int(cfg.deploy_eval_episodes),
+                cfg.eval_horizon,
+            )
+            best = float(champion_b)
+            switch_margin = float(cfg.switch_margin_frac) * max(
+                float(champion_a) - float(random_score), 0.0
+            )
+            current_safe = bool(float(current_a) >= float(champion_a) + float(switch_margin))
+            current_certified = bool(current_safe and bool(cfg.deployed_use_current))
+            allowed_regression = _allowed_regression_for_minatar(best, random_score, cfg)
+            route_id = getattr(champion, "route", None)
+            node.current_certified = current_certified
+            node.current_last_score = float(current_a)
+            node.current_score = float(current_b)
+            node.best_score = float(best)
+            node.allowed_regression = float(allowed_regression)
+            node.fallback_route_id = str(route_id if route_id is not None else skill_id)
+            node.fallback_score = float(champion_b)
+            decision = policy.select_route(skill_id, current_certified)
+            policy.resolve_params(decision)
+
+        deployed_b = float(current_b if decision.route_type == "current" else champion_b)
+        allowed_regression = _allowed_regression_for_minatar(best, random_score, cfg)
+        learned_delta = _learned_delta_for_minatar(best, random_score, cfg)
+        scores = make_skill_scores(
+            skill_id,
+            best=best,
+            current=current_b,
+            champion=champion_b,
+            deployed=deployed_b,
+            random_score=random_score,
+            route_type=decision.route_type,
+            current_certified=current_certified,
+            learned_delta=learned_delta,
+            allowed_regression=allowed_regression,
+        )
+        skill_scores.append(scores)
+        decisions.append(decision)
+        best_values.append(float(best))
+        champion_b_values.append(float(champion_b))
+        current_b_values.append(float(current_b))
+        deployed_b_values.append(float(deployed_b))
+        random_b_values.append(float(random_score))
+        current_certified_values.append(bool(current_certified))
+        current_safe_values.append(bool(current_safe))
+
+    return {
+        "skill_scores": [asdict(score) for score in skill_scores],
+        "decisions": [asdict(decision) for decision in decisions],
+        "route_usage": DeployedPolicy.route_usage(decisions),
+        "aggregate": aggregate_retention(skill_scores),
+        "best": best_values,
+        "champion_B": champion_b_values,
+        "current_B": current_b_values,
+        "deployed_B": deployed_b_values,
+        "random_B": random_b_values,
+        "current_certified": current_certified_values,
+        "current_safe": current_safe_values,
+    }
 
 
 def _collect_anchor_buffer(
@@ -821,7 +1070,18 @@ def run_minatar_baseline(specs, cfg: ContinualRLConfig | None = None, seed: int 
             cfg.eval_horizon,
         )
 
-    return _result(
+    deployment = evaluate_minatar_deployment(
+        params,
+        specs,
+        n_games,
+        act_max,
+        _fresh_minatar_params(seed, c_in, n_games, act_max),
+        atlas=None,
+        cfg=cfg,
+        seed=seed,
+        best_scores=np.max(return_matrix, axis=0),
+    )
+    result = _result(
         return_matrix,
         "baseline",
         cfg,
@@ -830,8 +1090,11 @@ def run_minatar_baseline(specs, cfg: ContinualRLConfig | None = None, seed: int 
             "game_order": [spec.name for spec in specs],
             "updates": int(total_updates),
             "returns_curves": curves,
+            "deployment": deployment,
         },
     )
+    result["metrics"]["deployed"] = deployment["aggregate"]
+    return result
 
 
 def run_minatar_pmac(
@@ -862,11 +1125,16 @@ def run_minatar_pmac(
     guard_curves = {}
     params = None
     total_updates = 0
-    guard_enabled = ablation != "no_conservation"
-    effective_guard_coef = float(cfg.guard_coef) if guard_enabled else 0.0
+    guard_loss_enabled = ablation not in ("no_conservation", "champions_only")
+    champions_enabled = ablation != "no_conservation"
+    effective_guard_coef = float(cfg.guard_coef) if guard_loss_enabled else 0.0
 
     for task_i, spec in enumerate(specs):
-        guard_pool = _guard_pool_from_buffers(buffers, cfg, c_in, n_games, act_max, ablation)
+        guard_pool = (
+            _guard_pool_from_buffers(buffers, cfg, c_in, n_games, act_max, ablation)
+            if guard_loss_enabled
+            else _empty_guard_pool(c_in, n_games, act_max)
+        )
         train = _train_minatar_game(
             spec,
             specs,
@@ -889,27 +1157,46 @@ def run_minatar_pmac(
             cfg.eval_episodes,
             cfg.eval_horizon,
         )
-        buffer = _collect_anchor_buffer(
-            params,
-            spec,
-            specs,
-            cfg,
-            jax.random.PRNGKey(_anchor_seed(seed, task_i)),
-        )
-        buffers.append(buffer)
-        _certify_game(
-            params,
-            spec,
-            task_i,
-            float(return_matrix[task_i, task_i]),
-            buffer,
-            cfg,
-            atlas,
-            champions,
-        )
+        if champions_enabled:
+            buffer = _collect_anchor_buffer(
+                params,
+                spec,
+                specs,
+                cfg,
+                jax.random.PRNGKey(_anchor_seed(seed, task_i)),
+            )
+            buffers.append(buffer)
+            _certify_game(
+                params,
+                spec,
+                task_i,
+                float(return_matrix[task_i, task_i]),
+                buffer,
+                cfg,
+                atlas,
+                champions,
+            )
 
     mode = "pmac" if ablation is None else f"pmac_{ablation}"
-    return _result(
+    if not guard_loss_enabled:
+        guard_source = "none"
+    elif ablation == "no_replay":
+        guard_source = "most_recent_prior"
+    else:
+        guard_source = "all_prior"
+    deployment_atlas = atlas if champions_enabled else None
+    deployment = evaluate_minatar_deployment(
+        params,
+        specs,
+        n_games,
+        act_max,
+        _fresh_minatar_params(seed, c_in, n_games, act_max),
+        atlas=deployment_atlas,
+        cfg=cfg,
+        seed=seed,
+        best_scores=None if deployment_atlas is not None else np.max(return_matrix, axis=0),
+    )
+    result = _result(
         return_matrix,
         mode,
         cfg,
@@ -922,10 +1209,15 @@ def run_minatar_pmac(
             "guard_loss_curves": guard_curves,
             "protected_skills": list(atlas.nodes.keys()),
             "anchor_counts": [int(buf.obs.shape[0]) for buf in buffers],
-            "guard_enabled": bool(guard_enabled),
-            "guard_source": "all_prior" if ablation != "no_replay" else "most_recent_prior",
+            "guard_enabled": bool(guard_loss_enabled),
+            "champions_enabled": bool(champions_enabled),
+            "guard_source": guard_source,
+            "guard_effective_coef": float(effective_guard_coef),
+            "deployment": deployment,
         },
     )
+    result["metrics"]["deployed"] = deployment["aggregate"]
+    return result
 
 
 def _jsonify_result(result: dict) -> dict:
@@ -945,10 +1237,27 @@ def _aggregate(results_by_mode):
     for mode, results in results_by_mode.items():
         stats = {}
         for key, value in results[0]["metrics"].items():
+            if isinstance(value, dict):
+                continue
             if isinstance(value, (list, tuple)):
                 continue
             arr = np.asarray([result["metrics"][key] for result in results], dtype=np.float64)
             stats[key] = {"mean": float(np.mean(arr)), "std": float(np.std(arr))}
+        deployed = results[0]["metrics"].get("deployed")
+        if isinstance(deployed, dict):
+            deployed_stats = {}
+            for key, value in deployed.items():
+                if isinstance(value, (dict, list, tuple, str)):
+                    continue
+                arr = np.asarray(
+                    [result["metrics"]["deployed"][key] for result in results],
+                    dtype=np.float64,
+                )
+                deployed_stats[key] = {
+                    "mean": float(np.mean(arr)),
+                    "std": float(np.std(arr)),
+                }
+            stats["deployed"] = deployed_stats
         aggregate[mode] = stats
     return aggregate
 
@@ -996,11 +1305,20 @@ def _run_timed(seed: int, run_fn):
     result["extra"]["wall_s"] = float(wall_s)
     learned = ", ".join(f"{v:.3f}" for v in np.asarray(result["learned_returns"]))
     final = ", ".join(f"{v:.3f}" for v in np.asarray(result["final_returns"]))
+    deployed = result["metrics"].get("deployed")
+    deployed_text = ""
+    if isinstance(deployed, dict):
+        deployed_text = (
+            f" current_mean_retention={deployed['mean_current_retention']:.3f} "
+            f"deployed_mean_retention(floor)={deployed['mean_deployed_retention']:.3f} "
+            f"n_learned={deployed['n_learned']}/{deployed['n_total']}"
+        )
     print(
         f"{result['mode']} seed={int(seed)} wall_s={wall_s:.3f} "
         f"learned=[{learned}] final=[{final}] "
         f"mean_final={result['metrics']['mean_final']:.3f} "
         f"forgetting={result['metrics']['forgetting']:.3f}"
+        f"{deployed_text}"
     )
     return result
 
@@ -1018,6 +1336,17 @@ def main(argv=None):
     parser.add_argument("--out", default="runs/minatar_continual")
     parser.add_argument("--eval-episodes", type=int, default=64)
     parser.add_argument("--eval-horizon", type=int, default=None)
+    parser.add_argument("--deploy-eval-episodes", type=int, default=64)
+    parser.add_argument("--sentinel-eval-episodes", type=int, default=32)
+    parser.add_argument("--cert-frac", type=float, default=0.05)
+    parser.add_argument("--learned-delta-frac", type=float, default=0.05)
+    parser.add_argument("--allowed-regression-frac", type=float, default=0.02)
+    parser.add_argument("--switch-margin-frac", type=float, default=0.05)
+    parser.add_argument(
+        "--deployed-use-current",
+        action="store_true",
+        help="Adaptive deployed routing: serve current when the sentinel certifies it above champion.",
+    )
     parser.add_argument("--num-envs", type=int, default=64)
     parser.add_argument("--num-steps", type=int, default=128)
     parser.add_argument("--update-epochs", type=int, default=4)
@@ -1045,7 +1374,7 @@ def main(argv=None):
         parser.error(
             "unknown ablation(s): "
             + ", ".join(str(value) for value in invalid_ablations)
-            + "; valid values are none,no_conservation,no_replay"
+            + "; valid values are none,no_conservation,champions_only,no_replay"
         )
 
     cfg = ContinualRLConfig(
@@ -1057,6 +1386,13 @@ def main(argv=None):
         lr=float(args.lr),
         eval_episodes=int(args.eval_episodes),
         eval_horizon=args.eval_horizon,
+        deploy_eval_episodes=int(args.deploy_eval_episodes),
+        sentinel_eval_episodes=int(args.sentinel_eval_episodes),
+        cert_frac=float(args.cert_frac),
+        learned_delta_frac=float(args.learned_delta_frac),
+        allowed_regression_frac=float(args.allowed_regression_frac),
+        switch_margin_frac=float(args.switch_margin_frac),
+        deployed_use_current=bool(args.deployed_use_current),
         guard_coef=float(args.guard_coef),
         guard_batch=int(args.guard_batch),
         anchor_buffer_per_game=int(args.anchor_buffer_per_game),
@@ -1127,6 +1463,8 @@ __all__ = [
     "MinAtarAnchorBuffer",
     "compute_rl_metrics",
     "evaluate_all_games",
+    "evaluate_one_minatar",
+    "evaluate_minatar_deployment",
     "run_minatar_baseline",
     "run_minatar_pmac",
 ]
