@@ -12,7 +12,9 @@ NB    = int(os.environ.get("NBLOCKS","1"))
 NE    = int(os.environ.get("NENVS","256"))
 RP    = os.environ.get("RESULT_PATH", f"/root/proof_{ABL}.json")
 print(f"devices={jax.devices()} ablation={ABL} games={GAMES} per_game={PG} n_blocks={NB} envs={NE}", flush=True)
-cfg = FastLMConfig(num_envs=NE, num_steps=128, n_blocks=NB, hot_capacity=4096)
+STOCH=os.environ.get("STOCH","1")=="1"
+EVEP=int(os.environ.get("EVAL_EP","24"))
+cfg = FastLMConfig(num_envs=NE, num_steps=128, n_blocks=NB, hot_capacity=4096, eval_stochastic=STOCH, eval_episodes=EVEP)
 t0 = time.time()
 res = continual_living_memory(GAMES, len(GAMES), cfg, seed=0, ablation=ABL, per_game_steps=PG, result_path=RP)
 wall = time.time()-t0
