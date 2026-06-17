@@ -20,7 +20,7 @@ the module sequence, acceptance gates, and ops commands. All code is written by 
 - [x] §13 retrieval alignment loss WIRED (query/positive/hard-negatives)                (M6c)
 - [x] §18 closed-loop old-game REVIEW rollouts wired into continual task loss           (M6d)
 - [x] §19 sentinel eval + ROLLBACK GATE wired (accept/reject/restore + failure mem)     (M6d)
-- [ ] §20 adapter growth (bank + sparse TopS router + L_adapter + plasticity trigger)   (M8)
+- [x] §20 adapter growth (bank + sparse TopS router + L_adapter + plasticity trigger)   (M8)
 - [ ] §21 slow consolidation phase (+ adapter distillation), accept iff sentinels pass  (M8)
 - [x] §24 memory deletion certification audit                                           (M8)
 - [x] env-cleanup/OOM fix (close envpool envs; small eval envs) — needed to run anything (M6c)
