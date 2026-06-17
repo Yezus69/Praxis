@@ -120,3 +120,14 @@ pressure normalized as games grow · key-space drift controlled · deletion requ
 - M6 split: M6a (single train) -> M6b (continual: guard-aware update = latent conservation
   §11 + projection §15 + stability §17 + risk §16, eval=live+memory blend §9, ablations) -> M6c
   (review §18 + rollback gate §19 + visual §12/retrieval §13 losses). Then M7 throughput, M8, M9.
+
+## M9 PROOF (in progress) — artifacts in pma_c_results/living_memory_proof/ + WSL /root/proof_*.json
+3-game continual proof (SpaceInvaders, Breakout, BeamRider), 300k steps/game, n_blocks=1.
+- full (cons+blend): retention 1.0 all games — live+memory plays old games at peak (deployment invariant).
+- no_conservation (blend, no guard): retention 1.0 — the explicit memory BLEND alone gives recall.
+- no_memory_read (cons, blend OFF): RUNNING — falsifiable SHARED-NET retention (no memory crutch).
+- plain_ppo (no cons, blend OFF): RUNNING — baseline forgetting.
+Proof logic (§29 8&9): full vs no_memory_read shows memory recall does the work (criterion 9);
+no_memory_read vs plain_ppo shows conservation helps the shared net (criterion 8). Memory is BOUNDED
+(hot 4096 atoms) + COMPRESSED (latent 128-d keys + 18-d teacher policies ~1.2MB total) — NOT per-game
+full checkpoints (§32). Honest framing: report deployed(live+memory) AND shared-net-only retention.
