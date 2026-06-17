@@ -87,6 +87,10 @@ pressure normalized as games grow · key-space drift controlled · deletion requ
   THROUGHPUT: steady-state ~900-1000 SPS (~10x slower than base PPO) + ~45s compile startup. Profiled:
   not recompilation per step; it's mem_apply forward + per-segment host write path. M7 must fix (envpool
   XLA scan + batch writes) before the 5-game proof (M9) is feasible.
-- M6 split: M6a (single train, validating) -> M6b (continual: guard-aware update = latent conservation
+- M7a done (committed): fast base PPO envpool-XLA scan, ~10.6k SPS, learns SI.
+- M7b done: fast MEM trainer ppo_living_memory_fast — XLA scan + GPU-resident hot bank (hot_insert =
+  top-C by importance via lax.top_k) + jitted writes. ~10.3k SPS (15x over M6a's 700), mem fills, learns SI
+  (clipped 0.7->8.3, beats base 7.0). The O(writes*bank) host bottleneck is GONE. Memory path now at env ceiling.
+- M6 split: M6a (single train) -> M6b (continual: guard-aware update = latent conservation
   §11 + projection §15 + stability §17 + risk §16, eval=live+memory blend §9, ablations) -> M6c
   (review §18 + rollback gate §19 + visual §12/retrieval §13 losses). Then M7 throughput, M8, M9.
