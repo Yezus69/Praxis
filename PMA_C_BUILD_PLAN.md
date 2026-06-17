@@ -4,6 +4,29 @@ Source of truth: `LIVING_MEMORY_PMA_C_FULL_ATARI_SPEC.md` (the spec). This file 
 the module sequence, acceptance gates, and ops commands. All code is written by Codex
 (gpt-5.5 xhigh); Claude conducts, specs each module, and verifies in WSL.
 
+## RULE (user): build ALL spec parts BEFORE any larger training run. Match spec math exactly.
+## Spec-completeness checklist (every §3 component + non-negotiable §32)
+- [x] §4 live memory-conditioned agent (M2/M6a/M7b)
+- [x] §5 stable key encoder + EMA (M2; EMA stepped in trainers). [ ] §5 key-drift penalty L_key WIRED (part of §12 below)
+- [x] §6/§7 bounded compressed latent memory + tiers (M1; GPU hot bank M7b)
+- [x] §9 retrieval reader + explicit blend (M2); eval-via-live+memory (M6b1)
+- [x] §8 importance write rule (M3, jitted in M7b)
+- [x] §11 conservation loss (M4) + WIRED guarded update (M6b2)
+- [x] §15 tangent-cone projection (projection.py) + WIRED (M6b2)
+- [x] §16 risk-normalized guard (M5) + WIRED (M6b2)
+- [x] §17 synaptic stability (stability.py) + WIRED (M6b2)
+- [x] §22 merge (M1) + §23 eviction/budget (M1)
+- [x] §12 visual sentinel store + L_key + L_visual_beh WIRED into update/consolidation  (M6c)
+- [x] §13 retrieval alignment loss WIRED (query/positive/hard-negatives)                (M6c)
+- [x] §18 closed-loop old-game REVIEW rollouts wired into continual task loss           (M6d)
+- [x] §19 sentinel eval + ROLLBACK GATE wired (accept/reject/restore + failure mem)     (M6d)
+- [ ] §20 adapter growth (bank + sparse TopS router + L_adapter + plasticity trigger)   (M8)
+- [ ] §21 slow consolidation phase (+ adapter distillation), accept iff sentinels pass  (M8)
+- [ ] §24 memory deletion certification audit                                           (M8)
+- [x] env-cleanup/OOM fix (close envpool envs; small eval envs) — needed to run anything (M6c)
+- [ ] M9 proof harness: incremental JSON results (never lose data), both GPUs, run LAST
+NO larger training runs until every [ ] above is [x].
+
 ## North star (the deployment invariant — spec §3, §29, §33)
 After sequential training over Atari games, **old games must be played by the LIVE model +
 bounded compressed memory + adapters — NOT by loading a per-game full checkpoint.** The
