@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 from functools import partial
+import gc
 import math
 import time
 from typing import NamedTuple
@@ -30,13 +31,17 @@ from pmac.agents.ppo_atari import (
 )
 from pmac.agents.ppo_living_memory import LMConfig, _lm_ppo_loss, lm_update
 from pmac.envs.atari_envpool import ACT_DIM, EpisodeReturnTracker, make_train_env_xla
-from pmac.memory.losses import latent_conservation_loss
+from pmac.memory.losses import (
+    latent_conservation_loss,
+    retrieval_alignment_loss,
+    visual_sentinel_loss,
+)
 from pmac.memory.reader import ema_update
 from pmac.memory.runtime import RunningValueNorm, default_retrieval_hp, pad_bank
 from pmac.memory.write import DEFAULT_WRITE_WEIGHTS
 from pmac.projection import plasticity_ratio, project_conflicts
 from pmac.stability import scale_by_stability, update_omega, zeros_omega_like
-from pmac.tree_utils import tree_add_scaled, tree_dot, tree_norm, tree_scale, tree_zeros_like
+from pmac.tree_utils import tree_add, tree_add_scaled, tree_dot, tree_norm, tree_scale, tree_zeros_like
 
 
 EPS = 1.0e-8
@@ -57,6 +62,17 @@ class FastLMConfig(LMConfig):
     guard_stability_alpha: float = 10.0
     guard_rho_omega: float = 0.99
     guard_sample_atoms: int = 256
+    lambda_visual: float = 0.5
+    lambda_key: float = 1.0
+    lambda_retr: float = 0.1
+    retr_tau: float = 0.1
+    visual_lambda_v: float = 1.0
+    eval_num_envs: int = 16
+    cert_num_envs: int = 64
+    visual_sentinels_per_game: int = 64
+    visual_sentinel_batch: int = 64
+    retr_n_neg: int = 16
+    sentinel_collect_steps: int = 16
 
 
 class FastLMRollout(NamedTuple):
@@ -218,6 +234,74 @@ def _combine_latent_guard_core(
     return g_total, next_omega, metrics
 
 
+@partial(jax.jit, static_argnames=("project",))
+def _combine_latent_guard_aux_core(
+    params,
+    g_task,
+    g_guard,
+    g_visual,
+    g_retr,
+    omega,
+    lambda_total,
+    kappa,
+    stability_alpha,
+    rho_omega,
+    project: bool,
+):
+    g_task_norm = tree_norm(g_task)
+    g_guard_norm = tree_norm(g_guard)
+    inputs_finite = jnp.logical_and(_tree_all_finite(g_task), _tree_all_finite(g_guard))
+    inputs_finite = jnp.logical_and(inputs_finite, _tree_all_finite(g_visual))  # spec §12
+    inputs_finite = jnp.logical_and(inputs_finite, _tree_all_finite(g_retr))  # spec §13
+    inputs_finite = jnp.logical_and(inputs_finite, _tree_all_finite(omega))
+
+    clip_scale = jnp.minimum(
+        jnp.asarray(1.0, dtype=jnp.float32),
+        jnp.asarray(kappa, dtype=jnp.float32) * g_task_norm / (g_guard_norm + EPS),
+    )
+    g_guard = tree_scale(g_guard, clip_scale)  # spec §15
+    conflict_dot = tree_dot(g_task, g_guard)
+
+    if bool(project):
+        g_safe = project_conflicts(g_task, [g_guard], EPS)  # spec §15
+    else:
+        g_safe = g_task  # spec §15
+
+    g_total = tree_add_scaled(
+        g_safe,
+        g_guard,
+        jnp.asarray(lambda_total, dtype=jnp.float32),
+    )  # spec §15
+    g_total = tree_add(g_total, g_visual)  # spec §12, §15
+    g_total = tree_add(g_total, g_retr)  # spec §13, §15
+    g_total = scale_by_stability(
+        g_total,
+        omega,
+        jnp.asarray(stability_alpha, dtype=jnp.float32),
+    )  # spec §17
+    next_omega = update_omega(
+        omega,
+        params,
+        g_guard,
+        jnp.asarray(rho_omega, dtype=jnp.float32),
+    )  # spec §17
+
+    nonfinite = jnp.logical_not(jnp.logical_and(inputs_finite, _tree_all_finite(g_total)))
+    g_total = _zero_if_nonfinite(g_total, g_task, nonfinite)
+    next_omega = _select_tree(next_omega, omega, jnp.logical_not(nonfinite))
+    metrics = GuardCombineMetrics(
+        g_task_norm=g_task_norm,
+        g_guard_norm=g_guard_norm,
+        g_guard_clipped_norm=tree_norm(g_guard),
+        g_safe_norm=tree_norm(g_safe),
+        g_total_norm=tree_norm(g_total),
+        projection_ratio=plasticity_ratio(g_safe, g_task, EPS),
+        conflict_dot=conflict_dot,
+        nonfinite=nonfinite,
+    )
+    return g_total, next_omega, metrics
+
+
 def combine_latent_guard_grads(
     params,
     g_task,
@@ -237,6 +321,38 @@ def combine_latent_guard_grads(
         params,
         g_task,
         g_guard,
+        omega,
+        jnp.asarray(lambda_total, dtype=jnp.float32),
+        jnp.asarray(kappa, dtype=jnp.float32),
+        jnp.asarray(stability_alpha, dtype=jnp.float32),
+        jnp.asarray(rho_omega, dtype=jnp.float32),
+        bool(project),
+    )
+
+
+def combine_latent_guard_aux_grads(
+    params,
+    g_task,
+    g_guard,
+    g_visual,
+    g_retr,
+    omega=None,
+    *,
+    lambda_total=1.0,
+    kappa=0.75,
+    stability_alpha=10.0,
+    rho_omega=0.99,
+    project=True,
+):
+    """Combine task, guard, visual sentinel, and retrieval gradients."""
+    if omega is None:
+        omega = zeros_omega_like(params)
+    return _combine_latent_guard_aux_core(
+        params,
+        g_task,
+        g_guard,
+        g_visual,
+        g_retr,
         omega,
         jnp.asarray(lambda_total, dtype=jnp.float32),
         jnp.asarray(kappa, dtype=jnp.float32),
@@ -950,6 +1066,213 @@ def _lm_guarded_update_jit(
     return params, opt_state, rng, omega, jnp.mean(metrics, axis=0)
 
 
+@partial(
+    jax.jit,
+    static_argnames=(
+        "update_epochs",
+        "num_minibatches",
+        "minibatch_size",
+        "clip_coef",
+        "vf_coef",
+        "ent_coef",
+        "max_grad_norm",
+        "top_k",
+        "n_games",
+        "d_k",
+        "d_c",
+        "d_m",
+        "act_dim",
+        "guard_project",
+    ),
+)
+def _lm_guarded_update_aux_jit(
+    params,
+    opt_state,
+    batch: TrainBatch,
+    game_id,
+    bank_arrays,
+    mu_g,
+    sigma_g,
+    rng,
+    learning_rate: float,
+    update_epochs: int,
+    num_minibatches: int,
+    minibatch_size: int,
+    clip_coef: float,
+    vf_coef: float,
+    ent_coef: float,
+    max_grad_norm: float,
+    tau_r,
+    beta_c,
+    beta_I,
+    beta_a,
+    w_rho,
+    w_c,
+    b0,
+    top_k,
+    guard_atoms,
+    guard_bank,
+    omega,
+    lambda_total,
+    kappa,
+    lambda_v,
+    stability_alpha,
+    rho_omega,
+    sent_batch,
+    align_batch,
+    aux_bank,
+    lambda_visual,
+    lambda_key,
+    lambda_retr,
+    visual_lambda_v,
+    retr_tau,
+    n_games,
+    d_k,
+    d_c,
+    d_m,
+    act_dim,
+    guard_project: bool,
+):
+    hp = _jit_hp(tau_r, beta_c, beta_I, beta_a, w_rho, w_c, b0, top_k)
+    dims = (int(n_games), int(d_k), int(d_c), int(d_m), int(act_dim))
+    batch_size = int(num_minibatches) * int(minibatch_size)
+    tx = optax.chain(
+        optax.clip_by_global_norm(float(max_grad_norm)),
+        optax.adam(learning_rate=learning_rate),
+    )
+
+    def guard_loss_fn(p):
+        return latent_conservation_loss(
+            p,
+            guard_atoms,
+            guard_bank,
+            hp,
+            lambda_v=lambda_v,
+            dims=dims,
+        )  # spec §11
+
+    def visual_loss_fn(p):
+        l_key, l_visual_beh = visual_sentinel_loss(
+            p,
+            sent_batch,
+            aux_bank,
+            hp,
+            lambda_v=visual_lambda_v,
+            dims=dims,
+        )  # spec §12
+        loss = jnp.asarray(lambda_visual, dtype=jnp.float32) * (
+            jnp.asarray(lambda_key, dtype=jnp.float32) * l_key + l_visual_beh
+        )  # spec §15
+        return loss, (l_key, l_visual_beh)
+
+    def retr_loss_fn(p):
+        return jnp.asarray(lambda_retr, dtype=jnp.float32) * retrieval_alignment_loss(
+            p,
+            align_batch,
+            tau=retr_tau,
+            dims=dims,
+        )  # spec §13, §15
+
+    def epoch_step(carry, _):
+        params, opt_state, rng, omega = carry
+        rng, perm_key = jax.random.split(rng)
+        permutation = jax.random.permutation(perm_key, batch_size)
+        minibatches = _make_minibatches(batch, permutation, int(num_minibatches), int(minibatch_size))
+
+        def minibatch_step(carry, minibatch):
+            params, opt_state, omega = carry
+
+            def loss_fn(p):
+                return _lm_ppo_loss(
+                    p,
+                    minibatch,
+                    game_id,
+                    bank_arrays,
+                    hp,
+                    mu_g,
+                    sigma_g,
+                    clip_coef,
+                    vf_coef,
+                    ent_coef,
+                )
+
+            (loss, aux), g_task = jax.value_and_grad(loss_fn, has_aux=True)(params)
+            cons_loss, g_guard = jax.value_and_grad(guard_loss_fn)(params)  # spec §11
+            (visual_loss, (l_key, l_visual_beh)), g_visual = jax.value_and_grad(
+                visual_loss_fn, has_aux=True
+            )(params)  # spec §12
+            retr_loss, g_retr = jax.value_and_grad(retr_loss_fn)(params)  # spec §13
+            g_total, next_omega, guard_metrics = _combine_latent_guard_aux_core(
+                params,
+                g_task,
+                g_guard,
+                g_visual,
+                g_retr,
+                omega,
+                lambda_total,
+                kappa,
+                stability_alpha,
+                rho_omega,
+                guard_project,
+            )
+            finite = jnp.logical_and(jnp.isfinite(loss), jnp.isfinite(cons_loss))
+            finite = jnp.logical_and(finite, jnp.isfinite(visual_loss))
+            finite = jnp.logical_and(finite, jnp.isfinite(l_key))
+            finite = jnp.logical_and(finite, jnp.isfinite(l_visual_beh))
+            finite = jnp.logical_and(finite, jnp.isfinite(retr_loss))
+            finite = jnp.logical_and(finite, jnp.logical_not(guard_metrics.nonfinite))
+            safe_grads = jax.tree_util.tree_map(
+                lambda grad: jnp.where(finite, grad, jnp.zeros_like(grad)),
+                g_total,
+            )
+            updates, new_opt_state = tx.update(safe_grads, opt_state, params)
+            new_params = optax.apply_updates(params, updates)
+            params = _select_tree(new_params, params, finite)
+            opt_state = _select_tree(new_opt_state, opt_state, finite)
+            omega = _select_tree(next_omega, omega, finite)
+            safe_loss = jnp.where(jnp.isfinite(loss), loss, 0.0)
+            safe_aux = jnp.where(jnp.isfinite(aux), aux, 0.0)
+            safe_cons = jnp.where(jnp.isfinite(cons_loss), cons_loss, 0.0)
+            metrics = jnp.concatenate(
+                [
+                    jnp.asarray([safe_loss], dtype=jnp.float32),
+                    safe_aux,
+                    jnp.asarray(
+                        [
+                            finite.astype(jnp.float32),
+                            safe_cons,
+                            guard_metrics.g_task_norm,
+                            guard_metrics.g_guard_norm,
+                            guard_metrics.g_guard_clipped_norm,
+                            guard_metrics.g_safe_norm,
+                            guard_metrics.g_total_norm,
+                            guard_metrics.projection_ratio,
+                            guard_metrics.conflict_dot,
+                            guard_metrics.nonfinite.astype(jnp.float32),
+                        ],
+                        dtype=jnp.float32,
+                    ),
+                ],
+                axis=0,
+            )
+            return (params, opt_state, omega), metrics
+
+        (params, opt_state, omega), metrics = jax.lax.scan(
+            minibatch_step,
+            (params, opt_state, omega),
+            minibatches,
+        )
+        return (params, opt_state, rng, omega), jnp.mean(metrics, axis=0)
+
+    (params, opt_state, rng, omega), metrics = jax.lax.scan(
+        epoch_step,
+        (params, opt_state, rng, omega),
+        None,
+        length=int(update_epochs),
+    )
+    return params, opt_state, rng, omega, jnp.mean(metrics, axis=0)
+
+
 def _guard_field(guard, name: str, default=None):
     if isinstance(guard, dict):
         return guard.get(name, default)
@@ -957,6 +1280,16 @@ def _guard_field(guard, name: str, default=None):
 
 
 def _guard_arrays(value):
+    return {name: jnp.asarray(array) for name, array in value.items()}
+
+
+def _aux_field(aux, name: str, default=None):
+    if isinstance(aux, dict):
+        return aux.get(name, default)
+    return getattr(aux, name, default)
+
+
+def _aux_arrays(value):
     return {name: jnp.asarray(array) for name, array in value.items()}
 
 
@@ -993,8 +1326,51 @@ def lm_guarded_update(
     d_m: int,
     act_dim: int,
     hp=None,
+    aux=None,
 ):
     values = _hp_values(hp, bank_arrays)
+    if aux is not None:
+        return _lm_guarded_update_aux_jit(
+            params,
+            opt_state,
+            batch,
+            jnp.asarray(game_id, dtype=jnp.int32),
+            bank_arrays,
+            float(mu_g),
+            float(sigma_g),
+            rng,
+            float(learning_rate),
+            int(update_epochs),
+            int(num_minibatches),
+            int(minibatch_size),
+            float(clip_coef),
+            float(vf_coef),
+            float(ent_coef),
+            float(max_grad_norm),
+            *values,
+            _guard_arrays(_guard_field(guard, "atoms")),
+            _guard_arrays(_guard_field(guard, "bank")),
+            omega,
+            jnp.asarray(_guard_field(guard, "lambda_total", 1.0), dtype=jnp.float32),
+            jnp.asarray(_guard_field(guard, "kappa", 0.75), dtype=jnp.float32),
+            jnp.asarray(_guard_field(guard, "lambda_v", 1.0), dtype=jnp.float32),
+            jnp.asarray(_guard_field(guard, "stability_alpha", 10.0), dtype=jnp.float32),
+            jnp.asarray(_guard_field(guard, "rho_omega", 0.99), dtype=jnp.float32),
+            _aux_arrays(_aux_field(aux, "sent_batch")),
+            _aux_arrays(_aux_field(aux, "align_batch")),
+            _aux_arrays(_aux_field(aux, "bank", _guard_field(guard, "bank"))),
+            jnp.asarray(_aux_field(aux, "lambda_visual", 0.5), dtype=jnp.float32),
+            jnp.asarray(_aux_field(aux, "lambda_key", 1.0), dtype=jnp.float32),
+            jnp.asarray(_aux_field(aux, "lambda_retr", 0.1), dtype=jnp.float32),
+            jnp.asarray(_aux_field(aux, "visual_lambda_v", 1.0), dtype=jnp.float32),
+            jnp.asarray(_aux_field(aux, "tau", 0.1), dtype=jnp.float32),
+            int(n_games),
+            int(d_k),
+            int(d_c),
+            int(d_m),
+            int(act_dim),
+            bool(_guard_field(guard, "project", True)),
+        )
     return _lm_guarded_update_jit(
         params,
         opt_state,
@@ -1103,6 +1479,7 @@ def train_living_memory_fast(
     ema_params=None,
     value_norm=None,
     guard=None,
+    aux=None,
 ) -> dict:
     """Train one Atari game with XLA-scan rollout and jitted GPU hot-bank writes."""
 
@@ -1296,6 +1673,7 @@ def train_living_memory_fast(
                 d_m=int(cfg.d_m),
                 act_dim=ACT_DIM,
                 hp=hp,
+                aux=aux,
             )
         ema_params = ema_update(ema_params, params, float(cfg.tau_key))
         _block_until_ready((metrics, ema_params))
@@ -1305,6 +1683,13 @@ def train_living_memory_fast(
         if update > 1:
             warm_steps += batch_size
             warm_seconds += elapsed
+
+    try:
+        env.close()
+    except Exception:
+        pass
+    del env
+    gc.collect()
 
     timesteps = int(num_updates * batch_size)
     if warm_steps > 0 and warm_seconds > 0.0:
@@ -1336,6 +1721,7 @@ __all__ = [
     "FastLMConfig",
     "FastLMRollout",
     "GuardCombineMetrics",
+    "combine_latent_guard_aux_grads",
     "combine_latent_guard_grads",
     "empty_hot_bank",
     "hot_insert",

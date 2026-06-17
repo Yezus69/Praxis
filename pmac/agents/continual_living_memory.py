@@ -20,6 +20,11 @@ from pmac.agents.ppo_living_memory_fast import FastLMConfig, train_living_memory
 from pmac.envs.atari_envpool import ACT_DIM
 from pmac.evaluation import normalized_retention
 from pmac.guard_schedule import allocate_guard, forgetting_risk
+from pmac.memory.sentinels_visual import (
+    VisualSentinelStore,
+    build_align_batch,
+    collect_visual_sentinels,
+)
 
 
 ABLATIONS = {"full", "no_conservation", "no_projection", "no_memory_read", "plain_ppo"}
@@ -281,6 +286,34 @@ def _empty_bank(cfg):
     )
 
 
+def _make_visual_aux(store: VisualSentinelStore, protected_bank, cfg, seed: int):
+    if len(store) == 0:
+        return None
+    batch_size = _cfg_int(cfg, "visual_sentinel_batch", 64)
+    n_neg = _cfg_int(cfg, "retr_n_neg", 16)
+    sent_batch = store.batch(batch_size, seed=int(seed))
+    try:
+        align_batch = build_align_batch(
+            sent_batch,
+            protected_bank,
+            n_neg=n_neg,
+            batch_size=batch_size,
+            seed=int(seed) + 1,
+        )
+    except ValueError:
+        return None
+    return {
+        "sent_batch": sent_batch,
+        "align_batch": align_batch,
+        "bank": protected_bank,
+        "lambda_visual": _cfg_float(cfg, "lambda_visual", 0.5),
+        "lambda_key": _cfg_float(cfg, "lambda_key", 1.0),
+        "lambda_retr": _cfg_float(cfg, "lambda_retr", 0.1),
+        "visual_lambda_v": _cfg_float(cfg, "visual_lambda_v", 1.0),
+        "tau": _cfg_float(cfg, "retr_tau", 0.1),
+    }
+
+
 def _random_params(game_index: int, n_games: int, cfg, seed: int):
     return mem_init(
         jax.random.PRNGKey(int(seed) + 10_000 + int(game_index)),
@@ -353,6 +386,7 @@ def continual_living_memory(
     final_scores: dict[str, float] = {}
     protected_bank = random_bank
     blend = _blend_for_ablation(str(ablation))
+    visual_store = VisualSentinelStore(per_game=_cfg_int(cfg, "visual_sentinels_per_game", 64))
 
     for game_id, game in enumerate(games):
         if game_id == 0 or ablation in {"no_conservation", "plain_ppo"}:
@@ -365,6 +399,12 @@ def continual_living_memory(
                 project=(ablation != "no_projection"),
                 sample_atoms=_cfg_int(cfg, "guard_sample_atoms", 256),
             )
+        aux = None if guard is None else _make_visual_aux(
+            visual_store,
+            protected_bank,
+            cfg,
+            int(seed) + 30_000 + game_id,
+        )
 
         result = train_living_memory_fast(
             game,
@@ -376,10 +416,23 @@ def continual_living_memory(
             ema_params=ema_params,
             value_norm=value_norms.get(game),
             guard=guard,
+            aux=aux,
         )
         params = result["params"]
         ema_params = result.get("ema_params", params)
         value_norms[game] = result.get("value_norm")
+
+        sent_set = collect_visual_sentinels(
+            params,
+            ema_params,
+            value_norms[game],
+            game,
+            game_id,
+            cfg=cfg,
+            seed=int(seed) + 50_000 + game_id,
+            n=_cfg_int(cfg, "visual_sentinels_per_game", 64),
+        )
+        visual_store.add_set(sent_set)
 
         protected = dict(
             certify_protected_memories(
@@ -443,6 +496,7 @@ def continual_living_memory(
         "worst_retention": float(np.min(np.asarray(retention_values, dtype=np.float32))),
         "ablation": str(ablation),
         "games": games,
+        "visual_sentinels": len(visual_store),
     }
 
 

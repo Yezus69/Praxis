@@ -153,8 +153,20 @@ def _install_driver_stubs(monkeypatch):
             "n_sets": len(protected_sets),
         }
 
-    def fake_train(game, game_id, n_games, cfg, seed, *, init_params=None, ema_params=None, value_norm=None, guard=None):
-        del game_id, n_games, cfg, seed, init_params, ema_params, value_norm
+    def fake_train(
+        game,
+        game_id,
+        n_games,
+        cfg,
+        seed,
+        *,
+        init_params=None,
+        ema_params=None,
+        value_norm=None,
+        guard=None,
+        aux=None,
+    ):
+        del game_id, n_games, cfg, seed, init_params, ema_params, value_norm, aux
         calls["guards"].append(guard)
         return {
             "params": {"kind": "trained", "game": str(game)},
@@ -166,6 +178,16 @@ def _install_driver_stubs(monkeypatch):
     def fake_certify(params, ema_params, value_norm, game, game_id, *, cfg, seed):
         del params, ema_params, value_norm, cfg, seed
         return _protected(str(game), int(game_id), [[1.0, 0.0]], [1.0])
+
+    def fake_collect(params, ema_params, value_norm, game, game_id, *, cfg, seed, n=64):
+        del params, ema_params, value_norm, game, cfg, seed, n
+        return {
+            "obs": np.zeros((1, 4, 84, 84), dtype=np.uint8),
+            "game_id": np.asarray([int(game_id)], dtype=np.int32),
+            "key_star": np.asarray([[1.0, 0.0]], dtype=np.float16),
+            "teacher_policy": np.full((1, 18), 1.0 / 18.0, dtype=np.float16),
+            "teacher_value": np.zeros((1,), dtype=np.float16),
+        }
 
     def fake_eval(params, game, game_id, protected_bank, *, cfg, seed, episodes=12, blend=True):
         del game_id, protected_bank, cfg, seed, episodes
@@ -180,6 +202,7 @@ def _install_driver_stubs(monkeypatch):
     monkeypatch.setattr(clm, "build_protected_bank", fake_bank)
     monkeypatch.setattr(clm, "train_living_memory_fast", fake_train)
     monkeypatch.setattr(clm, "certify_protected_memories", fake_certify)
+    monkeypatch.setattr(clm, "collect_visual_sentinels", fake_collect)
     monkeypatch.setattr(clm, "eval_living_memory", fake_eval)
     return calls
 

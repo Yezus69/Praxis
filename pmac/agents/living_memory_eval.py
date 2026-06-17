@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import math
 from collections.abc import Mapping, Sequence
 
@@ -50,6 +51,15 @@ def _value_norm_mu_sigma(value_norm) -> tuple[float, float]:
     if hasattr(value_norm, "mu") and hasattr(value_norm, "sigma"):
         return float(value_norm.mu()), max(float(value_norm.sigma()), EPS)
     raise TypeError("value_norm must be None, a mapping, or RunningValueNorm-like")
+
+
+def _close_env(env):
+    try:
+        env.close()
+    except Exception:
+        pass
+    del env
+    gc.collect()
 
 
 def _normalize_rows(x):
@@ -253,7 +263,7 @@ def certify_protected_memories(
 ) -> dict:
     """Certify protected high-return teacher atoms from a trained game policy."""
     _, d_k, d_c, _, act_dim = _infer_dims(params)
-    num_envs = _cfg_int(cfg, "num_envs", 1)
+    num_envs = _cfg_int(cfg, "cert_num_envs", 64)
     num_steps = _cfg_int(cfg, "num_steps", 128)
     total_steps = int(rollout_steps) * num_steps
     if num_envs <= 0:
@@ -304,6 +314,7 @@ def certify_protected_memories(
     )
     flat_returns = np.asarray(jax.device_get(returns), dtype=np.float32).reshape(-1)
     keep, ret_scores = _top_return_indices(flat_returns, int(n_protected))
+    _close_env(env)
     if int(keep.shape[0]) == 0:
         return {
             "keys": np.zeros((0, d_k), dtype=np.float32),
@@ -401,9 +412,9 @@ def eval_living_memory(
     episodes = int(episodes)
     if episodes <= 0:
         raise ValueError("episodes must be positive")
-    num_envs = _cfg_int(cfg, "eval_envs", _cfg_int(cfg, "num_envs", 1))
+    num_envs = _cfg_int(cfg, "eval_num_envs", _cfg_int(cfg, "eval_envs", 16))
     if num_envs <= 0:
-        raise ValueError("eval_envs/num_envs must be positive")
+        raise ValueError("eval_num_envs/eval_envs must be positive")
 
     top_k = _cfg_int(cfg, "top_k", 1)
     capacity = int(np.asarray(protected_bank["valid"]).shape[0])
@@ -443,6 +454,7 @@ def eval_living_memory(
         if len(completed_returns) >= episodes:
             break
 
+    _close_env(env)
     if not completed_returns:
         return float(np.mean(np.asarray(tracker.returns, dtype=np.float32)))
     return float(np.mean(np.asarray(completed_returns[:episodes], dtype=np.float32)))
