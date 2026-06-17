@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 import jax
@@ -8,6 +10,7 @@ from pmac.agents.ppo_living_memory_fast import (
     FastLMConfig,
     combine_latent_guard_grads,
 )
+from pmac.evaluation import normalized_retention
 from pmac.stability import zeros_omega_like
 from pmac.tree_utils import tree_dot, tree_norm
 
@@ -29,6 +32,24 @@ def _cfg():
         d_c=2,
         d_m=3,
         guard_sample_atoms=4,
+    )
+
+
+def _driver_cfg():
+    return SimpleNamespace(
+        total_timesteps=1,
+        n_blocks=1,
+        review_steps_frac=0.0,
+        audit_every_blocks=1,
+        gate_r_min=0.0,
+        gate_delta_frac=1.0,
+        hot_capacity=4,
+        top_k=1,
+        d_k=2,
+        d_c=2,
+        d_m=3,
+        guard_sample_atoms=4,
+        visual_sentinels_per_game=64,
     )
 
 
@@ -135,6 +156,13 @@ def test_make_guard_shapes_lambda_allocation_and_padding():
 
 def _install_driver_stubs(monkeypatch):
     calls = {"guards": [], "blends": []}
+    trained_so_far = set()
+    scores = {
+        "random": 1.0,
+        "A_current": 10.0,
+        "A_forgotten": 4.0,
+        "B_current": 9.0,
+    }
 
     def fake_mem_init(*_args, **_kwargs):
         return {"kind": "random"}
@@ -161,15 +189,23 @@ def _install_driver_stubs(monkeypatch):
         seed,
         *,
         init_params=None,
+        hot_bank=None,
         ema_params=None,
         value_norm=None,
         guard=None,
         aux=None,
     ):
-        del game_id, n_games, cfg, seed, init_params, ema_params, value_norm, aux
+        del game_id, n_games, cfg, seed, init_params, hot_bank, ema_params, value_norm, aux
+        trained_so_far.add(str(game))
         calls["guards"].append(guard)
+        conserves_prior = guard is not None
         return {
-            "params": {"kind": "trained", "game": str(game)},
+            "params": {
+                "kind": "trained",
+                "game": str(game),
+                "trained_so_far": frozenset(trained_so_far),
+                "conserves_prior": conserves_prior,
+            },
             "ema_params": {"kind": "ema", "game": str(game)},
             "value_norm": {"mu": 0.0, "sigma": 1.0},
             "final_return": 0.0,
@@ -193,10 +229,14 @@ def _install_driver_stubs(monkeypatch):
         del game_id, protected_bank, cfg, seed, episodes
         calls["blends"].append(bool(blend))
         if params.get("kind") == "random":
-            return 1.0
-        if str(game) == "A":
-            return 10.0 if params.get("game") == "A" else 7.0
-        return 9.0
+            return scores["random"]
+        game = str(game)
+        trained = params.get("trained_so_far", frozenset())
+        if game == "A":
+            if "B" not in trained or params.get("conserves_prior", False):
+                return scores["A_current"]
+            return scores["A_forgotten"]
+        return scores["B_current"]
 
     monkeypatch.setattr(clm, "mem_init", fake_mem_init)
     monkeypatch.setattr(clm, "build_protected_bank", fake_bank)
@@ -204,35 +244,55 @@ def _install_driver_stubs(monkeypatch):
     monkeypatch.setattr(clm, "certify_protected_memories", fake_certify)
     monkeypatch.setattr(clm, "collect_visual_sentinels", fake_collect)
     monkeypatch.setattr(clm, "eval_living_memory", fake_eval)
+    monkeypatch.setattr(clm, "_audit_violation_rate", lambda *_args, **_kwargs: 0.0)
+    monkeypatch.setattr(clm, "_audit_retrieval_alignment", lambda *_args, **_kwargs: 1.0)
     return calls
+
+
+def _assert_retention_matches_scores(result):
+    for game in result["games"]:
+        assert result["retention"][game] == pytest.approx(
+            normalized_retention(
+                result["final_scores"][game],
+                result["best_scores"][game],
+                result["random_scores"][game],
+            )
+        )
 
 
 def test_continual_driver_retention_and_ablation_routing(monkeypatch):
     calls = _install_driver_stubs(monkeypatch)
-    full = clm.continual_living_memory(["A", "B"], 2, _cfg(), 0, ablation="full")
+    full = clm.continual_living_memory(["A", "B"], 2, _driver_cfg(), 0, ablation="full")
 
     assert calls["guards"][0] is None
     assert calls["guards"][1] is not None
     assert calls["guards"][1]["project"] is True
-    assert calls["blends"] == [False, False, True, True, True]
-    assert full["retention"]["A"] == pytest.approx((7.0 - 1.0) / (10.0 - 1.0 + 1.0e-6))
-    assert full["retention"]["B"] == 1.0
+    assert calls["blends"][:2] == [False, False]
+    assert all(calls["blends"][2:])
+    _assert_retention_matches_scores(full)
 
     calls = _install_driver_stubs(monkeypatch)
-    clm.continual_living_memory(["A", "B"], 2, _cfg(), 0, ablation="no_conservation")
+    no_conservation = clm.continual_living_memory(
+        ["A", "B"], 2, _driver_cfg(), 0, ablation="no_conservation"
+    )
     assert calls["guards"] == [None, None]
-    assert calls["blends"][2:] == [True, True, True]
+    assert all(calls["blends"][2:])
+    _assert_retention_matches_scores(no_conservation)
+    assert no_conservation["retention"]["A"] < full["retention"]["A"]
 
     calls = _install_driver_stubs(monkeypatch)
-    clm.continual_living_memory(["A", "B"], 2, _cfg(), 0, ablation="no_memory_read")
+    no_memory_read = clm.continual_living_memory(["A", "B"], 2, _driver_cfg(), 0, ablation="no_memory_read")
     assert calls["guards"][1] is not None
-    assert calls["blends"] == [False, False, False, False, False]
+    assert not any(calls["blends"])
+    _assert_retention_matches_scores(no_memory_read)
 
     calls = _install_driver_stubs(monkeypatch)
-    clm.continual_living_memory(["A", "B"], 2, _cfg(), 0, ablation="no_projection")
+    no_projection = clm.continual_living_memory(["A", "B"], 2, _driver_cfg(), 0, ablation="no_projection")
     assert calls["guards"][1]["project"] is False
+    _assert_retention_matches_scores(no_projection)
 
     calls = _install_driver_stubs(monkeypatch)
-    clm.continual_living_memory(["A", "B"], 2, _cfg(), 0, ablation="plain_ppo")
+    plain_ppo = clm.continual_living_memory(["A", "B"], 2, _driver_cfg(), 0, ablation="plain_ppo")
     assert calls["guards"] == [None, None]
     assert calls["blends"] == [False, False, False, False, False]
+    _assert_retention_matches_scores(plain_ppo)
