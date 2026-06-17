@@ -73,6 +73,18 @@ class FastLMConfig(LMConfig):
     visual_sentinel_batch: int = 64
     retr_n_neg: int = 16
     sentinel_collect_steps: int = 16
+    # §18/§19 block/gate knobs
+    n_blocks: int = 4
+    audit_every_blocks: int = 1
+    review_steps_frac: float = 0.15
+    lambda_review: float = 0.5
+    gate_r_min: float = 0.9
+    gate_delta_frac: float = 0.1
+    gate_current_regress_frac: float = gate_delta_frac
+    gate_max_violation_rate: float = 0.25
+    gate_min_new_progress: float = 0.0
+    gate_retrieval_floor: float = 0.0
+    gate_review_boost: float = 1.0
 
 
 class FastLMRollout(NamedTuple):
