@@ -16,7 +16,8 @@ STOCH=os.environ.get("STOCH","1")=="1"
 EVEP=int(os.environ.get("EVAL_EP","24"))
 cfg = FastLMConfig(num_envs=NE, num_steps=128, n_blocks=NB, hot_capacity=4096, eval_stochastic=STOCH, eval_episodes=EVEP)
 t0 = time.time()
-res = continual_living_memory(GAMES, len(GAMES), cfg, seed=0, ablation=ABL, per_game_steps=PG, result_path=RP)
+SEED=int(os.environ.get("SEED","0"))
+res = continual_living_memory(GAMES, len(GAMES), cfg, seed=SEED, ablation=ABL, per_game_steps=PG, result_path=RP)
 wall = time.time()-t0
 print(f"DONE ablation={ABL} wall={wall:.0f}s", flush=True)
 print("retention:", {k: round(float(v),3) for k,v in res.get("retention",{}).items()}, flush=True)
