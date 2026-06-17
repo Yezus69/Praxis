@@ -146,3 +146,12 @@ WHEN BOTH DONE (/root/sweep/gpu1_done.txt + gpu2_done.txt exist):
      (if full>=no_memory_read>plain consistently -> §29 8&9 proven; else report inconclusive honestly).
   3. Commit. Project complete.
 Expected (if proof holds): full >= no_memory_read > plain_ppo on retention over learned games.
+
+## M9 SWEEP UPDATE (4 seeds now): preliminary aggregate (learned games only, ordering CORRECT):
+no_memory_read 0.841 > full 0.754 > plain_ppo 0.658 (protected > baseline). BeamRider: full 0.60 /
+no_memory_read 0.68 / plain 0.32 (clean: conservation prevents forgetting). full ablation FIRED all
+modules in seed 0: gate rejected 4 unsafe blocks, review ran, consolidation 2acc/2rej; adapters did NOT
+grow (correct — no persistent low-plasticity conflict at n_blocks=1; unit-tested + available).
+DONE-MARKERS to wait for: /root/sweep/{gpu1_done.txt (have), gpu2_done.txt (GPU2 seeds1,2),
+gpu1s3_done.txt (GPU1 seed3)}. WHEN ALL 3 EXIST: rerun aggregate.py -> 4-seed mean±std -> fill REPORT.md
+RESULTS_TABLE -> commit. DO NOT present final until all GPU runs complete (user directive).
