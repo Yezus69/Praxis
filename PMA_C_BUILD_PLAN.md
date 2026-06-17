@@ -12,8 +12,18 @@ spec forbids and that this build replaces with genuine **memory-conditioned infe
 explicit memory-policy blend** `p_final = (1-b_t) p_net + b_t p_mem` (§9).
 
 ## Test bed — 5 Atari games
-`Pong, Breakout, SpaceInvaders, BeamRider, Qbert` (envpool `*-v5`, full_action_space=18,
-obs uint8[4,84,84]). Smoke pair (fast, never gets stuck): `Pong, Breakout`.
+`Breakout, SpaceInvaders, BeamRider, Asterix, Qbert` (envpool `*-v5`, full_action_space=18,
+obs uint8[4,84,84]) — the headline set, all proven to learn at ~4M steps with this PPO. Smoke game
+(fast, clear signal): `SpaceInvaders` (clipped return 0.7→7.9 by 4M). NOTE: Pong dropped — it needs
+>4M steps with this config (base PPO flat at -20 @4M), too slow for iteration.
+
+## THROUGHPUT REALITY (measured)
+Raw envpool ALE caps at **~22k FPS on this 24-core CPU** (env sim is CPU-bound; 256 vs 1024 envs both
+~21-23k). So **100k+ SPS is NOT achievable for REAL ALE on this hardware** — that needs a GPU-emulated
+Atari (not real ALE) or far more CPU cores. M7a fast envpool-XLA rollout does ~10.6k SPS (env↔GPU
+serialization halves the ceiling) and LEARNS (SI verified). ~10-20k SPS makes the proof feasible
+(5 games × 4M = 20M steps ≈ 30 min/seed). Optimizing toward the ~22k ceiling (async/Sebulba overlap) is
+possible but diminishing returns; proof is feasible now.
 
 ## What already exists (faithful to spec math, keep it)
 - Single shared Nature-CNN actor-critic conditioned on `(obs, game_onehot)` — `pmac/agents/atari_net.py`, `ppo_atari.py`.

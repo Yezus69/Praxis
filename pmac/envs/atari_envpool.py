@@ -36,6 +36,22 @@ def make_train_env(game: str, num_envs: int, seed: int):
     )
 
 
+def make_train_env_xla(game: str, num_envs: int, seed: int):
+    """Create an envpool Atari training env configured for XLA stepping."""
+    import envpool
+
+    return envpool.make(
+        str(game),
+        env_type="gymnasium",
+        num_envs=int(num_envs),
+        batch_size=int(num_envs),
+        seed=int(seed),
+        full_action_space=True,
+        episodic_life=True,
+        reward_clip=True,
+    )
+
+
 def make_eval_env(game: str, num_envs: int, seed: int):
     """Create an envpool Atari eval env with true episode scores."""
     import envpool
@@ -99,5 +115,6 @@ __all__ = [
     "EpisodeReturnTracker",
     "make_eval_env",
     "make_train_env",
+    "make_train_env_xla",
     "norm_obs",
 ]
