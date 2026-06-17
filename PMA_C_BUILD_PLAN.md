@@ -70,6 +70,13 @@ pressure normalized as games grow · key-space drift controlled · deletion requ
 - M3 done (8460433): write rule §8; review SHIP.
 - M4 done (2046b06): latent conservation §11 + Huber, visual sentinel §12, retrieval alignment §13; review SHIP.
 - M5 done: risk-normalized guard §16 + closed-loop review §18 + rollback gate §19/§26; self-reviewed.
-- Next M6: split into M6a (single living-memory PPO train step) + M6b (continual driver,
-  eval=live+memory only, §18 review, §19 gate). Live GPU smoke each. Hot bank stays GPU-resident
-  + bounded (~4k) so per-step retrieval is cheap (~13 TFLOP/s @ 100k SPS).
+- M6a built (UNCOMMITTED, validating): pmac/agents/ppo_living_memory.py + pmac/memory/runtime.py.
+  Single-game living-memory trainer: mem-conditioned rollout + writes (M3) + PPO. 6 CPU tests pass.
+  FIX applied: train/act on logits_net/v_net (b=0), NOT logits_final — the explicit blend (§9) is for
+  OLD-game retention only; blending current-game stale teachers pinned Pong at -21. Validating Pong learns.
+  THROUGHPUT: steady-state ~900-1000 SPS (~10x slower than base PPO) + ~45s compile startup. Profiled:
+  not recompilation per step; it's mem_apply forward + per-segment host write path. M7 must fix (envpool
+  XLA scan + batch writes) before the 5-game proof (M9) is feasible.
+- M6 split: M6a (single train, validating) -> M6b (continual: guard-aware update = latent conservation
+  §11 + projection §15 + stability §17 + risk §16, eval=live+memory blend §9, ablations) -> M6c
+  (review §18 + rollback gate §19 + visual §12/retrieval §13 losses). Then M7 throughput, M8, M9.
