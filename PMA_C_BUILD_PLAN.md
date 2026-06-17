@@ -131,3 +131,18 @@ Proof logic (§29 8&9): full vs no_memory_read shows memory recall does the work
 no_memory_read vs plain_ppo shows conservation helps the shared net (criterion 8). Memory is BOUNDED
 (hot 4096 atoms) + COMPRESSED (latent 128-d keys + 18-d teacher policies ~1.2MB total) — NOT per-game
 full checkpoints (§32). Honest framing: report deployed(live+memory) AND shared-net-only retention.
+
+## M9 MULTI-SEED SWEEP (running) — COMPLETION STEPS (for resume after compaction)
+Single-seed 5-game result was noise-dominated (stochastic-eval variance + [0,1] clamp + per-run learning
+variance): full mean 0.479 vs plain 0.614 is NOT a real effect. Clear per-game signal exists (BeamRider:
+full 478->441 ret 0.53 vs plain 632->415 ret 0.07). Running 3 seeds x 3 ablations (full/no_memory_read/
+plain_ppo), 5 games @800k, stochastic eval EVAL_EP=48, results in /root/sweep/{abl}_s{seed}.json.
+- GPU1 sweep (.codex/sweep_gpu1.sh, Bash bg b52w5je8b): full s0/s1/s2, no_memory_read s0/s1.
+- GPU2 sweep (.codex/sweep_gpu2.sh): plain_ppo s0/s1/s2, no_memory_read s2 — LAUNCH when g5_nomem frees GPU2.
+WHEN BOTH DONE (/root/sweep/gpu1_done.txt + gpu2_done.txt exist):
+  1. source /opt/venv; python .codex/aggregate.py  -> writes pma_c_results/living_memory_proof/SWEEP_RESULTS.md
+     (mean retention over LEARNED games (best-random>20), mean±std over seeds, ordering full vs nomem vs plain).
+  2. Fill the RESULTS_TABLE placeholder in REPORT.md with SWEEP_RESULTS.md; state the honest conclusion
+     (if full>=no_memory_read>plain consistently -> §29 8&9 proven; else report inconclusive honestly).
+  3. Commit. Project complete.
+Expected (if proof holds): full >= no_memory_read > plain_ppo on retention over learned games.
