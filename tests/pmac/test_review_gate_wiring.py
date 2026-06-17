@@ -144,12 +144,25 @@ def _install_stubs(monkeypatch, *, a_scores):
         calls["sample_u"].append(dict(u))
         return ["A"][: int(n)]
 
+    def fake_consolidate(params, ema_params, *_args, **_kwargs):
+        return {
+            "params": params,
+            "ema_params": ema_params,
+            "accepted": True,
+            "pre_score": 0.0,
+            "post_score": 0.0,
+            "slow_lr": 0.0,
+            "steps": 0,
+            "adapter_distill_active": False,
+        }
+
     monkeypatch.setattr(clm, "mem_init", fake_mem_init)
     monkeypatch.setattr(clm, "build_protected_bank", fake_bank)
     monkeypatch.setattr(clm, "train_living_memory_fast", fake_train)
     monkeypatch.setattr(clm, "certify_protected_memories", fake_certify)
     monkeypatch.setattr(clm, "collect_visual_sentinels", fake_collect)
     monkeypatch.setattr(clm, "eval_living_memory", fake_eval)
+    monkeypatch.setattr(clm, "consolidate", fake_consolidate)
     monkeypatch.setattr(clm, "_audit_violation_rate", lambda *args, **kwargs: 0.0)
     monkeypatch.setattr(clm, "_audit_retrieval_alignment", lambda *args, **kwargs: float("inf"))
     monkeypatch.setattr(clm, "sample_review_games", fake_sample)

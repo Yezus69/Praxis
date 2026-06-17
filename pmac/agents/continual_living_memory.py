@@ -11,6 +11,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from pmac.agents.consolidation import consolidate
 from pmac.agents.atari_mem_net import MemAtariActorCritic, mem_init
 from pmac.agents.living_memory_eval import (
     build_protected_bank,
@@ -43,6 +44,7 @@ ABLATIONS = {
     "no_review",
     "no_gate",
     "no_adapter",
+    "no_consolidation",
 }
 
 
@@ -691,6 +693,9 @@ def continual_living_memory(
             "active_adapters": 0,
             "adapter_growth_events": [],
             "low_plastic_streak": 0,
+            "consolidation_decisions": [],
+            "consolidation_accepts": 0,
+            "consolidation_rejections": 0,
         }
 
     random_bank = _empty_bank(cfg)
@@ -728,6 +733,7 @@ def continual_living_memory(
     gate_decisions: list[dict] = []
     review_counts: dict[str, int] = {}
     failure_memory_writes = 0
+    consolidation_decisions: list[dict] = []
 
     for game_id, game in enumerate(games):
         value_norms.setdefault(game, RunningValueNorm())
@@ -1003,6 +1009,72 @@ def continual_living_memory(
             _cfg_int(cfg, "act_dim", ACT_DIM),
         )
 
+        every_games = _cfg_int(cfg, "consolidate_every_games", 1)
+        if (
+            game_id >= 1
+            and every_games > 0
+            and (game_id + 1) % int(every_games) == 0
+            and ablation not in {"no_consolidation", "plain_ppo"}
+        ):
+            prior_games = list(enumerate(games[:game_id]))
+
+            def sentinel_eval_fn(candidate_params):
+                if not prior_games:
+                    return 0.0
+                scores = [
+                    float(
+                        _call_with_active_mask(
+                            eval_living_memory,
+                            candidate_params,
+                            eval_game,
+                            eval_id,
+                            protected_bank,
+                            cfg=cfg,
+                            seed=int(seed) + 110_000 + game_id * n_seq + eval_id,
+                            blend=blend,
+                            active_mask=active_mask,
+                        )
+                    )
+                    for eval_id, eval_game in prior_games
+                ]
+                return float(np.mean(np.asarray(scores, dtype=np.float32)))
+
+            slow_lr = _cfg_float(cfg, "lr", FastLMConfig().lr) * _cfg_float(
+                cfg,
+                "consolidate_lr_frac",
+                FastLMConfig().consolidate_lr_frac,
+            )  # spec §21
+            cons_result = consolidate(
+                params,
+                ema_params,
+                protected_bank,
+                visual_store,
+                cfg=cfg,
+                n_steps=_cfg_int(cfg, "consolidate_steps", FastLMConfig().consolidate_steps),
+                slow_lr=slow_lr,
+                active_mask=active_mask,
+                sentinel_eval_fn=sentinel_eval_fn,
+            )
+            accepted = bool(cons_result.get("accepted", False))
+            if accepted:
+                params = cons_result["params"]
+                ema_params = cons_result.get("ema_params", ema_params)
+            consolidation_decisions.append(
+                {
+                    "game": game,
+                    "game_id": int(game_id),
+                    "accepted": bool(accepted),
+                    "pre_score": float(cons_result.get("pre_score", np.nan)),
+                    "post_score": float(cons_result.get("post_score", np.nan)),
+                    "slow_lr": float(cons_result.get("slow_lr", slow_lr)),
+                    "steps": int(cons_result.get("steps", 0)),
+                    "adapter_distill_active": bool(
+                        cons_result.get("adapter_distill_active", False)
+                    ),
+                    "reason": str(cons_result.get("reason", "")),
+                }
+            )
+
         for eval_id, eval_game in enumerate(games[: game_id + 1]):
             score = float(
                 _call_with_active_mask(
@@ -1059,6 +1131,11 @@ def continual_living_memory(
         "active_adapters": int(np.sum(active_mask > 0.0)),
         "adapter_growth_events": list(adapter_growth_events),
         "low_plastic_streak": int(low_plastic_streak),
+        "consolidation_decisions": consolidation_decisions,
+        "consolidation_accepts": int(sum(1 for item in consolidation_decisions if item["accepted"])),
+        "consolidation_rejections": int(
+            sum(1 for item in consolidation_decisions if not item["accepted"])
+        ),
     }
 
 

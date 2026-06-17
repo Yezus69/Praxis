@@ -93,6 +93,12 @@ class FastLMConfig(LMConfig):
     lambda_norm: float = 1.0e-4
     adapter_r_min: float = 0.1
     adapter_patience: int = 3
+    # §21 slow consolidation knobs
+    consolidate_steps: int = 64
+    consolidate_lr_frac: float = 0.1
+    consolidate_tol: float = 0.0
+    consolidate_every_games: int = 1
+    lambda_distill: float = 0.0
 
 
 class FastLMRollout(NamedTuple):
