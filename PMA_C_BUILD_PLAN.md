@@ -91,6 +91,9 @@ pressure normalized as games grow · key-space drift controlled · deletion requ
 - M7b done: fast MEM trainer ppo_living_memory_fast — XLA scan + GPU-resident hot bank (hot_insert =
   top-C by importance via lax.top_k) + jitted writes. ~10.3k SPS (15x over M6a's 700), mem fills, learns SI
   (clipped 0.7->8.3, beats base 7.0). The O(writes*bank) host bottleneck is GONE. Memory path now at env ceiling.
+- M6b1 done: certify_protected_memories + build_protected_bank + eval_living_memory. PROVEN on GPU:
+  SpaceInvaders played from live+memory (blend) = 285 true score vs net-only (b=0) = 140 — the explicit
+  blend (§9) more than DOUBLES play. Deployment-invariant mechanism works + memory actively helps.
 - M6 split: M6a (single train) -> M6b (continual: guard-aware update = latent conservation
   §11 + projection §15 + stability §17 + risk §16, eval=live+memory blend §9, ablations) -> M6c
   (review §18 + rollback gate §19 + visual §12/retrieval §13 losses). Then M7 throughput, M8, M9.
