@@ -252,8 +252,9 @@ def _lm_ppo_loss(
     clip_coef: float,
     vf_coef: float,
     ent_coef: float,
+    active_mask=None,
 ):
-    out = mem_apply(params, batch.obs, game_id, bank_arrays, hp, mu_g, sigma_g)
+    out = mem_apply(params, batch.obs, game_id, bank_arrays, hp, mu_g, sigma_g, active_mask)
     logits_net = out["logits_net"]
     new_values = out["v_net"]
     new_logprobs = _categorical_log_prob(logits_net, batch.actions)
@@ -330,6 +331,7 @@ def _lm_update_jit(
     w_c,
     b0,
     top_k,
+    active_mask,
 ):
     hp = _jit_hp(tau_r, beta_c, beta_I, beta_a, w_rho, w_c, b0, top_k)
     batch_size = int(num_minibatches) * int(minibatch_size)
@@ -359,6 +361,7 @@ def _lm_update_jit(
                     clip_coef,
                     vf_coef,
                     ent_coef,
+                    active_mask,
                 )
 
             (loss, aux), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
@@ -409,6 +412,7 @@ def lm_update(
     ent_coef: float,
     max_grad_norm: float,
     hp=None,
+    active_mask=None,
 ):
     values = _hp_values(hp, bank_arrays)
     return _lm_update_jit(
@@ -429,6 +433,7 @@ def lm_update(
         float(ent_coef),
         float(max_grad_norm),
         *values,
+        active_mask,
     )
 
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
-import gc
 import time
 from typing import NamedTuple
 
@@ -194,12 +193,7 @@ def train_ppo_atari_fast(
             warm_steps += batch_size
             warm_seconds += elapsed
 
-    try:
-        env.close()
-    except Exception:
-        pass
-    del env
-    gc.collect()
+    # do NOT close/del/gc the envpool XLA env mid-process — its destructor aborts; freed at exit
 
     timesteps = int(num_updates * batch_size)
     if warm_steps > 0 and warm_seconds > 0.0:

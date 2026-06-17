@@ -9,7 +9,6 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 from functools import partial
-import gc
 import math
 import time
 from typing import NamedTuple
@@ -19,7 +18,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 
-from pmac.agents.atari_mem_net import mem_apply, mem_apply_key, mem_init
+from pmac.agents.atari_mem_net import adapter_reg, mem_apply, mem_apply_key, mem_init
 from pmac.agents.ppo_atari import (
     TrainBatch,
     _categorical_entropy,
@@ -85,6 +84,15 @@ class FastLMConfig(LMConfig):
     gate_min_new_progress: float = 0.0
     gate_retrieval_floor: float = 0.0
     gate_review_boost: float = 1.0
+    n_adapters: int = 4
+    adapter_rank: int = 32
+    top_s: int = 2
+    lambda_adapter: float = 0.01
+    lambda_sparse: float = 1.0e-3
+    lambda_load: float = 1.0e-3
+    lambda_norm: float = 1.0e-4
+    adapter_r_min: float = 0.1
+    adapter_patience: int = 3
 
 
 class FastLMRollout(NamedTuple):
@@ -104,6 +112,7 @@ class GuardCombineMetrics(NamedTuple):
     g_safe_norm: jnp.ndarray
     g_total_norm: jnp.ndarray
     projection_ratio: jnp.ndarray
+    r_plastic: jnp.ndarray
     conflict_dot: jnp.ndarray
     nonfinite: jnp.ndarray
 
@@ -114,6 +123,51 @@ def _cfg_int(cfg, name: str, default: int) -> int:
 
 def _cfg_float(cfg, name: str, default: float) -> float:
     return float(getattr(cfg, name, default))
+
+
+def _adapter_mask_array(active_mask, n_adapters: int):
+    n_adapters = int(n_adapters)
+    if active_mask is None:
+        return np.zeros((n_adapters,), dtype=np.float32)
+    mask = np.asarray(active_mask, dtype=np.float32).reshape(-1)
+    if int(mask.shape[0]) != n_adapters:
+        raise ValueError(f"active_mask must have shape ({n_adapters},), got {mask.shape}")
+    return (mask > 0.0).astype(np.float32)
+
+
+def _adapter_mask_arg(active_mask):
+    if active_mask is None:
+        # inert adapter path: pass None so the scan compiles adapter-free
+        return None
+    mask = np.asarray(active_mask, dtype=np.float32)
+    if not bool(np.any(mask > 0.0)):
+        # inert adapter path: pass None so the scan compiles adapter-free
+        return None
+    return jnp.asarray(mask, dtype=jnp.float32)
+
+
+def _adapter_reg_loss(
+    params,
+    minibatch,
+    game_id,
+    bank_arrays,
+    hp,
+    mu_g,
+    sigma_g,
+    active_mask,
+    lambda_adapter,
+    lambda_sparse,
+    lambda_load,
+    lambda_norm,
+):
+    out = mem_apply(params, minibatch.obs, game_id, bank_arrays, hp, mu_g, sigma_g, active_mask)
+    return jnp.asarray(lambda_adapter, dtype=jnp.float32) * adapter_reg(
+        params,
+        out["adapter_gamma"],
+        lambda_sparse=lambda_sparse,
+        lambda_load=lambda_load,
+        lambda_norm=lambda_norm,
+    )  # spec §20
 
 
 def _validate_fast_config(cfg) -> int:
@@ -141,6 +195,14 @@ def _validate_fast_config(cfg) -> int:
         raise ValueError("write_subsample_size must be positive")
     if _cfg_int(cfg, "max_writes_per_segment", DEFAULT_MAX_WRITES_PER_SEGMENT) < 0:
         raise ValueError("max_writes_per_segment must be non-negative")
+    if _cfg_int(cfg, "n_adapters", 4) <= 0:
+        raise ValueError("n_adapters must be positive")
+    if _cfg_int(cfg, "adapter_rank", 32) <= 0:
+        raise ValueError("adapter_rank must be positive")
+    if _cfg_int(cfg, "top_s", 2) <= 0 or _cfg_int(cfg, "top_s", 2) > _cfg_int(cfg, "n_adapters", 4):
+        raise ValueError("top_s must be in [1, n_adapters]")
+    if _cfg_int(cfg, "adapter_patience", 3) <= 0:
+        raise ValueError("adapter_patience must be positive")
     return num_updates
 
 
@@ -189,6 +251,7 @@ def _combine_latent_guard_core(
     params,
     g_task,
     g_guard,
+    g_adapter,
     omega,
     lambda_total,
     kappa,
@@ -199,6 +262,7 @@ def _combine_latent_guard_core(
     g_task_norm = tree_norm(g_task)
     g_guard_norm = tree_norm(g_guard)
     inputs_finite = jnp.logical_and(_tree_all_finite(g_task), _tree_all_finite(g_guard))
+    inputs_finite = jnp.logical_and(inputs_finite, _tree_all_finite(g_adapter))  # spec §20
     inputs_finite = jnp.logical_and(inputs_finite, _tree_all_finite(omega))
 
     clip_scale = jnp.minimum(
@@ -218,6 +282,7 @@ def _combine_latent_guard_core(
         g_guard,
         jnp.asarray(lambda_total, dtype=jnp.float32),
     )  # spec §16
+    g_total = tree_add(g_total, g_adapter)  # spec §15
     g_total = scale_by_stability(
         g_total,
         omega,
@@ -233,13 +298,15 @@ def _combine_latent_guard_core(
     nonfinite = jnp.logical_not(jnp.logical_and(inputs_finite, _tree_all_finite(g_total)))
     g_total = _zero_if_nonfinite(g_total, g_task, nonfinite)
     next_omega = _select_tree(next_omega, omega, jnp.logical_not(nonfinite))
+    r_plastic = plasticity_ratio(g_safe, g_task, EPS)  # spec §20
     metrics = GuardCombineMetrics(
         g_task_norm=g_task_norm,
         g_guard_norm=g_guard_norm,
         g_guard_clipped_norm=tree_norm(g_guard),
         g_safe_norm=tree_norm(g_safe),
         g_total_norm=tree_norm(g_total),
-        projection_ratio=plasticity_ratio(g_safe, g_task, EPS),
+        projection_ratio=r_plastic,
+        r_plastic=r_plastic,
         conflict_dot=conflict_dot,
         nonfinite=nonfinite,
     )
@@ -253,6 +320,7 @@ def _combine_latent_guard_aux_core(
     g_guard,
     g_visual,
     g_retr,
+    g_adapter,
     omega,
     lambda_total,
     kappa,
@@ -265,6 +333,7 @@ def _combine_latent_guard_aux_core(
     inputs_finite = jnp.logical_and(_tree_all_finite(g_task), _tree_all_finite(g_guard))
     inputs_finite = jnp.logical_and(inputs_finite, _tree_all_finite(g_visual))  # spec §12
     inputs_finite = jnp.logical_and(inputs_finite, _tree_all_finite(g_retr))  # spec §13
+    inputs_finite = jnp.logical_and(inputs_finite, _tree_all_finite(g_adapter))  # spec §20
     inputs_finite = jnp.logical_and(inputs_finite, _tree_all_finite(omega))
 
     clip_scale = jnp.minimum(
@@ -286,6 +355,7 @@ def _combine_latent_guard_aux_core(
     )  # spec §15
     g_total = tree_add(g_total, g_visual)  # spec §12, §15
     g_total = tree_add(g_total, g_retr)  # spec §13, §15
+    g_total = tree_add(g_total, g_adapter)  # spec §15
     g_total = scale_by_stability(
         g_total,
         omega,
@@ -301,13 +371,15 @@ def _combine_latent_guard_aux_core(
     nonfinite = jnp.logical_not(jnp.logical_and(inputs_finite, _tree_all_finite(g_total)))
     g_total = _zero_if_nonfinite(g_total, g_task, nonfinite)
     next_omega = _select_tree(next_omega, omega, jnp.logical_not(nonfinite))
+    r_plastic = plasticity_ratio(g_safe, g_task, EPS)  # spec §20
     metrics = GuardCombineMetrics(
         g_task_norm=g_task_norm,
         g_guard_norm=g_guard_norm,
         g_guard_clipped_norm=tree_norm(g_guard),
         g_safe_norm=tree_norm(g_safe),
         g_total_norm=tree_norm(g_total),
-        projection_ratio=plasticity_ratio(g_safe, g_task, EPS),
+        projection_ratio=r_plastic,
+        r_plastic=r_plastic,
         conflict_dot=conflict_dot,
         nonfinite=nonfinite,
     )
@@ -333,6 +405,7 @@ def combine_latent_guard_grads(
         params,
         g_task,
         g_guard,
+        tree_zeros_like(g_task),
         omega,
         jnp.asarray(lambda_total, dtype=jnp.float32),
         jnp.asarray(kappa, dtype=jnp.float32),
@@ -365,6 +438,7 @@ def combine_latent_guard_aux_grads(
         g_guard,
         g_visual,
         g_retr,
+        tree_zeros_like(g_task),
         omega,
         jnp.asarray(lambda_total, dtype=jnp.float32),
         jnp.asarray(kappa, dtype=jnp.float32),
@@ -519,13 +593,14 @@ def _make_rollout_fn(step_env, num_steps: int):
         w_c,
         b0,
         top_k,
+        active_mask,
     ):
         hp = _jit_hp(tau_r, beta_c, beta_I, beta_a, w_rho, w_c, b0, top_k)
 
         def step(carry, _):
             handle, obs, rng = carry
             rng, action_key = jax.random.split(rng)
-            out = mem_apply(params, obs, game_id_vec, bank, hp, mu_g, sigma_g)
+            out = mem_apply(params, obs, game_id_vec, bank, hp, mu_g, sigma_g, active_mask)
             logits_net = out["logits_net"]
             actions = jax.random.categorical(action_key, logits_net, axis=-1).astype(jnp.int32)
             logprobs = _categorical_log_prob(logits_net, actions)
@@ -573,9 +648,10 @@ def _last_value_jit(
     w_c,
     b0,
     top_k,
+    active_mask,
 ):
     hp = _jit_hp(tau_r, beta_c, beta_I, beta_a, w_rho, w_c, b0, top_k)
-    return mem_apply(params, obs, game_id_vec, bank, hp, mu_g, sigma_g)["v_net"]
+    return mem_apply(params, obs, game_id_vec, bank, hp, mu_g, sigma_g, active_mask)["v_net"]
 
 
 def _new_value_norm_state():
@@ -733,6 +809,7 @@ def _lm_writes_jit(
     write_eps,
     value_momentum,
     sigma_floor,
+    active_mask,
 ):
     hp = _jit_hp(tau_r, beta_c, beta_I, beta_a, w_rho, w_c, b0, top_k)
     batch_size = int(traj.actions.size)
@@ -758,7 +835,7 @@ def _lm_writes_jit(
     returns_w = jnp.take(flat_returns, sample_idx, axis=0)
     game_ids_w = jnp.full((int(write_batch_size),), jnp.asarray(game_id, dtype=jnp.int32), dtype=jnp.int32)
 
-    logits_net = mem_apply(params, obs_w, game_ids_w, bank, hp, mu_g, sigma_g)["logits_net"]
+    logits_net = mem_apply(params, obs_w, game_ids_w, bank, hp, mu_g, sigma_g, active_mask)["logits_net"]
     keys_w = mem_apply_key(ema_params, obs_w)
     novelty_w = hot_novelty(keys_w, bank, game_ids_w)
     entropy_w = _categorical_entropy(logits_net)
@@ -883,8 +960,10 @@ def lm_writes(
     write_eps: float = 1.0e-6,
     value_momentum: float = 0.99,
     sigma_floor: float = 1.0e-3,
+    active_mask=None,
 ):
     values = _hp_values(hp, bank)
+    active_arg = _adapter_mask_arg(active_mask)
     return _lm_writes_jit(
         params,
         ema_params,
@@ -908,6 +987,7 @@ def lm_writes(
         float(write_eps),
         float(value_momentum),
         float(sigma_floor),
+        active_arg,
     )
 
 
@@ -963,6 +1043,11 @@ def _lm_guarded_update_jit(
     lambda_v,
     stability_alpha,
     rho_omega,
+    active_mask,
+    lambda_adapter,
+    lambda_sparse,
+    lambda_load,
+    lambda_norm,
     n_games,
     d_k,
     d_c,
@@ -1009,14 +1094,36 @@ def _lm_guarded_update_jit(
                     clip_coef,
                     vf_coef,
                     ent_coef,
+                    active_mask,
                 )
 
             (loss, aux), g_task = jax.value_and_grad(loss_fn, has_aux=True)(params)
             cons_loss, g_guard = jax.value_and_grad(guard_loss_fn)(params)  # spec §11
+            if active_mask is None:
+                adapter_loss = jnp.asarray(0.0, dtype=jnp.float32)
+                g_adapter = tree_zeros_like(g_task)
+            else:
+                adapter_loss, g_adapter = jax.value_and_grad(
+                    lambda p: _adapter_reg_loss(
+                        p,
+                        minibatch,
+                        game_id,
+                        bank_arrays,
+                        hp,
+                        mu_g,
+                        sigma_g,
+                        active_mask,
+                        lambda_adapter,
+                        lambda_sparse,
+                        lambda_load,
+                        lambda_norm,
+                    )
+                )(params)
             g_total, next_omega, guard_metrics = _combine_latent_guard_core(
                 params,
                 g_task,
                 g_guard,
+                g_adapter,
                 omega,
                 lambda_total,
                 kappa,
@@ -1025,6 +1132,7 @@ def _lm_guarded_update_jit(
                 guard_project,
             )
             finite = jnp.logical_and(jnp.isfinite(loss), jnp.isfinite(cons_loss))
+            finite = jnp.logical_and(finite, jnp.isfinite(adapter_loss))
             finite = jnp.logical_and(finite, jnp.logical_not(guard_metrics.nonfinite))
             safe_grads = jax.tree_util.tree_map(
                 lambda grad: jnp.where(finite, grad, jnp.zeros_like(grad)),
@@ -1052,6 +1160,7 @@ def _lm_guarded_update_jit(
                             guard_metrics.g_safe_norm,
                             guard_metrics.g_total_norm,
                             guard_metrics.projection_ratio,
+                            guard_metrics.r_plastic,
                             guard_metrics.conflict_dot,
                             guard_metrics.nonfinite.astype(jnp.float32),
                         ],
@@ -1138,6 +1247,11 @@ def _lm_guarded_update_aux_jit(
     lambda_retr,
     visual_lambda_v,
     retr_tau,
+    active_mask,
+    lambda_adapter,
+    lambda_sparse,
+    lambda_load,
+    lambda_norm,
     n_games,
     d_k,
     d_c,
@@ -1206,6 +1320,7 @@ def _lm_guarded_update_aux_jit(
                     clip_coef,
                     vf_coef,
                     ent_coef,
+                    active_mask,
                 )
 
             (loss, aux), g_task = jax.value_and_grad(loss_fn, has_aux=True)(params)
@@ -1214,12 +1329,33 @@ def _lm_guarded_update_aux_jit(
                 visual_loss_fn, has_aux=True
             )(params)  # spec §12
             retr_loss, g_retr = jax.value_and_grad(retr_loss_fn)(params)  # spec §13
+            if active_mask is None:
+                adapter_loss = jnp.asarray(0.0, dtype=jnp.float32)
+                g_adapter = tree_zeros_like(g_task)
+            else:
+                adapter_loss, g_adapter = jax.value_and_grad(
+                    lambda p: _adapter_reg_loss(
+                        p,
+                        minibatch,
+                        game_id,
+                        bank_arrays,
+                        hp,
+                        mu_g,
+                        sigma_g,
+                        active_mask,
+                        lambda_adapter,
+                        lambda_sparse,
+                        lambda_load,
+                        lambda_norm,
+                    )
+                )(params)
             g_total, next_omega, guard_metrics = _combine_latent_guard_aux_core(
                 params,
                 g_task,
                 g_guard,
                 g_visual,
                 g_retr,
+                g_adapter,
                 omega,
                 lambda_total,
                 kappa,
@@ -1232,6 +1368,7 @@ def _lm_guarded_update_aux_jit(
             finite = jnp.logical_and(finite, jnp.isfinite(l_key))
             finite = jnp.logical_and(finite, jnp.isfinite(l_visual_beh))
             finite = jnp.logical_and(finite, jnp.isfinite(retr_loss))
+            finite = jnp.logical_and(finite, jnp.isfinite(adapter_loss))
             finite = jnp.logical_and(finite, jnp.logical_not(guard_metrics.nonfinite))
             safe_grads = jax.tree_util.tree_map(
                 lambda grad: jnp.where(finite, grad, jnp.zeros_like(grad)),
@@ -1259,6 +1396,7 @@ def _lm_guarded_update_aux_jit(
                             guard_metrics.g_safe_norm,
                             guard_metrics.g_total_norm,
                             guard_metrics.projection_ratio,
+                            guard_metrics.r_plastic,
                             guard_metrics.conflict_dot,
                             guard_metrics.nonfinite.astype(jnp.float32),
                         ],
@@ -1339,8 +1477,14 @@ def lm_guarded_update(
     act_dim: int,
     hp=None,
     aux=None,
+    active_mask=None,
+    lambda_adapter: float = 0.01,
+    lambda_sparse: float = 1.0e-3,
+    lambda_load: float = 1.0e-3,
+    lambda_norm: float = 1.0e-4,
 ):
     values = _hp_values(hp, bank_arrays)
+    active_arg = _adapter_mask_arg(active_mask)
     if aux is not None:
         return _lm_guarded_update_aux_jit(
             params,
@@ -1376,6 +1520,11 @@ def lm_guarded_update(
             jnp.asarray(_aux_field(aux, "lambda_retr", 0.1), dtype=jnp.float32),
             jnp.asarray(_aux_field(aux, "visual_lambda_v", 1.0), dtype=jnp.float32),
             jnp.asarray(_aux_field(aux, "tau", 0.1), dtype=jnp.float32),
+            active_arg,
+            jnp.asarray(lambda_adapter, dtype=jnp.float32),
+            jnp.asarray(lambda_sparse, dtype=jnp.float32),
+            jnp.asarray(lambda_load, dtype=jnp.float32),
+            jnp.asarray(lambda_norm, dtype=jnp.float32),
             int(n_games),
             int(d_k),
             int(d_c),
@@ -1409,6 +1558,11 @@ def lm_guarded_update(
         jnp.asarray(_guard_field(guard, "lambda_v", 1.0), dtype=jnp.float32),
         jnp.asarray(_guard_field(guard, "stability_alpha", 10.0), dtype=jnp.float32),
         jnp.asarray(_guard_field(guard, "rho_omega", 0.99), dtype=jnp.float32),
+        active_arg,
+        jnp.asarray(lambda_adapter, dtype=jnp.float32),
+        jnp.asarray(lambda_sparse, dtype=jnp.float32),
+        jnp.asarray(lambda_load, dtype=jnp.float32),
+        jnp.asarray(lambda_norm, dtype=jnp.float32),
         int(n_games),
         int(d_k),
         int(d_c),
@@ -1492,6 +1646,7 @@ def train_living_memory_fast(
     value_norm=None,
     guard=None,
     aux=None,
+    active_mask=None,
 ) -> dict:
     """Train one Atari game with XLA-scan rollout and jitted GPU hot-bank writes."""
 
@@ -1504,6 +1659,8 @@ def train_living_memory_fast(
     write_batch_size, write_count, max_writes = _write_shape_config(cfg, batch_size)
     write_every = int(cfg.write_every)
     write_enabled = write_every > 0 and write_count > 0 and max_writes > 0
+    active_mask_np = _adapter_mask_array(active_mask, _cfg_int(cfg, "n_adapters", 4))
+    active_arg = _adapter_mask_arg(active_mask_np)
 
     rng = jax.random.PRNGKey(int(seed))
     rng, init_key = jax.random.split(rng)
@@ -1518,6 +1675,9 @@ def train_living_memory_fast(
             d_m=int(cfg.d_m),
             act_dim=ACT_DIM,
             top_k=int(cfg.top_k),
+            n_adapters=_cfg_int(cfg, "n_adapters", 4),
+            adapter_rank=_cfg_int(cfg, "adapter_rank", 32),
+            top_s=_cfg_int(cfg, "top_s", 2),
         )
     if ema_params is None:
         ema_params = params
@@ -1552,6 +1712,7 @@ def train_living_memory_fast(
     warm_seconds = 0.0
     total_seconds = 0.0
     game_id_vec = jnp.full((int(cfg.num_envs),), int(game_id), dtype=jnp.int32)
+    last_r_plastic = 1.0
 
     for update in range(1, num_updates + 1):
         update_start = time.perf_counter()
@@ -1569,6 +1730,7 @@ def train_living_memory_fast(
             float(sigma_segment),
             rng,
             *hp_values,
+            active_arg,
         )
         completed_this_update = _completed_returns_from_rollout(traj, tracker)
         if completed_this_update:
@@ -1584,6 +1746,7 @@ def train_living_memory_fast(
             float(mu_segment),
             float(sigma_segment),
             *hp_values,
+            active_arg,
         )
         advantages, returns = gae(
             traj.rewards,
@@ -1619,6 +1782,7 @@ def train_living_memory_fast(
                 write_eps=float(write_eps),
                 value_momentum=float(value_momentum),
                 sigma_floor=float(sigma_floor),
+                active_mask=active_arg,
             )
             _block_until_ready((hot_bank, value_norm_state, write_metrics))
         else:
@@ -1658,6 +1822,7 @@ def train_living_memory_fast(
                 float(cfg.ent_coef),
                 float(cfg.max_grad_norm),
                 hp=hp,
+                active_mask=active_arg,
             )
         else:
             params, opt_state, rng, guard_omega, metrics = lm_guarded_update(
@@ -1686,9 +1851,19 @@ def train_living_memory_fast(
                 act_dim=ACT_DIM,
                 hp=hp,
                 aux=aux,
+                active_mask=active_arg,
+                lambda_adapter=_cfg_float(cfg, "lambda_adapter", 0.01),
+                lambda_sparse=_cfg_float(cfg, "lambda_sparse", 1.0e-3),
+                lambda_load=_cfg_float(cfg, "lambda_load", 1.0e-3),
+                lambda_norm=_cfg_float(cfg, "lambda_norm", 1.0e-4),
             )
         ema_params = ema_update(ema_params, params, float(cfg.tau_key))
         _block_until_ready((metrics, ema_params))
+        metrics_np = np.asarray(jax.device_get(metrics), dtype=np.float32).reshape(-1)
+        if guard is None:
+            last_r_plastic = 1.0
+        elif int(metrics_np.shape[0]) > 14:
+            last_r_plastic = float(metrics_np[14])
 
         elapsed = time.perf_counter() - update_start
         total_seconds += elapsed
@@ -1696,12 +1871,7 @@ def train_living_memory_fast(
             warm_steps += batch_size
             warm_seconds += elapsed
 
-    try:
-        env.close()
-    except Exception:
-        pass
-    del env
-    gc.collect()
+    # do NOT close/del/gc the envpool XLA env mid-process — its destructor aborts; freed at exit
 
     timesteps = int(num_updates * batch_size)
     if warm_steps > 0 and warm_seconds > 0.0:
@@ -1723,6 +1893,9 @@ def train_living_memory_fast(
         "timesteps": timesteps,
         "mem_size": mem_size,
         "steps_per_sec": steps_per_sec,
+        "active_mask": active_mask_np.astype(np.float32),
+        "active_adapters": int(np.sum(active_mask_np > 0.0)),
+        "r_plastic": float(last_r_plastic),
     }
     if guard_omega is not None:
         result["guard_omega"] = guard_omega

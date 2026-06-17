@@ -407,6 +407,7 @@ def eval_living_memory(
     seed,
     episodes=12,
     blend=True,
+    active_mask=None,
 ) -> float:
     """Evaluate a game greedily with live model plus protected memory."""
     episodes = int(episodes)
@@ -442,7 +443,7 @@ def eval_living_memory(
     game_id_vec = jnp.full((num_envs,), int(game_id), dtype=jnp.int32)
 
     for _ in range(max_steps):
-        out = mem_apply(params, obs, game_id_vec, protected_bank, hp, mu_g, sigma_g)
+        out = mem_apply(params, obs, game_id_vec, protected_bank, hp, mu_g, sigma_g, active_mask)
         actions = _select_greedy_actions(out, blend=bool(blend))
         actions_np = np.asarray(jax.device_get(actions), dtype=np.int32)
         obs, rewards, terminated, truncated, info = env.step(actions_np)

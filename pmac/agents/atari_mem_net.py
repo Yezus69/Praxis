@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 
 import flax.linen as nn
 import jax
@@ -13,6 +14,9 @@ from pmac.memory import reader
 
 
 EPS = 1e-8
+DEFAULT_N_ADAPTERS = 4
+DEFAULT_ADAPTER_RANK = 32
+DEFAULT_TOP_S = 2
 
 
 def _orthogonal(scale: float):
@@ -42,6 +46,9 @@ class MemAtariActorCritic(nn.Module):
     d_c: int = 16
     d_m: int = 128
     act_dim: int = ACT_DIM
+    n_adapters: int = DEFAULT_N_ADAPTERS
+    adapter_rank: int = DEFAULT_ADAPTER_RANK
+    top_s: int = DEFAULT_TOP_S
 
     def setup(self):
         conv_init = _orthogonal(math.sqrt(2.0))
@@ -86,6 +93,29 @@ class MemAtariActorCritic(nn.Module):
             kernel_init=_orthogonal(1.0),
             bias_init=nn.initializers.zeros,
         )
+        self.adapter_router = nn.Dense(
+            int(self.n_adapters),
+            kernel_init=dense_init,
+            bias_init=nn.initializers.zeros,
+        )
+        self.adapter_down = [
+            nn.Dense(
+                int(self.adapter_rank),
+                kernel_init=dense_init,
+                bias_init=nn.initializers.zeros,
+                name=f"adapter_down_{idx}",
+            )
+            for idx in range(int(self.n_adapters))
+        ]
+        self.adapter_up = [
+            nn.Dense(
+                512,
+                kernel_init=nn.initializers.zeros,
+                bias_init=nn.initializers.zeros,
+                name=f"adapter_up_{idx}",
+            )
+            for idx in range(int(self.n_adapters))
+        ]
 
     def trunk(self, obs):
         x = _prepare_obs(obs)
@@ -119,11 +149,42 @@ class MemAtariActorCritic(nn.Module):
         value = self.value_head(z)
         return logits, jnp.squeeze(value, axis=-1)  # spec §4
 
+    def adapter_mixture(self, h, m, c_embed, active_mask=None):
+        batch = int(h.shape[0])
+        n_adapters = int(self.n_adapters)
+        if active_mask is None or n_adapters <= 0:
+            gamma = jnp.zeros((batch, n_adapters), dtype=h.dtype)
+            return jnp.zeros_like(h), gamma
+
+        active = jnp.asarray(active_mask, dtype=h.dtype).reshape((n_adapters,))
+
+        def routed():
+            z = jnp.concatenate([h, m, c_embed], axis=-1)
+            logits_r = self.adapter_router(z)
+            masked_logits = jnp.where(
+                active[None, :] > 0.0,
+                logits_r,
+                jnp.full_like(logits_r, -1.0e30),
+            )
+            probs = jax.nn.softmax(masked_logits, axis=-1)  # spec §20
+            top_s = max(1, min(int(self.top_s), n_adapters))
+            top_values, top_idx = jax.lax.top_k(probs, top_s)  # spec §20
+            rows = jnp.arange(batch)[:, None]
+            gamma_sparse = jnp.zeros_like(probs).at[rows, top_idx].set(top_values)
+            gamma = gamma_sparse * active[None, :]  # spec §20
+            delta = jnp.zeros_like(h)
+            for idx in range(n_adapters):
+                a_k = self.adapter_up[idx](nn.relu(self.adapter_down[idx](z)))
+                delta = delta + gamma[:, idx : idx + 1] * a_k  # spec §20
+            return delta, gamma
+
+        return routed()
+
     def latent_behavior(self, k_i, c_embed_i, m_i):
         h_hat = self.key_to_h(jnp.concatenate([k_i, c_embed_i], axis=-1))
         return self.policy_value(h_hat, m_i, c_embed_i)  # spec §11
 
-    def __call__(self, obs, game_id, bank, hp, mu_g=0.0, sigma_g=1.0):
+    def __call__(self, obs, game_id, bank, hp, mu_g=0.0, sigma_g=1.0, active_mask=None):
         h, k = self.encode(obs)  # spec §5
         game_id = jnp.asarray(game_id, dtype=jnp.int32)
         if game_id.ndim == 0:
@@ -133,7 +194,14 @@ class MemAtariActorCritic(nn.Module):
         c_embed = self.context(game_id)
         out = reader.retrieve(k, c_embed, game_id, bank, hp)  # spec §9
         m = self.mem_summary(out.atom_feats, out.alpha)  # spec §9
-        logits_net, v_net = self.policy_value(h, m, c_embed)  # spec §4
+        if active_mask is None:
+            adapter_delta = jnp.zeros_like(h)
+            adapter_gamma = jnp.zeros((h.shape[0], int(self.n_adapters)), dtype=h.dtype)
+            h_adapted = h
+        else:
+            adapter_delta, adapter_gamma = self.adapter_mixture(h, m, c_embed, active_mask)
+            h_adapted = h + adapter_delta  # spec §20
+        logits_net, v_net = self.policy_value(h_adapted, m, c_embed)  # spec §4
         p_net = jax.nn.softmax(logits_net, axis=-1)  # spec §4
         _, logits_final, v_final = reader.blend(
             p_net, v_net, out.p_mem, out.v_mem, out.b, mu_g, sigma_g
@@ -150,12 +218,25 @@ class MemAtariActorCritic(nn.Module):
             "m": m,
             "k": k,
             "alpha": out.alpha,
+            "adapter_gamma": adapter_gamma,
+            "adapter_delta": adapter_delta,
         }
 
     def init_all(self, obs, game_id, bank, hp, k_i, m_i, mu_g=0.0, sigma_g=1.0):
         outputs = self(obs, game_id, bank, hp, mu_g, sigma_g)
         c_embed_i = self.context(game_id)
         self.latent_behavior(k_i, c_embed_i, m_i)
+        if int(self.n_adapters) > 0:
+            h, _ = self.encode(obs)
+            active = jnp.ones((int(self.n_adapters),), dtype=jnp.float32)
+            m = jnp.zeros((h.shape[0], int(self.d_m)), dtype=h.dtype)
+            game_id = jnp.asarray(game_id, dtype=jnp.int32)
+            if game_id.ndim == 0:
+                game_id = jnp.broadcast_to(game_id, (h.shape[0],))
+            elif game_id.shape[0] == 1 and h.shape[0] != 1:
+                game_id = jnp.broadcast_to(game_id, (h.shape[0],))
+            c_embed = self.context(game_id)
+            self.adapter_mixture(h, m, c_embed, active)
         return outputs
 
 
@@ -193,6 +274,68 @@ def _infer_dims(params):
     d_m = params["wv"]["kernel"].shape[-1]
     act_dim = params["policy_head"]["kernel"].shape[-1]
     return int(n_games), int(d_k), int(d_c), int(d_m), int(act_dim)
+
+
+def _infer_adapter_config(params, top_s: int | None = None):
+    top_s_value = DEFAULT_TOP_S if top_s is None else int(top_s)
+    if "adapter_router" not in params:
+        return DEFAULT_N_ADAPTERS, DEFAULT_ADAPTER_RANK, top_s_value
+    n_adapters = int(params["adapter_router"]["kernel"].shape[-1])
+    if n_adapters <= 0:
+        return 0, 0, 0
+    first_down = params.get("adapter_down_0")
+    adapter_rank = DEFAULT_ADAPTER_RANK if first_down is None else int(first_down["kernel"].shape[-1])
+    top_s_value = max(1, min(top_s_value, n_adapters))
+    return n_adapters, adapter_rank, top_s_value
+
+
+def _concrete_all_zero_mask(active_mask) -> bool:
+    if active_mask is None:
+        return True
+    try:
+        return bool(not jnp.any(jnp.asarray(active_mask)))
+    except Exception:
+        return False
+
+
+def _adapter_param_leaves(params):
+    if not isinstance(params, Mapping):
+        return []
+    leaves = []
+    for name, value in params.items():
+        if name.startswith("adapter_down_") or name.startswith("adapter_up_"):
+            leaves.extend(jax.tree_util.tree_leaves(value))
+    return leaves
+
+
+def adapter_reg(
+    params,
+    gamma_batch,
+    *,
+    lambda_sparse: float,
+    lambda_load: float,
+    lambda_norm: float,
+):
+    gamma = jnp.asarray(gamma_batch, dtype=jnp.float32)
+    if gamma.ndim == 1:
+        gamma = gamma[None, :]
+    l_sparse = jnp.mean(jnp.sum(jnp.abs(gamma), axis=-1))  # spec §20
+    mean_gamma = jnp.mean(gamma.reshape((-1, gamma.shape[-1])), axis=0)
+    total_load = jnp.sum(mean_gamma)
+    uniform = jnp.ones_like(mean_gamma) / jnp.maximum(float(gamma.shape[-1]), 1.0)
+    load_balance = jnp.where(
+        total_load > 0.0,
+        jnp.sum(jnp.square(mean_gamma / (total_load + EPS) - uniform)),
+        jnp.asarray(0.0, dtype=jnp.float32),
+    )  # spec §20
+    norm = jnp.asarray(0.0, dtype=jnp.float32)
+    for leaf in _adapter_param_leaves(params):
+        norm = norm + jnp.sum(jnp.square(jnp.asarray(leaf, dtype=jnp.float32)))
+    return (
+        jnp.asarray(lambda_sparse, dtype=jnp.float32) * l_sparse
+        + jnp.asarray(lambda_load, dtype=jnp.float32) * load_balance
+        + jnp.asarray(lambda_norm, dtype=jnp.float32) * norm
+    )  # spec §20
 
 
 def _flatten_obs(obs):
@@ -238,12 +381,22 @@ def mem_init(
     d_m: int = 128,
     act_dim: int = ACT_DIM,
     top_k: int | None = None,
+    n_adapters: int = DEFAULT_N_ADAPTERS,
+    adapter_rank: int = DEFAULT_ADAPTER_RANK,
+    top_s: int = DEFAULT_TOP_S,
 ):
     if capacity <= 0:
         raise ValueError("capacity must be positive for static top_k retrieval")
     top_k = min(int(capacity), 1 if top_k is None else int(top_k))
     net = MemAtariActorCritic(
-        n_games=int(n_games), d_k=int(d_k), d_c=int(d_c), d_m=int(d_m), act_dim=int(act_dim)
+        n_games=int(n_games),
+        d_k=int(d_k),
+        d_c=int(d_c),
+        d_m=int(d_m),
+        act_dim=int(act_dim),
+        n_adapters=int(n_adapters),
+        adapter_rank=int(adapter_rank),
+        top_s=int(top_s),
     )
     dummy_obs = jnp.zeros((1, 84, 84, 4), dtype=jnp.float32)
     dummy_game = jnp.zeros((1,), dtype=jnp.int32)
@@ -264,15 +417,46 @@ def mem_init(
     return variables["params"]
 
 
-def mem_apply(params, obs, game_id, bank, hp, mu_g=0.0, sigma_g=1.0):
+def mem_apply(
+    params,
+    obs,
+    game_id,
+    bank,
+    hp,
+    mu_g=0.0,
+    sigma_g=1.0,
+    active_mask=None,
+    *,
+    top_s: int | None = None,
+):
     n_games, d_k, d_c, d_m, act_dim = _infer_dims(params)
-    net = MemAtariActorCritic(n_games=n_games, d_k=d_k, d_c=d_c, d_m=d_m, act_dim=act_dim)
+    n_adapters, adapter_rank, top_s = _infer_adapter_config(params, top_s=top_s)
+    net = MemAtariActorCritic(
+        n_games=n_games,
+        d_k=d_k,
+        d_c=d_c,
+        d_m=d_m,
+        act_dim=act_dim,
+        n_adapters=n_adapters,
+        adapter_rank=adapter_rank,
+        top_s=top_s,
+    )
     obs_flat, lead_shape, single = _flatten_obs(obs)
     batch = int(obs_flat.shape[0])
     game_flat = _flatten_vector(game_id, batch, lead_shape, jnp.int32)
     mu_flat = _flatten_vector(mu_g, batch, lead_shape, jnp.float32)
     sigma_flat = _flatten_vector(sigma_g, batch, lead_shape, jnp.float32)
-    outputs = net.apply({"params": params}, obs_flat, game_flat, bank, hp, mu_flat, sigma_flat)
+    active_arg = None if _concrete_all_zero_mask(active_mask) else active_mask
+    outputs = net.apply(
+        {"params": params},
+        obs_flat,
+        game_flat,
+        bank,
+        hp,
+        mu_flat,
+        sigma_flat,
+        active_arg,
+    )
     return _reshape_outputs(outputs, lead_shape, single)
 
 
@@ -314,6 +498,7 @@ def mem_apply_latent(params, k_i, game_id_i, m_i):
 
 __all__ = [
     "MemAtariActorCritic",
+    "adapter_reg",
     "mem_apply",
     "mem_apply_key",
     "mem_apply_latent",

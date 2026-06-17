@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import inspect
 from collections.abc import Mapping, Sequence
 from dataclasses import is_dataclass, replace
 
@@ -41,6 +42,7 @@ ABLATIONS = {
     "plain_ppo",
     "no_review",
     "no_gate",
+    "no_adapter",
 }
 
 
@@ -56,6 +58,52 @@ def _cfg_int(cfg, name: str, default: int) -> int:
 
 def _cfg_float(cfg, name: str, default: float) -> float:
     return float(_cfg_get(cfg, name, default))
+
+
+def _accepts_keyword(fn, name: str) -> bool:
+    try:
+        signature = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return True
+    for param in signature.parameters.values():
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            return True
+    return name in signature.parameters
+
+
+def _call_with_active_mask(fn, *args, active_mask=None, **kwargs):
+    if active_mask is not None and _accepts_keyword(fn, "active_mask"):
+        kwargs["active_mask"] = active_mask
+    return fn(*args, **kwargs)
+
+
+def _maybe_grow_adapter(
+    active_mask,
+    low_plastic_streak: int,
+    previous_return,
+    current_return: float,
+    r_plastic: float,
+    cfg,
+    *,
+    ablation: str,
+):
+    active_mask = np.asarray(active_mask, dtype=np.float32).copy()
+    if ablation == "no_adapter":
+        return active_mask, 0, False
+    not_improving = previous_return is not None and float(current_return) <= float(previous_return)
+    low_plastic = float(r_plastic) < _cfg_float(cfg, "adapter_r_min", 0.1)  # spec §20
+    if low_plastic and not_improving:  # spec §20
+        low_plastic_streak = int(low_plastic_streak) + 1
+    else:
+        low_plastic_streak = 0
+    grew = False
+    if low_plastic_streak >= _cfg_int(cfg, "adapter_patience", 3):  # spec §20
+        dormant = np.flatnonzero(active_mask <= 0.0)
+        if dormant.size:
+            active_mask[int(dormant[0])] = 1.0  # spec §20
+            grew = True
+            low_plastic_streak = 0
+    return active_mask, int(low_plastic_streak), bool(grew)
 
 
 def _cfg_with_total_timesteps(cfg, total_timesteps):
@@ -580,6 +628,9 @@ def _random_params(game_index: int, n_games: int, cfg, seed: int):
         d_m=_cfg_int(cfg, "d_m", 128),
         act_dim=_cfg_int(cfg, "act_dim", ACT_DIM),
         top_k=_cfg_int(cfg, "top_k", 16),
+        n_adapters=_cfg_int(cfg, "n_adapters", 4),
+        adapter_rank=_cfg_int(cfg, "adapter_rank", 32),
+        top_s=_cfg_int(cfg, "top_s", 2),
     )
 
 
@@ -616,6 +667,9 @@ def continual_living_memory(
     game_to_id = {game: idx for idx, game in enumerate(games)}
     n_embed = int(n_games)
     n_seq = len(games)
+    active_mask = np.zeros((_cfg_int(cfg, "n_adapters", 4),), dtype=np.float32)
+    low_plastic_streak = 0
+    adapter_growth_events: list[dict] = []
     return_matrix = np.full((n_seq, n_seq), np.nan, dtype=np.float32)
     if n_seq == 0:
         return {
@@ -633,13 +687,18 @@ def continual_living_memory(
             "review_counts": {},
             "risk_scores": {},
             "failure_memory_writes": 0,
+            "active_mask": active_mask,
+            "active_adapters": 0,
+            "adapter_growth_events": [],
+            "low_plastic_streak": 0,
         }
 
     random_bank = _empty_bank(cfg)
     random_scores = {}
     for game_id, game in enumerate(games):
         random_scores[game] = float(
-            eval_living_memory(
+            _call_with_active_mask(
+                eval_living_memory,
                 _random_params(game_id, n_embed, cfg, int(seed)),
                 game,
                 game_id,
@@ -647,6 +706,7 @@ def continual_living_memory(
                 cfg=cfg,
                 seed=int(seed) + 20_000 + game_id,
                 blend=False,
+                active_mask=active_mask,
             )
         )
 
@@ -671,6 +731,7 @@ def continual_living_memory(
 
     for game_id, game in enumerate(games):
         value_norms.setdefault(game, RunningValueNorm())
+        previous_block_return = None
 
         def block_guard(block_index: int, seed_offset: int = 0):
             if game_id == 0 or ablation in {"no_conservation", "plain_ppo"}:
@@ -696,7 +757,8 @@ def continual_living_memory(
             block_cfg = _cfg_with_total_timesteps(cfg, block_steps[block_index])
             review_cfg = _cfg_with_total_timesteps(cfg, max(1, review_steps[block_index]))
 
-            result = train_living_memory_fast(
+            result = _call_with_active_mask(
+                train_living_memory_fast,
                 game,
                 game_id,
                 n_embed,
@@ -708,6 +770,7 @@ def continual_living_memory(
                 value_norm=value_norms.get(game),
                 guard=guard,
                 aux=aux,
+                active_mask=active_mask,
             )
             params = result["params"]
             ema_params = result.get("ema_params", params)
@@ -727,7 +790,8 @@ def continual_living_memory(
                     review_game_id = int(game_to_id[review_game])
                     review_guard, review_aux = block_guard(block_index, seed_offset=100)
                     # spec §18
-                    review_result = train_living_memory_fast(
+                    review_result = _call_with_active_mask(
+                        train_living_memory_fast,
                         review_game,
                         review_game_id,
                         n_embed,
@@ -739,6 +803,7 @@ def continual_living_memory(
                         value_norm=value_norms.get(review_game),
                         guard=review_guard,
                         aux=review_aux,
+                        active_mask=active_mask,
                     )
                     params = review_result["params"]
                     ema_params = review_result.get("ema_params", params)
@@ -758,7 +823,8 @@ def continual_living_memory(
                 # spec §19
                 for eval_id, eval_game in enumerate(games[:game_id]):
                     score = float(
-                        eval_living_memory(
+                        _call_with_active_mask(
+                            eval_living_memory,
                             params,
                             eval_game,
                             eval_id,
@@ -766,6 +832,7 @@ def continual_living_memory(
                             cfg=cfg,
                             seed=int(seed) + 90_000 + game_id * n_seq + block_index * n_seq + eval_id,
                             blend=blend,
+                            active_mask=active_mask,
                         )
                     )
                     audited_scores[eval_game] = score
@@ -776,7 +843,8 @@ def continual_living_memory(
                     }
 
                 current_score = float(
-                    eval_living_memory(
+                    _call_with_active_mask(
+                        eval_living_memory,
                         params,
                         game,
                         game_id,
@@ -784,6 +852,7 @@ def continual_living_memory(
                         cfg=cfg,
                         seed=int(seed) + 95_000 + game_id * 1_000 + block_index,
                         blend=blend,
+                        active_mask=active_mask,
                     )
                 )
                 val_best = current_val_best.get(game)
@@ -877,6 +946,30 @@ def continual_living_memory(
                         risk_boosts,
                     )
 
+            current_block_return = float(result.get("final_return", 0.0))
+            r_plastic = float(result.get("r_plastic", 1.0))
+            active_mask, low_plastic_streak, grew_adapter = _maybe_grow_adapter(
+                active_mask,
+                low_plastic_streak,
+                previous_block_return,
+                current_block_return,
+                r_plastic,
+                cfg,
+                ablation=str(ablation),
+            )
+            if grew_adapter:
+                adapter_growth_events.append(
+                    {
+                        "game": game,
+                        "game_id": int(game_id),
+                        "block": int(block_index),
+                        "active_adapters": int(np.sum(active_mask > 0.0)),
+                        "r_plastic": float(r_plastic),
+                        "return": float(current_block_return),
+                    }
+                )
+            previous_block_return = current_block_return
+
         sent_set = collect_visual_sentinels(
             params,
             ema_params,
@@ -912,7 +1005,8 @@ def continual_living_memory(
 
         for eval_id, eval_game in enumerate(games[: game_id + 1]):
             score = float(
-                eval_living_memory(
+                _call_with_active_mask(
+                    eval_living_memory,
                     params,
                     eval_game,
                     eval_id,
@@ -920,6 +1014,7 @@ def continual_living_memory(
                     cfg=cfg,
                     seed=int(seed) + 1_000 + game_id * n_seq + eval_id,
                     blend=blend,
+                    active_mask=active_mask,
                 )
             )
             return_matrix[game_id, eval_id] = score
@@ -960,6 +1055,10 @@ def continual_living_memory(
         "block_steps": [int(steps) for steps in block_steps],
         "review_steps": [int(steps) for steps in review_steps],
         "lambda_review": float(lambda_review),
+        "active_mask": active_mask.astype(np.float32),
+        "active_adapters": int(np.sum(active_mask > 0.0)),
+        "adapter_growth_events": list(adapter_growth_events),
+        "low_plastic_streak": int(low_plastic_streak),
     }
 
 
