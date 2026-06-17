@@ -167,7 +167,7 @@ def _install_driver_stubs(monkeypatch):
     def fake_mem_init(*_args, **_kwargs):
         return {"kind": "random"}
 
-    def fake_bank(protected_sets, capacity, d_k, d_c, act_dim):
+    def fake_bank(protected_sets, capacity, d_k, d_c, act_dim, **_kwargs):
         return {
             "keys": jnp.zeros((int(capacity), int(d_k)), dtype=jnp.float32),
             "context": jnp.zeros((int(capacity), int(d_c)), dtype=jnp.float32),
@@ -194,6 +194,7 @@ def _install_driver_stubs(monkeypatch):
         value_norm=None,
         guard=None,
         aux=None,
+        **_kwargs,
     ):
         del game_id, n_games, cfg, seed, init_params, hot_bank, ema_params, value_norm, aux
         trained_so_far.add(str(game))
@@ -211,11 +212,11 @@ def _install_driver_stubs(monkeypatch):
             "final_return": 0.0,
         }
 
-    def fake_certify(params, ema_params, value_norm, game, game_id, *, cfg, seed):
+    def fake_certify(params, ema_params, value_norm, game, game_id, *, cfg, seed, **_kwargs):
         del params, ema_params, value_norm, cfg, seed
         return _protected(str(game), int(game_id), [[1.0, 0.0]], [1.0])
 
-    def fake_collect(params, ema_params, value_norm, game, game_id, *, cfg, seed, n=64):
+    def fake_collect(params, ema_params, value_norm, game, game_id, *, cfg, seed, n=64, **_kwargs):
         del params, ema_params, value_norm, game, cfg, seed, n
         return {
             "obs": np.zeros((1, 4, 84, 84), dtype=np.uint8),
@@ -225,7 +226,7 @@ def _install_driver_stubs(monkeypatch):
             "teacher_value": np.zeros((1,), dtype=np.float16),
         }
 
-    def fake_eval(params, game, game_id, protected_bank, *, cfg, seed, episodes=12, blend=True):
+    def fake_eval(params, game, game_id, protected_bank, *, cfg, seed, episodes=12, blend=True, **_kwargs):
         del game_id, protected_bank, cfg, seed, episodes
         calls["blends"].append(bool(blend))
         if params.get("kind") == "random":

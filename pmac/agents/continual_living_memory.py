@@ -60,6 +60,10 @@ def _cfg_int(cfg, name: str, default: int) -> int:
     return int(_cfg_get(cfg, name, default))
 
 
+def _cfg_bool(cfg, name: str, default: bool) -> bool:
+    return bool(_cfg_get(cfg, name, default))
+
+
 def _cfg_float(cfg, name: str, default: float) -> float:
     return float(_cfg_get(cfg, name, default))
 
@@ -701,6 +705,8 @@ def continual_living_memory(
     audit_every_blocks = max(1, _cfg_int(cfg, "audit_every_blocks", 1))
     gate_delta_frac = _cfg_float(cfg, "gate_delta_frac", 0.1)
     lambda_review = _cfg_float(cfg, "lambda_review", 0.5)
+    eval_episodes = _cfg_int(cfg, "eval_episodes", 16)
+    eval_stochastic = _cfg_bool(cfg, "eval_stochastic", False)
     games = [str(game) for game in games]
     game_to_id = {game: idx for idx, game in enumerate(games)}
     n_embed = int(n_games)
@@ -752,7 +758,9 @@ def continual_living_memory(
                 random_bank,
                 cfg=cfg,
                 seed=int(seed) + 20_000 + game_id,
+                episodes=eval_episodes,
                 blend=False,
+                stochastic=eval_stochastic,
                 active_mask=active_mask,
             )
         )
@@ -927,7 +935,9 @@ def continual_living_memory(
                             protected_bank,
                             cfg=cfg,
                             seed=int(seed) + 90_000 + game_id * n_seq + block_index * n_seq + eval_id,
+                            episodes=eval_episodes,
                             blend=blend,
+                            stochastic=eval_stochastic,
                             active_mask=active_mask,
                         )
                     )
@@ -947,7 +957,9 @@ def continual_living_memory(
                         protected_bank,
                         cfg=cfg,
                         seed=int(seed) + 95_000 + game_id * 1_000 + block_index,
+                        episodes=eval_episodes,
                         blend=blend,
+                        stochastic=eval_stochastic,
                         active_mask=active_mask,
                     )
                 )
@@ -1121,7 +1133,9 @@ def continual_living_memory(
                             protected_bank,
                             cfg=cfg,
                             seed=int(seed) + 110_000 + game_id * n_seq + eval_id,
+                            episodes=eval_episodes,
                             blend=blend,
+                            stochastic=eval_stochastic,
                             active_mask=active_mask,
                         )
                     )
@@ -1175,7 +1189,9 @@ def continual_living_memory(
                     protected_bank,
                     cfg=cfg,
                     seed=int(seed) + 1_000 + game_id * n_seq + eval_id,
+                    episodes=eval_episodes,
                     blend=blend,
+                    stochastic=eval_stochastic,
                     active_mask=active_mask,
                 )
             )

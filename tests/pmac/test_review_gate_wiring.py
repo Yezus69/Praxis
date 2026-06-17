@@ -62,7 +62,7 @@ def _install_stubs(monkeypatch, *, a_scores):
     def fake_mem_init(*_args, **_kwargs):
         return {"step": np.asarray(-1, dtype=np.int32), "random": np.asarray(True)}
 
-    def fake_bank(protected_sets, capacity, d_k, d_c, act_dim):
+    def fake_bank(protected_sets, capacity, d_k, d_c, act_dim, **_kwargs):
         return {
             "keys": np.zeros((int(capacity), int(d_k)), dtype=np.float32),
             "context": np.zeros((int(capacity), int(d_c)), dtype=np.float32),
@@ -89,6 +89,7 @@ def _install_stubs(monkeypatch, *, a_scores):
         value_norm=None,
         guard=None,
         aux=None,
+        **_kwargs,
     ):
         del n_games, seed, ema_params, value_norm, guard, aux
         prev = 0 if init_params is None else int(np.asarray(init_params["step"]))
@@ -113,14 +114,14 @@ def _install_stubs(monkeypatch, *, a_scores):
             "final_return": float(step),
         }
 
-    def fake_certify(params, ema_params, value_norm, game, game_id, *, cfg, seed):
+    def fake_certify(params, ema_params, value_norm, game, game_id, *, cfg, seed, **_kwargs):
         del ema_params, value_norm, cfg, seed
         calls["certify_params"].append(
             {"game": str(game), "step": int(np.asarray(params["step"]))}
         )
         return _protected(str(game), int(game_id))
 
-    def fake_collect(params, ema_params, value_norm, game, game_id, *, cfg, seed, n=64):
+    def fake_collect(params, ema_params, value_norm, game, game_id, *, cfg, seed, n=64, **_kwargs):
         del params, ema_params, value_norm, game, cfg, seed, n
         return {
             "obs": np.zeros((1, 4, 84, 84), dtype=np.uint8),
@@ -130,7 +131,7 @@ def _install_stubs(monkeypatch, *, a_scores):
             "teacher_value": np.zeros((1,), dtype=np.float16),
         }
 
-    def fake_eval(params, game, game_id, protected_bank, *, cfg, seed, episodes=12, blend=True):
+    def fake_eval(params, game, game_id, protected_bank, *, cfg, seed, episodes=12, blend=True, **_kwargs):
         del game_id, protected_bank, cfg, seed, episodes, blend
         if bool(np.asarray(params.get("random", False))):
             return 0.0
@@ -139,7 +140,7 @@ def _install_stubs(monkeypatch, *, a_scores):
             return float(values.pop(0))
         return float(values[0])
 
-    def fake_sample(u, n, rng):
+    def fake_sample(u, n, rng, *_args, **_kwargs):
         del rng
         calls["sample_u"].append(dict(u))
         return ["A"][: int(n)]

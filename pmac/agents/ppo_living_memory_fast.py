@@ -67,6 +67,8 @@ class FastLMConfig(LMConfig):
     retr_tau: float = 0.1
     visual_lambda_v: float = 1.0
     eval_num_envs: int = 16
+    eval_stochastic: bool = False
+    eval_episodes: int = 16
     cert_num_envs: int = 64
     visual_sentinels_per_game: int = 64
     visual_sentinel_batch: int = 64

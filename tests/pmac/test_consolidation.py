@@ -211,7 +211,7 @@ def _install_driver_stubs(monkeypatch, *, accepted=False):
     def fake_mem_init(*_args, **_kwargs):
         return {"tag": "random"}
 
-    def fake_bank(protected_sets, capacity, d_k, d_c, act_dim):
+    def fake_bank(protected_sets, capacity, d_k, d_c, act_dim, *_args, **_kwargs):
         return {
             "keys": jnp.zeros((int(capacity), int(d_k)), dtype=jnp.float32),
             "context": jnp.zeros((int(capacity), int(d_c)), dtype=jnp.float32),
@@ -231,7 +231,7 @@ def _install_driver_stubs(monkeypatch, *, accepted=False):
         n_games,
         cfg,
         seed,
-        *,
+        *_args,
         init_params=None,
         hot_bank=None,
         ema_params=None,
@@ -239,8 +239,9 @@ def _install_driver_stubs(monkeypatch, *, accepted=False):
         guard=None,
         aux=None,
         active_mask=None,
+        **_kwargs,
     ):
-        del n_games, cfg, seed, init_params, hot_bank, ema_params, value_norm, guard, aux, active_mask
+        del n_games, cfg, seed, _args, init_params, hot_bank, ema_params, value_norm, guard, aux, active_mask, _kwargs
         return {
             "params": {"tag": f"trained-{game}", "game_id": int(game_id)},
             "ema_params": {"tag": f"ema-{game}", "game_id": int(game_id)},
@@ -249,12 +250,12 @@ def _install_driver_stubs(monkeypatch, *, accepted=False):
             "r_plastic": 1.0,
         }
 
-    def fake_certify(params, ema_params, value_norm, game, game_id, *, cfg, seed):
-        del params, ema_params, value_norm, cfg, seed
+    def fake_certify(params, ema_params, value_norm, game, game_id, *_args, cfg, seed, **_kwargs):
+        del params, ema_params, value_norm, _args, cfg, seed, _kwargs
         return _protected(game, game_id)
 
-    def fake_collect(params, ema_params, value_norm, game, game_id, *, cfg, seed, n=64):
-        del params, ema_params, value_norm, game, cfg, seed, n
+    def fake_collect(params, ema_params, value_norm, game, game_id, *_args, cfg, seed, n=64, **_kwargs):
+        del params, ema_params, value_norm, game, _args, cfg, seed, n, _kwargs
         return {
             "obs": np.zeros((1, 4, 84, 84), dtype=np.uint8),
             "game_id": np.asarray([int(game_id)], dtype=np.int32),
@@ -263,23 +264,36 @@ def _install_driver_stubs(monkeypatch, *, accepted=False):
             "teacher_value": np.zeros((1,), dtype=np.float16),
         }
 
-    def fake_eval(params, game, game_id, protected_bank, *, cfg, seed, episodes=12, blend=True, active_mask=None):
-        del game, game_id, protected_bank, cfg, seed, episodes, blend, active_mask
+    def fake_eval(
+        params,
+        game,
+        game_id,
+        protected_bank,
+        *_args,
+        cfg,
+        seed,
+        episodes=12,
+        blend=True,
+        active_mask=None,
+        **_kwargs,
+    ):
+        del game, game_id, protected_bank, _args, cfg, seed, episodes, blend, active_mask, _kwargs
         calls["eval_params"].append(params)
         if params.get("tag") == "random":
             return 0.0
         return 10.0
 
-    def fake_consolidate(params, ema_params, protected_bank, visual_store, **kwargs):
-        score = kwargs["sentinel_eval_fn"](params)
+    def fake_consolidate(params, ema_params, protected_bank, visual_store, *_args, **_kwargs):
+        del _args
+        score = _kwargs["sentinel_eval_fn"](params)
         calls["consolidate"].append(
             {
                 "params": params,
                 "protected_bank": protected_bank,
                 "visual_store_len": len(visual_store),
                 "sentinel_score": score,
-                "slow_lr": kwargs["slow_lr"],
-                "n_steps": kwargs["n_steps"],
+                "slow_lr": _kwargs["slow_lr"],
+                "n_steps": _kwargs["n_steps"],
             }
         )
         return {
@@ -288,8 +302,8 @@ def _install_driver_stubs(monkeypatch, *, accepted=False):
             "accepted": bool(accepted),
             "pre_score": score,
             "post_score": score if accepted else score - 1.0,
-            "slow_lr": kwargs["slow_lr"],
-            "steps": kwargs["n_steps"],
+            "slow_lr": _kwargs["slow_lr"],
+            "steps": _kwargs["n_steps"],
             "adapter_distill_active": False,
             "reason": "accepted" if accepted else "sentinel_regression",
         }

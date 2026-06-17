@@ -408,6 +408,7 @@ def eval_living_memory(
     episodes=12,
     blend=True,
     active_mask=None,
+    stochastic=False,
 ) -> float:
     """Evaluate a game greedily with live model plus protected memory."""
     episodes = int(episodes)
@@ -441,10 +442,17 @@ def eval_living_memory(
     tracker = EpisodeReturnTracker(num_envs)
     completed_returns: list[float] = []
     game_id_vec = jnp.full((num_envs,), int(game_id), dtype=jnp.int32)
+    rng = jax.random.PRNGKey(int(seed)) if bool(stochastic) else None
 
     for _ in range(max_steps):
         out = mem_apply(params, obs, game_id_vec, protected_bank, hp, mu_g, sigma_g, active_mask)
-        actions = _select_greedy_actions(out, blend=bool(blend))
+        if bool(stochastic):
+            rng, action_key = jax.random.split(rng)
+            logits_key = "logits_final" if bool(blend) else "logits_net"
+            logits = jnp.asarray(out[logits_key])
+            actions = jax.random.categorical(action_key, logits, axis=-1).astype(jnp.int32)
+        else:
+            actions = _select_greedy_actions(out, blend=bool(blend))
         actions_np = np.asarray(jax.device_get(actions), dtype=np.int32)
         obs, rewards, terminated, truncated, info = env.step(actions_np)
         obs = np.asarray(obs, dtype=np.uint8)
