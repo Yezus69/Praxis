@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import copy
 import inspect
+import json
+import os
 from collections.abc import Mapping, Sequence
 from dataclasses import is_dataclass, replace
 
@@ -640,6 +642,39 @@ def _blend_for_ablation(ablation: str) -> bool:
     return ablation not in {"no_memory_read", "plain_ppo"}
 
 
+def _jsonable(value):
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, Mapping):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    if hasattr(value, "shape") and hasattr(value, "dtype"):
+        try:
+            return np.asarray(value).tolist()
+        except Exception:
+            return value
+    return value
+
+
+def _dump_json(path, obj):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(_jsonable(obj), f, default=str)
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def _try_dump_json(path, obj):
+    if path is None:
+        return
+    try:
+        _dump_json(path, obj)
+    except Exception:
+        pass
+
+
 def continual_living_memory(
     games: Sequence[str],
     n_games,
@@ -648,6 +683,7 @@ def continual_living_memory(
     *,
     ablation="full",
     per_game_steps=None,
+    result_path=None,
 ) -> dict:
     """Train a game sequence and report random-normalized retention."""
     if ablation not in ABLATIONS:
@@ -673,8 +709,9 @@ def continual_living_memory(
     low_plastic_streak = 0
     adapter_growth_events: list[dict] = []
     return_matrix = np.full((n_seq, n_seq), np.nan, dtype=np.float32)
+    _try_dump_json(result_path, {"status": "started", "ablation": str(ablation), "games": games})
     if n_seq == 0:
-        return {
+        empty_result = {
             "return_matrix": return_matrix,
             "best_scores": {},
             "random_scores": {},
@@ -697,6 +734,11 @@ def continual_living_memory(
             "consolidation_accepts": 0,
             "consolidation_rejections": 0,
         }
+        _try_dump_json(
+            result_path,
+            {**empty_result, "status": "done", "n_games_done": 0},
+        )
+        return empty_result
 
     random_bank = _empty_bank(cfg)
     random_scores = {}
@@ -734,6 +776,54 @@ def continual_living_memory(
     review_counts: dict[str, int] = {}
     failure_memory_writes = 0
     consolidation_decisions: list[dict] = []
+
+    def result_snapshot(done_games, *, status=None, n_games_done=None) -> dict:
+        retention = {
+            game: normalized_retention(final_scores[game], best_scores[game], random_scores[game])
+            for game in done_games
+        }
+        retention_values = list(retention.values())
+        if retention_values:
+            mean_retention = float(np.mean(np.asarray(retention_values, dtype=np.float32)))
+            worst_retention = float(np.min(np.asarray(retention_values, dtype=np.float32)))
+        else:
+            mean_retention = 0.0
+            worst_retention = 0.0
+        out = {
+            "return_matrix": return_matrix,
+            "best_scores": dict(best_scores),
+            "random_scores": dict(random_scores),
+            "final_scores": dict(final_scores),
+            "retention": retention,
+            "mean_retention": mean_retention,
+            "worst_retention": worst_retention,
+            "ablation": str(ablation),
+            "games": games,
+            "visual_sentinels": len(visual_store),
+            "gate_rejections": int(gate_rejections),
+            "gate_decisions": gate_decisions,
+            "review_counts": dict(review_counts),
+            "risk_scores": dict(risk),
+            "review_boosts": dict(review_boosts),
+            "failure_memory_writes": int(failure_memory_writes),
+            "block_steps": [int(steps) for steps in block_steps],
+            "review_steps": [int(steps) for steps in review_steps],
+            "lambda_review": float(lambda_review),
+            "active_mask": active_mask.astype(np.float32),
+            "active_adapters": int(np.sum(active_mask > 0.0)),
+            "adapter_growth_events": list(adapter_growth_events),
+            "low_plastic_streak": int(low_plastic_streak),
+            "consolidation_decisions": consolidation_decisions,
+            "consolidation_accepts": int(sum(1 for item in consolidation_decisions if item["accepted"])),
+            "consolidation_rejections": int(
+                sum(1 for item in consolidation_decisions if not item["accepted"])
+            ),
+        }
+        if status is not None:
+            out["status"] = str(status)
+        if n_games_done is not None:
+            out["n_games_done"] = int(n_games_done)
+        return out
 
     for game_id, game in enumerate(games):
         value_norms.setdefault(game, RunningValueNorm())
@@ -1101,42 +1191,20 @@ def continual_living_memory(
             random_scores,
             risk_boosts,
         )
+        _try_dump_json(
+            result_path,
+            result_snapshot(
+                games[: game_id + 1],
+                n_games_done=game_id + 1,
+            ),
+        )
 
-    retention = {
-        game: normalized_retention(final_scores[game], best_scores[game], random_scores[game])
-        for game in games
-    }
-    retention_values = list(retention.values())
-    return {
-        "return_matrix": return_matrix,
-        "best_scores": dict(best_scores),
-        "random_scores": dict(random_scores),
-        "final_scores": dict(final_scores),
-        "retention": retention,
-        "mean_retention": float(np.mean(np.asarray(retention_values, dtype=np.float32))),
-        "worst_retention": float(np.min(np.asarray(retention_values, dtype=np.float32))),
-        "ablation": str(ablation),
-        "games": games,
-        "visual_sentinels": len(visual_store),
-        "gate_rejections": int(gate_rejections),
-        "gate_decisions": gate_decisions,
-        "review_counts": dict(review_counts),
-        "risk_scores": dict(risk),
-        "review_boosts": dict(review_boosts),
-        "failure_memory_writes": int(failure_memory_writes),
-        "block_steps": [int(steps) for steps in block_steps],
-        "review_steps": [int(steps) for steps in review_steps],
-        "lambda_review": float(lambda_review),
-        "active_mask": active_mask.astype(np.float32),
-        "active_adapters": int(np.sum(active_mask > 0.0)),
-        "adapter_growth_events": list(adapter_growth_events),
-        "low_plastic_streak": int(low_plastic_streak),
-        "consolidation_decisions": consolidation_decisions,
-        "consolidation_accepts": int(sum(1 for item in consolidation_decisions if item["accepted"])),
-        "consolidation_rejections": int(
-            sum(1 for item in consolidation_decisions if not item["accepted"])
-        ),
-    }
+    final_result = result_snapshot(games)
+    _try_dump_json(
+        result_path,
+        result_snapshot(games, status="done", n_games_done=n_seq),
+    )
+    return final_result
 
 
 __all__ = ["ABLATIONS", "continual_living_memory", "make_guard"]
