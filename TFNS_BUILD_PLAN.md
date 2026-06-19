@@ -50,7 +50,7 @@ Branch: `task-free-ns`.
 - M3  protect: optimizer-safe update + GRU invariance + Adam safety (§23.5-6) ..... DONE (5/5 tests)
 - M4  memory: record + bank + sampling + tests (§23.13, label-perm) .............. DONE (9/9 tests)
 - M5  behavior tubes + constraints QP + sentinel backtracking (§23.8-9,17) ....... DONE (11/11 w/ optimizer)
-- M6  credit: predictor + shaping + tests (§23.12) ............................... TODO
+- M6  credit: predictor + shaping + tests (§23.12) ............................... DONE (6/6 tests)
 - M7  ppo: rollout + GAE + losses + update orchestration (§23.10-11) ............. TODO
 - M8  consolidate: state/snapshot + certify + lifecycle + plasticity + detect
       + atomic-rollback/gate-orientation/adapter tests (§23.15-17) .............. TODO
