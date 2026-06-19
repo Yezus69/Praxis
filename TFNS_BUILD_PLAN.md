@@ -46,7 +46,7 @@ Branch: `task-free-ns`.
 
 ## Milestones (status: TODO / WIP / DONE)
 - M1  scaffold + config + utils + envs + recurrent model + model tests .......... DONE (9/9 tests)
-- M2  protect: bases + projection (dense/bias/conv) + tests (§23.2-4, §23.7) ..... TODO
+- M2  protect: bases + projection (dense/bias/conv) + tests (§23.2-4, §23.7) ..... DONE (7/7 tests)
 - M3  protect: optimizer-safe update + GRU invariance + Adam safety (§23.5-6) ..... TODO
 - M4  memory: record + bank + sampling + tests (§23.13, label-perm) .............. TODO
 - M5  behavior tubes + constraints QP + sentinel backtracking (§23.8-9,17) ....... TODO
