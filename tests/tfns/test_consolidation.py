@@ -19,7 +19,7 @@ from tfns.config import (
     ReplayConfig,
     TFNSConfig,
 )
-from tfns.consolidate.lifecycle import consolidate
+from tfns.consolidate.lifecycle import apply_rejection_feedback, consolidate
 from tfns.consolidate.state import ContinualState, Snapshot, snapshot
 from tfns.memory.bank import SequenceMemoryBank
 from tfns.memory.record import EpisodeSequence, frames_from_obs, make_record, nbytes, reconstruct_obs
@@ -189,6 +189,9 @@ def _assert_state_matches_snapshot(state: ContinualState, snap: Snapshot):
 def test_consolidate_rejects_closed_loop_regression_and_restores_complete_snapshot():
     agent, tx, state, _ = _agent_state()
     pre = snapshot(state)
+    recs = list(state.memory.records())
+    expected_records = [(int(r.episode_id), int(r.chunk_index)) for r in recs]
+    expected_clusters = sorted({int(r.cluster_id) for r in recs})
 
     state, accepted, report = consolidate(
         state,
@@ -206,7 +209,49 @@ def test_consolidate_rejects_closed_loop_regression_and_restores_complete_snapsh
     assert accepted is False
     assert report["reason"] == "closed_loop_regression"
     assert report["gate"]["per_game"]["old_game"]["pass"] is False
+    assert report["failed_records"] == expected_records
+    assert report["risk_raise_clusters"] == expected_clusters
     _assert_state_matches_snapshot(state, pre)
+
+
+def test_apply_rejection_feedback_after_reject_promotes_records_and_raises_cluster_risk():
+    agent, tx, state, _ = _agent_state()
+    pre = snapshot(state)
+    pre_risk = dict(pre.robust_stats.get("cluster_risk", {}))
+    recs = list(state.memory.records())
+    failed_records = [(int(r.episode_id), int(r.chunk_index)) for r in recs]
+    failed_clusters = sorted({int(r.cluster_id) for r in recs})
+
+    state, accepted, report = consolidate(
+        state,
+        agent,
+        tx,
+        eval_fn=lambda _params: {"old_game": 0.75},
+        candidate_records=list(state.memory.records()),
+        cfg=CFG,
+        S_random=0.0,
+        S_single=10.0,
+        score_windows=[9.3, 9.2],
+        learned_game_keys=["old_game"],
+    )
+
+    assert accepted is False
+    assert report["failed_records"] == failed_records
+    assert report["risk_raise_clusters"] == failed_clusters
+    _assert_state_matches_snapshot(state, pre)
+
+    state = apply_rejection_feedback(state, report, CFG)
+
+    for rec, pre_rec in zip(state.memory.records(), pre.memory.records(), strict=True):
+        assert rec.status == "failure_recovery"
+        np.testing.assert_array_equal(rec.teacher_logits, pre_rec.teacher_logits)
+        np.testing.assert_array_equal(rec.teacher_value, pre_rec.teacher_value)
+        np.testing.assert_array_equal(rec.key_anchor, pre_rec.key_anchor)
+    for cid in failed_clusters:
+        assert np.isclose(
+            state.robust_stats["cluster_risk"][cid],
+            pre_risk.get(cid, 0.0) + CFG.consolidate.replay_risk_raise_on_gate_fail,
+        )
 
 
 def test_consolidate_accepts_protects_records_and_grows_conv_basis():

@@ -7,6 +7,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -17,10 +18,14 @@ from tfns.consolidate.certify import (
 )
 from tfns.consolidate.plasticity import activate_adapter
 from tfns.consolidate.state import ema_update, restore, snapshot
+from tfns.memory.sampling import sample_sequences
 from tfns.memory.record import EpisodeSequence, reconstruct_obs, seq_len
+from tfns.ppo.losses import aux_predictive_loss
+from tfns.ppo.rollout import SequenceMinibatch, reconstruct_hidden
 from tfns.protect.bases import empty_basis, expand_basis
-from tfns.protect.optimizer import project_first_moments
+from tfns.protect.optimizer import optimizer_safe_step, project_first_moments
 from tfns.protect.projection import build_protected_modules, collect_conv_basis_columns
+from tfns.protect.sentinel import make_sentinel_acceptor
 
 
 _EPS = 1.0e-8
@@ -314,8 +319,13 @@ def _as_retention_value(raw: Any, baseline: Any = None) -> Any:
 
 
 def _retention_from_eval(eval_result: Any, learned_game_keys: Any) -> tuple[dict[Any, Any], float | None]:
+    eval_current = None
+    if isinstance(eval_result, Mapping):
+        raw_current = eval_result.get("eval_current_progress", eval_result.get("current_progress"))
+        if raw_current is not None:
+            eval_current = float(raw_current)
     if isinstance(eval_result, Mapping) and "retention_by_game" in eval_result:
-        current = eval_result.get("current_progress")
+        current = eval_current
         return dict(eval_result["retention_by_game"]), None if current is None else float(current)
 
     if isinstance(learned_game_keys, Mapping):
@@ -327,7 +337,11 @@ def _retention_from_eval(eval_result: Any, learned_game_keys: Any) -> tuple[dict
 
     if isinstance(eval_result, Mapping):
         if not keys:
-            return dict(eval_result), None
+            return {
+                key: value
+                for key, value in eval_result.items()
+                if key not in ("current_progress", "eval_current_progress")
+            }, eval_current
         return {
             key: (
                 _as_retention_value(eval_result[key], baselines.get(key))
@@ -335,7 +349,7 @@ def _retention_from_eval(eval_result: Any, learned_game_keys: Any) -> tuple[dict
                 else float("nan")
             )
             for key in keys
-        }, None
+        }, eval_current
 
     if len(keys) == 1:
         key = keys[0]
@@ -343,18 +357,323 @@ def _retention_from_eval(eval_result: Any, learned_game_keys: Any) -> tuple[dict
     raise ValueError("eval_fn must return a mapping when multiple learned games are checked")
 
 
-def _slow_replay_report(tx: Any, cfg: Any) -> dict[str, Any]:
+def _as_float(value: Any) -> float:
+    try:
+        return float(value)
+    except TypeError:
+        return float(np.asarray(value))
+
+
+def _sample_slow_replay_records(
+    state: Any,
+    candidate_records: Sequence[EpisodeSequence],
+    *,
+    step: int,
+    count: int,
+) -> list[EpisodeSequence]:
+    sampled: list[EpisodeSequence] = []
+    rng = np.random.default_rng(int(getattr(state, "block_index", 0)) * 1009 + int(step))
+    candidates = list(candidate_records)
+    if candidates:
+        candidate_count = min(int(count), len(candidates))
+        indices = rng.choice(len(candidates), size=candidate_count, replace=False)
+        sampled.extend(candidates[int(index)] for index in np.asarray(indices).reshape(-1))
+
+    remaining = max(0, int(count) - len(sampled))
+    if remaining <= 0:
+        return sampled[:count]
+
+    memory = getattr(state, "memory", None)
+    if memory is not None and hasattr(memory, "records") and len(memory) > 0:
+        sampled.extend(sample_sequences(memory, rng, remaining))
+
+    remaining = max(0, int(count) - len(sampled))
+    if remaining <= 0:
+        return sampled[:count]
+    if not candidates:
+        return sampled
+    indices = rng.choice(len(candidates), size=remaining, replace=len(candidates) < remaining)
+    sampled.extend(candidates[int(index)] for index in np.asarray(indices).reshape(-1))
+    return sampled
+
+
+def _pad_time(value: np.ndarray, length: int, *, dtype: np.dtype) -> np.ndarray:
+    arr = np.asarray(value, dtype=dtype)
+    if int(arr.shape[0]) == length:
+        return arr
+    out = np.zeros((length,) + tuple(arr.shape[1:]), dtype=dtype)
+    out[: int(arr.shape[0])] = arr
+    return out
+
+
+def _replay_aux_minibatch(
+    params: Any,
+    agent: Any,
+    records: Sequence[EpisodeSequence],
+    cfg: Any,
+) -> SequenceMinibatch | None:
+    replay_cfg = _get(cfg, "replay", cfg)
+    burn_default = int(_get(replay_cfg, "burn_in", 0))
+    total_default = int(_get(replay_cfg, "seq_len", 64))
+
+    rows: list[dict[str, Any]] = []
+    max_len = 0
+    for rec in records:
+        rec_total = seq_len(rec)
+        total = min(int(total_default), rec_total)
+        burn_in = min(int(burn_default), total)
+        length = total - burn_in
+        if length <= 0:
+            continue
+
+        obs_np = reconstruct_obs(rec)
+        obs = jnp.asarray(obs_np[:total], dtype=jnp.uint8)[:, None, ...]
+        actions = jnp.asarray(np.asarray(rec.actions[:total], dtype=np.int32))[:, None]
+        rewards = jnp.asarray(np.asarray(rec.rewards_clipped[:total], dtype=np.float32))[:, None]
+        resets = jnp.asarray(np.asarray(rec.reset_mask[:total], dtype=np.bool_))[:, None]
+        if burn_in > 0:
+            h0 = reconstruct_hidden(agent, params, obs[:burn_in], actions[:burn_in], rewards[:burn_in], resets[:burn_in])
+        else:
+            h0 = agent.init_hidden(1, dtype=jnp.float32)
+
+        next_obs = np.zeros((length,) + tuple(obs_np.shape[1:]), dtype=np.uint8)
+        next_mask = np.zeros((length,), dtype=np.bool_)
+        available = max(0, min(total, rec_total - 1) - burn_in)
+        if available > 0:
+            next_obs[:available] = obs_np[burn_in + 1 : burn_in + 1 + available]
+            next_mask[:available] = True
+
+        terminal = np.zeros((length,), dtype=np.bool_)
+        reset_np = np.asarray(rec.reset_mask, dtype=np.bool_)
+        shifted = max(0, min(total, rec_total - 1) - burn_in)
+        if shifted > 0:
+            terminal[:shifted] = reset_np[burn_in + 1 : burn_in + 1 + shifted]
+        if length > shifted:
+            terminal[shifted:] = np.asarray(rec.ppo_mask[burn_in + shifted : total], dtype=np.bool_)
+
+        action_np = np.asarray(rec.actions[burn_in:total], dtype=np.int32)
+        reward_np = np.asarray(rec.rewards_clipped[burn_in:total], dtype=np.float32)
+        reset_cur = np.asarray(rec.reset_mask[burn_in:total], dtype=np.bool_)
+        rows.append(
+            {
+                "obs": obs_np[burn_in:total],
+                "prev_action": action_np,
+                "prev_reward_clipped": reward_np,
+                "action": action_np,
+                "reward": reward_np,
+                "ppo_mask": np.asarray(rec.ppo_mask[burn_in:total], dtype=np.bool_),
+                "reset_mask": reset_cur,
+                "next_obs": next_obs,
+                "next_obs_mask": next_mask,
+                "true_terminal": terminal,
+                "h0": h0[0],
+                "length": length,
+            }
+        )
+        max_len = max(max_len, length)
+
+    if not rows:
+        return None
+
+    valid_mask = []
+    fields: dict[str, list[np.ndarray]] = defaultdict(list)
+    for row in rows:
+        length = int(row["length"])
+        valid = np.zeros((max_len,), dtype=np.bool_)
+        valid[:length] = True
+        valid_mask.append(valid)
+        fields["obs"].append(_pad_time(row["obs"], max_len, dtype=np.uint8))
+        fields["prev_action"].append(_pad_time(row["prev_action"], max_len, dtype=np.int32))
+        fields["prev_reward_clipped"].append(_pad_time(row["prev_reward_clipped"], max_len, dtype=np.float32))
+        fields["action"].append(_pad_time(row["action"], max_len, dtype=np.int32))
+        fields["reward"].append(_pad_time(row["reward"], max_len, dtype=np.float32))
+        fields["ppo_mask"].append(_pad_time(row["ppo_mask"], max_len, dtype=np.bool_))
+        fields["reset_mask"].append(_pad_time(row["reset_mask"], max_len, dtype=np.bool_))
+        fields["next_obs"].append(_pad_time(row["next_obs"], max_len, dtype=np.uint8))
+        fields["next_obs_mask"].append(_pad_time(row["next_obs_mask"], max_len, dtype=np.bool_))
+        fields["true_terminal"].append(_pad_time(row["true_terminal"], max_len, dtype=np.bool_))
+
+    batch_size = len(rows)
+    zeros = np.zeros((batch_size, max_len), dtype=np.float32)
+    return SequenceMinibatch(
+        obs=jnp.asarray(np.stack(fields["obs"], axis=0), dtype=jnp.uint8),
+        prev_action=jnp.asarray(np.stack(fields["prev_action"], axis=0), dtype=jnp.int32),
+        prev_reward_clipped=jnp.asarray(np.stack(fields["prev_reward_clipped"], axis=0), dtype=jnp.float32),
+        action=jnp.asarray(np.stack(fields["action"], axis=0), dtype=jnp.int32),
+        old_logprob=jnp.asarray(zeros),
+        value=jnp.asarray(zeros),
+        reward=jnp.asarray(np.stack(fields["reward"], axis=0), dtype=jnp.float32),
+        adv=jnp.asarray(zeros),
+        ret=jnp.asarray(zeros),
+        ppo_mask=jnp.asarray(np.stack(fields["ppo_mask"], axis=0), dtype=bool),
+        reset_mask=jnp.asarray(np.stack(fields["reset_mask"], axis=0), dtype=bool),
+        h0_chunk=jnp.stack([jnp.asarray(row["h0"], dtype=jnp.float32) for row in rows], axis=0),
+        valid_mask=jnp.asarray(np.stack(valid_mask, axis=0), dtype=bool),
+        next_obs=jnp.asarray(np.stack(fields["next_obs"], axis=0), dtype=jnp.uint8),
+        next_obs_mask=jnp.asarray(np.stack(fields["next_obs_mask"], axis=0), dtype=bool),
+        true_terminal=jnp.asarray(np.stack(fields["true_terminal"], axis=0), dtype=bool),
+    )
+
+
+def slow_replay(
+    state: Any,
+    agent: Any,
+    tx: Any,
+    candidate_records: Sequence[EpisodeSequence],
+    modules: Mapping[str, Any],
+    cfg: Any,
+    accept_fn: Any,
+) -> dict[str, Any]:
     consolidate_cfg = _get(cfg, "consolidate", cfg)
-    return {
+    steps = int(_get(consolidate_cfg, "slow_replay_steps", 4))
+    max_update_norm = float(_get(consolidate_cfg, "slow_replay_max_update_norm", 0.05))
+    report = {
         "steps": 0,
         "tx_provided": tx is not None,
-        "lr_scale": float(_get(consolidate_cfg, "slow_replay_lr_scale", 0.1)),
-        "reason": "no_replay_loss_callback",
+        "max_update_norm": max_update_norm,
+        "records_per_step": 0,
+        "accepted": 0,
+        "rejected": 0,
+        "updates": [],
+        "reason": "disabled" if steps <= 0 else "no_optimizer" if tx is None else "no_records",
     }
+
+    if steps <= 0 or tx is None:
+        return report
+
+    pool_size = len(candidate_records)
+    memory = getattr(state, "memory", None)
+    if memory is not None and hasattr(memory, "records"):
+        pool_size += len(memory.records())
+    if pool_size <= 0:
+        return report
+
+    from tfns.train.block import replay_tube_loss
+
+    count = max(1, min(pool_size, max(1, len(candidate_records) or 1)))
+    report["records_per_step"] = count
+    report["reason"] = "completed"
+
+    for step in range(steps):
+        records = _sample_slow_replay_records(state, candidate_records, step=step, count=count)
+        if not records:
+            report["updates"].append({"step": step, "accepted": False, "reason": "no_records"})
+            report["rejected"] += 1
+            report["steps"] += 1
+            continue
+
+        def loss_fn(params):
+            replay_loss, replay_aux = replay_tube_loss(params, agent, records, cfg)
+            mb = _replay_aux_minibatch(params, agent, records, cfg)
+            if mb is None:
+                aux_loss = jnp.asarray(0.0, dtype=jnp.float32)
+                aux = {"aux_loss": aux_loss}
+            else:
+                aux_loss, aux = aux_predictive_loss(params, agent, mb, state.ema_params, cfg)
+            loss = replay_loss + aux_loss
+            return loss.astype(jnp.float32), {
+                "loss": loss,
+                "replay_loss": replay_loss,
+                "replay_tube_mean": replay_aux["mean"],
+                "replay_tube_tail": replay_aux["tail"],
+                "replay_tube_total": replay_aux["total"],
+                "aux_loss": aux["aux_loss"],
+            }
+
+        loss_value, loss_aux = loss_fn(state.params)
+        grad = jax.grad(lambda params: loss_fn(params)[0])(state.params)
+        new_params, new_opt, info = optimizer_safe_step(
+            state.params,
+            state.opt_state,
+            grad,
+            tx,
+            state.bases,
+            modules,
+            accept_fn=accept_fn,
+            max_update_norm=max_update_norm,
+        )
+        accepted = bool(info.get("accepted", False))
+        if accepted:
+            state.params = new_params
+            state.opt_state = new_opt
+            state.ema_params = ema_update(
+                state.ema_params,
+                state.params,
+                float(_get(_get(cfg, "model", cfg), "ema_decay", 0.995)),
+            )
+            report["accepted"] += 1
+        else:
+            report["rejected"] += 1
+
+        report["updates"].append(
+            {
+                "step": step,
+                "accepted": accepted,
+                "loss": _as_float(loss_value),
+                "replay_loss": _as_float(loss_aux["replay_loss"]),
+                "aux_loss": _as_float(loss_aux["aux_loss"]),
+                "applied_norm": _as_float(info.get("applied_norm", 0.0)),
+                "applied_scale": float(info.get("applied_scale", 0.0)),
+            }
+        )
+        report["steps"] += 1
+    return report
+
+
+def _record_key(rec: EpisodeSequence) -> tuple[int, int]:
+    return int(rec.episode_id), int(rec.chunk_index)
+
+
+def _promote_failure_recovery(state: Any, failed_keys: set[tuple[int, int]]) -> int:
+    promoted = 0
+    memory = getattr(state, "memory", None)
+    if memory is None or not hasattr(memory, "records"):
+        return promoted
+    for rec in memory.records():
+        if _record_key(rec) in failed_keys:
+            rec.status = "failure_recovery"
+            promoted += 1
+    return promoted
+
+
+def _raise_replay_risk(state: Any, cluster_ids: Sequence[int], amount: float) -> None:
+    robust_stats = state.robust_stats
+    cr = robust_stats.setdefault("cluster_risk", {})
+    for cid in cluster_ids:
+        cid = int(cid)
+        cr[cid] = float(cr.get(cid, 0.0)) + float(amount)
 
 
 def _failed_cluster_ids(records: Sequence[EpisodeSequence]) -> list[int]:
     return sorted({int(rec.cluster_id) for rec in records})
+
+
+def _failed_record_keys(records: Sequence[EpisodeSequence]) -> list[tuple[int, int]]:
+    return [_record_key(rec) for rec in records]
+
+
+def _report_record_keys(report: Mapping[str, Any]) -> set[tuple[int, int]]:
+    keys: set[tuple[int, int]] = set()
+    for raw in report.get("failed_records", ()) or ():
+        episode_id, chunk_index = raw
+        keys.add((int(episode_id), int(chunk_index)))
+    return keys
+
+
+def apply_rejection_feedback(state: Any, report: Mapping[str, Any], cfg: Any) -> Any:
+    """Apply caller-owned retry feedback after a rejected consolidation."""
+
+    failed_keys = _report_record_keys(report)
+    if failed_keys:
+        _promote_failure_recovery(state, failed_keys)
+
+    failed_clusters = report.get("risk_raise_clusters", ()) or ()
+    if failed_clusters:
+        if state.robust_stats is None:
+            state.robust_stats = {}
+        raise_amount = float(_get(_get(cfg, "consolidate", cfg), "replay_risk_raise_on_gate_fail", 0.1))
+        _raise_replay_risk(state, failed_clusters, raise_amount)
+    return state
 
 
 def consolidate(
@@ -397,15 +716,28 @@ def consolidate(
                 },
             )
 
-        slow_replay = _slow_replay_report(tx, cfg)
+        sentinel_clusters = [
+            cluster
+            for cluster in (state.protected_clusters or [])
+            if (isinstance(cluster, Mapping) and ("obs_seq" in cluster or "obs" in cluster))
+            or _get(cluster, "obs_seq", None) is not None
+            or _get(cluster, "obs", None) is not None
+        ]
+        accept_fn = (
+            make_sentinel_acceptor(agent, sentinel_clusters, _get(cfg, "behavior", cfg))
+            if sentinel_clusters
+            else None
+        )
+        slow_replay_report = slow_replay(state, agent, tx, records, modules, cfg, accept_fn)
 
         eval_result = eval_fn(state.params)
         retention_by_game, eval_current_progress = _retention_from_eval(eval_result, learned_game_keys)
-        current_progress = (
-            float(eval_current_progress)
-            if eval_current_progress is not None
-            else float(learn_info["recent_progress_mean"])
-        )
+        if eval_current_progress is not None:
+            current_progress = float(eval_current_progress)
+            current_progress_source = "eval_fn"
+        else:
+            current_progress = float(learn_info["recent_progress_mean"])
+            current_progress_source = "train_window"
         gate_ok, gate_info = closed_loop_gate(retention_by_game, current_progress, cfg)
 
         if gate_ok:
@@ -437,13 +769,16 @@ def consolidate(
                     "reason": "accepted",
                     "learned": learn_info,
                     "expansion": expansion_info,
-                    "slow_replay": slow_replay,
+                    "slow_replay": slow_replay_report,
                     "gate": gate_info,
+                    "current_progress_source": current_progress_source,
                     "sentinel_clusters": len(state.protected_clusters),
                     "deletion_certification": "not_run",
                 },
             )
 
+        failed_records = _failed_record_keys(records)
+        failed_clusters = _failed_cluster_ids(records)
         restore(state, snap)
         return (
             state,
@@ -452,9 +787,11 @@ def consolidate(
                 "reason": "closed_loop_regression",
                 "learned": learn_info,
                 "expansion": expansion_info,
-                "slow_replay": slow_replay,
+                "slow_replay": slow_replay_report,
                 "gate": gate_info,
-                "risk_raise_clusters": _failed_cluster_ids(records),
+                "current_progress_source": current_progress_source,
+                "failed_records": failed_records,
+                "risk_raise_clusters": failed_clusters,
                 "rolled_back": True,
             },
         )
@@ -464,8 +801,10 @@ def consolidate(
 
 
 __all__ = [
+    "apply_rejection_feedback",
     "build_sentinel_clusters",
     "collect_protected_activations",
     "consolidate",
     "expand_protected_bases",
+    "slow_replay",
 ]

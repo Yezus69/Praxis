@@ -228,9 +228,12 @@ def _td_residual(rollout: Any, reward: Any, cfg: Any) -> jnp.ndarray:
     return reward + gamma * next_value * nonterminal - value
 
 
-def _cluster_risks(memory: Any, cfg: Any) -> dict[int, float]:
+def _cluster_risks(memory: Any, cfg: Any, robust_stats: Mapping[str, Any] | None = None) -> dict[int, float]:
     clusters = memory.clusters() if memory is not None and hasattr(memory, "clusters") else {}
-    return {int(cid): cluster_risk({}, cfg) for cid in clusters}
+    stored = {}
+    if robust_stats is not None:
+        stored = robust_stats.get("cluster_risk", {}) or {}
+    return {int(cid): cluster_risk({}, cfg) + float(stored.get(int(cid), 0.0)) for cid in clusters}
 
 
 def _tree_add(a: Any, b: Any, scale: float) -> Any:
@@ -562,6 +565,7 @@ def train_block(
         )["params"]
     if state.predictor_opt_state is None:
         state.predictor_opt_state = predictor_tx.init(state.predictor_params)
+    frozen_predictor_params = jax.tree_util.tree_map(lambda x: x, state.predictor_params)
 
     train_steps = int(_cfg_value(credit_cfg, "predictor_steps", 1))
     time_len = int(rollout.action.shape[0])
@@ -584,7 +588,7 @@ def train_block(
 
     full_pred_batch = _predictor_batch(predictor, features, rollout, cfg)
     F_seq, Phi_seq = predictor.unroll(
-        state.predictor_params,
+        frozen_predictor_params,
         full_pred_batch["features"],
         full_pred_batch["actions"],
         full_pred_batch["rewards"],
@@ -673,7 +677,7 @@ def train_block(
     seq_chunk = int(_cfg_value(ppo_cfg, "seq_chunk", PPOConfig.seq_chunk))
     minibatch_size = _cfg_value(ppo_cfg, "minibatch_size", None)
     on_policy_count = int(np.prod(np.asarray(rollout.action.shape)))
-    risks = _cluster_risks(state.memory, cfg)
+    risks = _cluster_risks(state.memory, cfg, state.robust_stats)
     probs = cluster_probs(risks) if risks else None
     max_risk = max(risks.values()) if risks else 0.0
     replay_count = replay_transition_count(on_policy_count, max_risk, cfg)

@@ -135,6 +135,9 @@ class ConsolidateConfig:
     learned_threshold: float = 0.9
     stable_windows: int = 2
     retention_accept: float = 0.90
+    slow_replay_steps: int = 4
+    slow_replay_max_update_norm: float = 0.05
+    replay_risk_raise_on_gate_fail: float = 0.1
 
 
 @dataclasses.dataclass(frozen=True)

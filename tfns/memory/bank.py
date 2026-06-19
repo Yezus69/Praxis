@@ -220,7 +220,7 @@ class SequenceMemoryBank:
     def redundancies(self) -> np.ndarray:
         return self._redundancies()
 
-    def _snapshot(self) -> tuple[list[EpisodeSequence], list[np.ndarray], list[int], int, int, list[int]]:
+    def _snapshot(self) -> tuple[list[EpisodeSequence], list[np.ndarray], list[int], int, int, list[int], int]:
         return (
             list(self._records),
             list(self._signatures),
@@ -228,18 +228,20 @@ class SequenceMemoryBank:
             int(self._bytes),
             int(self._next_cluster_id),
             [int(rec.cluster_id) for rec in self._records],
+            int(self._clock),
         )
 
     def _restore(
         self,
-        snapshot: tuple[list[EpisodeSequence], list[np.ndarray], list[int], int, int, list[int]],
+        snapshot: tuple[list[EpisodeSequence], list[np.ndarray], list[int], int, int, list[int], int],
     ) -> None:
-        records, signatures, added_at, used, next_cluster_id, cluster_ids = snapshot
+        records, signatures, added_at, used, next_cluster_id, cluster_ids, clock = snapshot
         self._records = records
         self._signatures = signatures
         self._added_at = added_at
         self._bytes = used
         self._next_cluster_id = next_cluster_id
+        self._clock = clock
         for rec, cluster_id in zip(self._records, cluster_ids):
             rec.cluster_id = int(cluster_id)
         self._rebuild_clusters_from_records()

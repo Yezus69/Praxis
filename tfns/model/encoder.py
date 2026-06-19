@@ -38,7 +38,11 @@ class Encoder(nn.Module):
 
     @nn.compact
     def __call__(self, obs: jnp.ndarray, collect_presyn: bool = False) -> Any:
-        obs = jnp.asarray(obs, dtype=jnp.float32)
+        obs = jnp.asarray(obs)
+        if jnp.issubdtype(obs.dtype, jnp.integer):
+            obs = obs.astype(jnp.float32) / 255.0
+        else:
+            obs = obs.astype(jnp.float32)
         if (
             obs.ndim != 4
             or obs.shape[1] != self.obs_hw
