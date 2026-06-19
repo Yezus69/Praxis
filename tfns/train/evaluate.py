@@ -1,0 +1,255 @@
+"""Closed-loop Atari evaluation helpers."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from functools import partial
+from typing import Any
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+
+from tfns.envs import ACT_DIM
+from tfns.train.atari_env import make_atari_env_step
+
+
+def _sem(values: Sequence[float]) -> float:
+    arr = np.asarray(values, dtype=np.float64)
+    if arr.size <= 1:
+        return 0.0
+    return float(np.std(arr, ddof=1) / np.sqrt(arr.size))
+
+
+def _default_adapter_dormant(agent: Any, adapter_dormant: Any | None) -> jnp.ndarray:
+    if adapter_dormant is not None:
+        return jnp.asarray(adapter_dormant, dtype=bool)
+    return jnp.ones((int(agent.adapter_config.num_adapters),), dtype=bool)
+
+
+@partial(jax.jit, static_argnames=("agent", "greedy"))
+def _policy_action(
+    agent: Any,
+    params: Any,
+    obs: Any,
+    prev_action: Any,
+    prev_reward_clipped: Any,
+    reset: Any,
+    hidden: Any,
+    rng: Any,
+    greedy: bool,
+    adapter_dormant: Any,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    out = agent.apply(
+        {"params": params},
+        obs,
+        prev_action,
+        prev_reward_clipped,
+        reset,
+        hidden,
+        adapter_dormant=adapter_dormant,
+    )
+    if greedy:
+        action = jnp.argmax(out.logits, axis=-1).astype(jnp.int32)
+    else:
+        action = jax.random.categorical(rng, out.logits, axis=-1).astype(jnp.int32)
+    return action, out.h_next.astype(jnp.float32)
+
+
+def evaluate_game(
+    agent: Any,
+    params: Any,
+    game: str,
+    *,
+    num_envs: int,
+    n_episodes: int,
+    seed: int,
+    greedy: bool = False,
+    adapter_dormant: Any | None = None,
+) -> dict[str, Any]:
+    """Evaluate one Atari game with true returns and no task or memory input."""
+
+    env_step, handle = make_atari_env_step(game, int(num_envs), int(seed), training=False)
+    try:
+        obs = jnp.asarray(env_step.obs)
+        hidden = agent.init_hidden(int(num_envs), dtype=jnp.float32)
+        prev_action = jnp.zeros((int(num_envs),), dtype=jnp.int32)
+        prev_reward = jnp.zeros((int(num_envs),), dtype=jnp.float32)
+        prev_reset = jnp.ones((int(num_envs),), dtype=bool)
+        dormant = _default_adapter_dormant(agent, adapter_dormant)
+        rng = jax.random.PRNGKey(int(seed))
+        returns: list[float] = []
+
+        while len(returns) < int(n_episodes):
+            rng, action_key = jax.random.split(rng)
+            action, h_next = _policy_action(
+                agent,
+                params,
+                obs,
+                prev_action,
+                prev_reward,
+                prev_reset,
+                hidden,
+                action_key,
+                bool(greedy),
+                dormant,
+            )
+            action_np = np.asarray(jax.device_get(action), dtype=np.int32)
+            next_obs, reward_clipped, _ppo_done, reset, extra = env_step(action_np)
+
+            returns.extend(float(value) for value in extra.get("episode_returns", ()))
+            reset_jnp = jnp.asarray(reset, dtype=bool)
+            hidden = jnp.where(reset_jnp[:, None], jnp.zeros_like(h_next), h_next)
+            obs = jnp.asarray(next_obs)
+            prev_action = jnp.asarray(action_np, dtype=jnp.int32)
+            prev_reward = jnp.asarray(reward_clipped, dtype=jnp.float32)
+            prev_reset = reset_jnp
+
+        used = returns[: int(n_episodes)]
+        arr = np.asarray(used, dtype=np.float64)
+        return {
+            "mean": float(np.mean(arr)) if arr.size else 0.0,
+            "sem": _sem(used),
+            "n": int(arr.size),
+            "returns": [float(value) for value in used],
+        }
+    finally:
+        handle.close()
+
+
+def random_score(
+    game: str,
+    *,
+    num_envs: int,
+    n_episodes: int,
+    seed: int,
+) -> float:
+    """Return the mean true score of a uniform random 18-action policy."""
+
+    env_step, handle = make_atari_env_step(game, int(num_envs), int(seed), training=False)
+    try:
+        rng = np.random.default_rng(int(seed))
+        returns: list[float] = []
+        while len(returns) < int(n_episodes):
+            action = rng.integers(0, int(ACT_DIM), size=int(num_envs), dtype=np.int32)
+            _obs, _reward_clipped, _ppo_done, _reset, extra = env_step(action)
+            returns.extend(float(value) for value in extra.get("episode_returns", ()))
+        arr = np.asarray(returns[: int(n_episodes)], dtype=np.float64)
+        return float(np.mean(arr)) if arr.size else 0.0
+    finally:
+        handle.close()
+
+
+def retention(S_cur: Any, S_rand: Any, S_best: Any, eps: float = 1.0e-8) -> Any:
+    """Section 21.6 retention, intentionally unclamped."""
+
+    return (np.asarray(S_cur) - np.asarray(S_rand)) / (
+        np.asarray(S_best) - np.asarray(S_rand) + float(eps)
+    )
+
+
+def normalized_progress(S: Any, S_rand: Any, S_single: Any, eps: float = 1.0e-8) -> Any:
+    """Random-normalized progress against a matched single-task reference."""
+
+    return (np.asarray(S) - np.asarray(S_rand)) / (
+        np.asarray(S_single) - np.asarray(S_rand) + float(eps)
+    )
+
+
+def _get_meta(meta: Any, names: tuple[str, ...], default: Any = None) -> Any:
+    if isinstance(meta, Mapping):
+        for name in names:
+            if name in meta:
+                return meta[name]
+        return default
+    for name in names:
+        if hasattr(meta, name):
+            return getattr(meta, name)
+    return default
+
+
+def _learned_items(learned_games_meta: Any) -> list[tuple[Any, Any]]:
+    if isinstance(learned_games_meta, Mapping):
+        return list(learned_games_meta.items())
+    if isinstance(learned_games_meta, str):
+        return [(learned_games_meta, {"game": learned_games_meta})]
+    items = []
+    for index, meta in enumerate(list(learned_games_meta)):
+        if isinstance(meta, str):
+            items.append((meta, {"game": meta}))
+            continue
+        key = _get_meta(meta, ("key", "game_key", "name"), index)
+        items.append((key, meta))
+    return items
+
+
+def make_closed_loop_eval_fn(
+    learned_games_meta: Any,
+    agent: Any,
+    *,
+    num_envs: int,
+    n_episodes: int,
+    seed: int,
+):
+    """Return a live-param evaluator for consolidation gates."""
+
+    items = _learned_items(learned_games_meta)
+
+    def eval_fn(params: Any) -> dict[Any, Any]:
+        result: dict[Any, Any] = {}
+        current_progress = None
+        explicit_current = False
+
+        for index, (game_key, meta) in enumerate(items):
+            game = _get_meta(meta, ("game", "env", "atari_game"), game_key)
+            eval_seed = int(seed) + 10_003 * index
+            score_info = evaluate_game(
+                agent,
+                params,
+                str(game),
+                num_envs=int(num_envs),
+                n_episodes=int(n_episodes),
+                seed=eval_seed,
+                greedy=False,
+                adapter_dormant=_get_meta(meta, ("adapter_dormant",), None),
+            )
+            score = float(score_info["mean"])
+            S_rand = _get_meta(meta, ("S_random", "random", "random_score"), None)
+            if S_rand is None:
+                S_rand = random_score(
+                    str(game),
+                    num_envs=int(num_envs),
+                    n_episodes=int(n_episodes),
+                    seed=eval_seed + 1_000_003,
+                )
+            S_best = _get_meta(meta, ("S_best", "best", "best_score"), score)
+            S_single = _get_meta(meta, ("S_single", "single", "single_score"), S_best)
+
+            progress_value = float(normalized_progress(score, S_rand, S_single))
+            retention_value = float(retention(score, S_rand, S_best))
+            result[game_key] = {
+                "score": score,
+                "progress": progress_value,
+                "retention": retention_value,
+                "sem": float(score_info["sem"]),
+                "n": int(score_info["n"]),
+            }
+
+            is_current = bool(_get_meta(meta, ("current", "is_current", "current_game"), False))
+            if is_current or not explicit_current:
+                current_progress = progress_value
+                explicit_current = explicit_current or is_current
+
+        result["current_progress"] = float(current_progress) if current_progress is not None else 0.0
+        return result
+
+    return eval_fn
+
+
+__all__ = [
+    "evaluate_game",
+    "make_closed_loop_eval_fn",
+    "normalized_progress",
+    "random_score",
+    "retention",
+]
