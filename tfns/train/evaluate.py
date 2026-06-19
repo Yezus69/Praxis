@@ -14,6 +14,9 @@ from tfns.envs import ACT_DIM
 from tfns.train.atari_env import make_atari_env_step
 
 
+DEFAULT_EVAL_MAX_STEPS = 20_000
+
+
 def _sem(values: Sequence[float]) -> float:
     arr = np.asarray(values, dtype=np.float64)
     if arr.size <= 1:
@@ -25,6 +28,54 @@ def _default_adapter_dormant(agent: Any, adapter_dormant: Any | None) -> jnp.nda
     if adapter_dormant is not None:
         return jnp.asarray(adapter_dormant, dtype=bool)
     return jnp.ones((int(agent.adapter_config.num_adapters),), dtype=bool)
+
+
+def _resolve_max_steps(max_steps: int | None) -> int:
+    if max_steps is None:
+        return int(DEFAULT_EVAL_MAX_STEPS)
+    value = int(max_steps)
+    if value < 0:
+        raise ValueError("max_steps must be non-negative")
+    return value
+
+
+def _step_raw_reward(extra: Any, reward_clipped: Any, num_envs: int) -> np.ndarray:
+    reward = None
+    if isinstance(extra, Mapping):
+        reward = extra.get("reward_raw", extra.get("reward_unclipped"))
+    if reward is None:
+        reward = reward_clipped
+    arr = np.asarray(reward, dtype=np.float32).reshape(-1)
+    if int(arr.shape[0]) != int(num_envs):
+        arr = np.asarray(reward_clipped, dtype=np.float32).reshape(-1)
+    if int(arr.shape[0]) != int(num_envs):
+        raise ValueError(f"reward must have shape ({num_envs},), got {arr.shape}")
+    return arr
+
+
+def _eval_result(
+    returns: Sequence[float],
+    running_returns: Any,
+    *,
+    n_episodes: int,
+    capped: bool,
+) -> dict[str, Any]:
+    used = [float(value) for value in returns[: int(n_episodes)]]
+    completed = np.asarray(used, dtype=np.float64)
+    if completed.size:
+        mean = float(np.mean(completed))
+    elif capped:
+        in_progress = np.asarray(running_returns, dtype=np.float64).reshape(-1)
+        mean = float(np.mean(in_progress)) if in_progress.size else 0.0
+    else:
+        mean = 0.0
+    return {
+        "mean": mean,
+        "sem": _sem(used),
+        "n": int(completed.size),
+        "returns": used,
+        "capped": bool(capped),
+    }
 
 
 @partial(jax.jit, static_argnames=("agent", "greedy"))
@@ -66,21 +117,32 @@ def evaluate_game(
     seed: int,
     greedy: bool = False,
     adapter_dormant: Any | None = None,
+    max_steps: int | None = None,
 ) -> dict[str, Any]:
-    """Evaluate one Atari game with true returns and no task or memory input."""
+    """Evaluate one Atari game with true returns and no task or memory input.
 
-    env_step, handle = make_atari_env_step(game, int(num_envs), int(seed), training=False)
+    ``max_steps`` counts individual environment transitions across vectorized
+    calls, so each ``env_step`` call adds ``num_envs`` steps. ``None`` selects
+    ``DEFAULT_EVAL_MAX_STEPS``; unbounded evaluation is intentionally unsupported.
+    """
+
+    env_count = int(num_envs)
+    target_episodes = int(n_episodes)
+    step_cap = _resolve_max_steps(max_steps)
+    env_step, handle = make_atari_env_step(game, env_count, int(seed), training=False)
     try:
         obs = jnp.asarray(env_step.obs)
-        hidden = agent.init_hidden(int(num_envs), dtype=jnp.float32)
-        prev_action = jnp.zeros((int(num_envs),), dtype=jnp.int32)
-        prev_reward = jnp.zeros((int(num_envs),), dtype=jnp.float32)
-        prev_reset = jnp.ones((int(num_envs),), dtype=bool)
+        hidden = agent.init_hidden(env_count, dtype=jnp.float32)
+        prev_action = jnp.zeros((env_count,), dtype=jnp.int32)
+        prev_reward = jnp.zeros((env_count,), dtype=jnp.float32)
+        prev_reset = jnp.ones((env_count,), dtype=bool)
         dormant = _default_adapter_dormant(agent, adapter_dormant)
         rng = jax.random.PRNGKey(int(seed))
         returns: list[float] = []
+        running_returns = np.zeros((env_count,), dtype=np.float32)
+        steps = 0
 
-        while len(returns) < int(n_episodes):
+        while len(returns) < target_episodes and steps < step_cap:
             rng, action_key = jax.random.split(rng)
             action, h_next = _policy_action(
                 agent,
@@ -98,6 +160,9 @@ def evaluate_game(
             next_obs, reward_clipped, _ppo_done, reset, extra = env_step(action_np)
 
             returns.extend(float(value) for value in extra.get("episode_returns", ()))
+            running_returns += _step_raw_reward(extra, reward_clipped, env_count)
+            running_returns[np.asarray(reset, dtype=np.bool_)] = 0.0
+            steps += env_count
             reset_jnp = jnp.asarray(reset, dtype=bool)
             hidden = jnp.where(reset_jnp[:, None], jnp.zeros_like(h_next), h_next)
             obs = jnp.asarray(next_obs)
@@ -105,14 +170,12 @@ def evaluate_game(
             prev_reward = jnp.asarray(reward_clipped, dtype=jnp.float32)
             prev_reset = reset_jnp
 
-        used = returns[: int(n_episodes)]
-        arr = np.asarray(used, dtype=np.float64)
-        return {
-            "mean": float(np.mean(arr)) if arr.size else 0.0,
-            "sem": _sem(used),
-            "n": int(arr.size),
-            "returns": [float(value) for value in used],
-        }
+        return _eval_result(
+            returns,
+            running_returns,
+            n_episodes=target_episodes,
+            capped=len(returns) < target_episodes,
+        )
     finally:
         handle.close()
 
@@ -123,19 +186,37 @@ def random_score(
     num_envs: int,
     n_episodes: int,
     seed: int,
-) -> float:
-    """Return the mean true score of a uniform random 18-action policy."""
+    max_steps: int | None = None,
+) -> dict[str, Any]:
+    """Return true-score stats for a uniform random 18-action policy.
 
-    env_step, handle = make_atari_env_step(game, int(num_envs), int(seed), training=False)
+    ``max_steps`` counts individual environment transitions across vectorized
+    calls, so each ``env_step`` call adds ``num_envs`` steps. ``None`` selects
+    ``DEFAULT_EVAL_MAX_STEPS``; unbounded evaluation is intentionally unsupported.
+    """
+
+    env_count = int(num_envs)
+    target_episodes = int(n_episodes)
+    step_cap = _resolve_max_steps(max_steps)
+    env_step, handle = make_atari_env_step(game, env_count, int(seed), training=False)
     try:
         rng = np.random.default_rng(int(seed))
         returns: list[float] = []
-        while len(returns) < int(n_episodes):
-            action = rng.integers(0, int(ACT_DIM), size=int(num_envs), dtype=np.int32)
-            _obs, _reward_clipped, _ppo_done, _reset, extra = env_step(action)
+        running_returns = np.zeros((env_count,), dtype=np.float32)
+        steps = 0
+        while len(returns) < target_episodes and steps < step_cap:
+            action = rng.integers(0, int(ACT_DIM), size=env_count, dtype=np.int32)
+            _obs, reward_clipped, _ppo_done, reset, extra = env_step(action)
             returns.extend(float(value) for value in extra.get("episode_returns", ()))
-        arr = np.asarray(returns[: int(n_episodes)], dtype=np.float64)
-        return float(np.mean(arr)) if arr.size else 0.0
+            running_returns += _step_raw_reward(extra, reward_clipped, env_count)
+            running_returns[np.asarray(reset, dtype=np.bool_)] = 0.0
+            steps += env_count
+        return _eval_result(
+            returns,
+            running_returns,
+            n_episodes=target_episodes,
+            capped=len(returns) < target_episodes,
+        )
     finally:
         handle.close()
 
@@ -190,10 +271,12 @@ def make_closed_loop_eval_fn(
     num_envs: int,
     n_episodes: int,
     seed: int,
+    max_steps: int | None = None,
 ):
     """Return a live-param evaluator for consolidation gates."""
 
     items = _learned_items(learned_games_meta)
+    step_cap = _resolve_max_steps(max_steps)
 
     def eval_fn(params: Any) -> dict[Any, Any]:
         result: dict[Any, Any] = {}
@@ -212,16 +295,21 @@ def make_closed_loop_eval_fn(
                 seed=eval_seed,
                 greedy=False,
                 adapter_dormant=_get_meta(meta, ("adapter_dormant",), None),
+                max_steps=step_cap,
             )
             score = float(score_info["mean"])
             S_rand = _get_meta(meta, ("S_random", "random", "random_score"), None)
+            random_capped = False
             if S_rand is None:
-                S_rand = random_score(
+                random_info = random_score(
                     str(game),
                     num_envs=int(num_envs),
                     n_episodes=int(n_episodes),
                     seed=eval_seed + 1_000_003,
+                    max_steps=step_cap,
                 )
+                S_rand = float(random_info["mean"])
+                random_capped = bool(random_info["capped"])
             S_best = _get_meta(meta, ("S_best", "best", "best_score"), score)
             S_single = _get_meta(meta, ("S_single", "single", "single_score"), S_best)
 
@@ -233,6 +321,8 @@ def make_closed_loop_eval_fn(
                 "retention": retention_value,
                 "sem": float(score_info["sem"]),
                 "n": int(score_info["n"]),
+                "capped": bool(score_info.get("capped", False)),
+                "random_capped": bool(random_capped),
             }
 
             is_current = bool(_get_meta(meta, ("current", "is_current", "current_game"), False))
@@ -247,6 +337,7 @@ def make_closed_loop_eval_fn(
 
 
 __all__ = [
+    "DEFAULT_EVAL_MAX_STEPS",
     "evaluate_game",
     "make_closed_loop_eval_fn",
     "normalized_progress",
