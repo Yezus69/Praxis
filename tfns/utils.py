@@ -5,9 +5,14 @@ from __future__ import annotations
 import dataclasses
 from typing import Any
 
-import jax
-import jax.numpy as jnp
 import numpy as np
+
+try:
+    import jax
+    import jax.numpy as jnp
+except ImportError:  # pragma: no cover - exercised only on hosts without JAX.
+    jax = None
+    jnp = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -68,12 +73,16 @@ def normalize(state: RunningRobustStat, x: float):
 def tree_zeros_like(tree: Any) -> Any:
     """Return a pytree of zeros with the same structure and leaf shapes."""
 
+    if jax is None or jnp is None:
+        raise ImportError("JAX is required for tree_zeros_like.")
     return jax.tree_util.tree_map(jnp.zeros_like, tree)
 
 
 def tree_global_norm(tree: Any) -> jnp.ndarray:
     """Return the global L2 norm across all numeric pytree leaves."""
 
+    if jax is None or jnp is None:
+        raise ImportError("JAX is required for tree_global_norm.")
     leaves = jax.tree_util.tree_leaves(tree)
     total = jnp.array(0.0, dtype=jnp.float32)
     for leaf in leaves:
@@ -85,6 +94,8 @@ def tree_global_norm(tree: Any) -> jnp.ndarray:
 def tree_add_scaled(a: Any, b: Any, s: float) -> Any:
     """Return the leafwise pytree sum ``a + s * b``."""
 
+    if jax is None:
+        raise ImportError("JAX is required for tree_add_scaled.")
     return jax.tree_util.tree_map(lambda x, y: x + s * y, a, b)
 
 

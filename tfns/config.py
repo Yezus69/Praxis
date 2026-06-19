@@ -84,6 +84,13 @@ class MemoryConfig:
     lam_red: float = 1.0
     lam_age: float = 0.5
     min_per_cluster: int = 2
+    score_mean_w: float = 0.34
+    score_quantile_w: float = 0.33
+    score_max_w: float = 0.33
+    score_quantile: float = 0.9
+    cluster_sim_thresh: float = 0.9
+    cluster_merge_thresh: float = 0.97
+    max_clusters: int = 64
 
 
 @dataclasses.dataclass(frozen=True)
