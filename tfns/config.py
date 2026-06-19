@@ -51,6 +51,8 @@ class PPOConfig:
     clip_coef: float = 0.2
     vf_clip: float = 0.2
     ent_coef: float = 0.01
+    anneal_ent: bool = True
+    ent_coef_final: float = 0.0
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
     lr: float = 2.5e-4

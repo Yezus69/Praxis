@@ -10,7 +10,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 
-from tfns.config import TFNSConfig
+from tfns.config import PPOConfig, TFNSConfig
 from tfns.consolidate.lifecycle import apply_rejection_feedback, consolidate
 from tfns.consolidate.state import ContinualState
 from tfns.credit import ReturnPredictor, make_predictor_optimizer
@@ -105,11 +105,24 @@ def run_blocks(
     sentinel_clusters: Sequence[Any] | None = None,
     constraint_clusters: Sequence[Any] | None = None,
     enable_shaping: bool = False,
+    progress_frac: float | None = None,
+    steps_done: int | None = None,
+    steps_per_game: int | None = None,
 ) -> tuple[ContinualState, list[dict[str, Any]]]:
     """Run ``train_block`` repeatedly, threading state and rollout carry."""
 
     telemetry: list[dict[str, Any]] = []
+    ppo_cfg = _cfg_section(cfg, "ppo", PPOConfig())
+    block_env_steps = int(_cfg_value(ppo_cfg, "num_envs", PPOConfig.num_envs)) * int(
+        _cfg_value(ppo_cfg, "rollout_len", PPOConfig.rollout_len)
+    )
+    completed_steps = None if steps_done is None else int(steps_done)
+    total_steps_target = None if steps_per_game is None else int(steps_per_game)
+
     for _ in range(int(n_blocks)):
+        block_progress_frac = progress_frac
+        if block_progress_frac is None and completed_steps is not None and total_steps_target is not None:
+            block_progress_frac = float(completed_steps) / float(max(1, total_steps_target))
         block_sentinels = (
             list(state.protected_clusters)
             if sentinel_clusters is None
@@ -124,8 +137,13 @@ def run_blocks(
             sentinel_clusters=block_sentinels,
             constraint_clusters=constraint_clusters,
             enable_shaping=enable_shaping,
+            progress_frac=block_progress_frac,
+            steps_done=completed_steps,
+            total_steps_target=total_steps_target,
         )
         telemetry.append(block_info)
+        if completed_steps is not None:
+            completed_steps += block_env_steps
     return state, telemetry
 
 

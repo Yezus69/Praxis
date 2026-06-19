@@ -44,6 +44,10 @@ _PROGRESS_KEYS = (
     "approx_kl",
     "aux_loss",
     "replay_tube_total",
+    "progress_frac",
+    "ent_coef",
+    "learning_rate",
+    "lr_scale",
     "raw_grad_norm",
     "projected_delta_norm",
     "applied_norm",
@@ -198,6 +202,9 @@ def _base_cfg(args: argparse.Namespace) -> TFNSConfig:
                 num_envs=num_envs,
                 rollout_len=rollout_len,
                 lr=2.5e-4,
+                ent_coef=float(args.ent_coef),
+                anneal_ent=bool(args.anneal_ent),
+                ent_coef_final=float(args.ent_coef_final),
                 update_epochs=int(args.update_epochs),
                 num_minibatches=num_minibatches,
                 seq_chunk=seq_chunk,
@@ -231,6 +238,9 @@ def _base_cfg(args: argparse.Namespace) -> TFNSConfig:
             base.ppo,
             num_envs=int(args.num_envs),
             rollout_len=int(args.rollout_len),
+            ent_coef=float(args.ent_coef),
+            anneal_ent=bool(args.anneal_ent),
+            ent_coef_final=float(args.ent_coef_final),
             update_epochs=int(args.update_epochs),
             num_minibatches=num_minibatches,
             seq_chunk=seq_chunk,
@@ -430,6 +440,7 @@ def train_one_game(
             if not protect:
                 state = _clear_plain_state(state, block_cfg)
 
+            progress_frac = min(1.0, max(0.0, float(steps_done) / float(steps_per_game)))
             tracked_env.begin_block()
             start = time.perf_counter()
             state, telemetry = loop.run_blocks(
@@ -441,6 +452,9 @@ def train_one_game(
                 1,
                 sentinel_clusters=None if protect else [],
                 constraint_clusters=None if protect else [],
+                progress_frac=progress_frac,
+                steps_done=steps_done,
+                steps_per_game=steps_per_game,
             )
             elapsed = max(1.0e-8, time.perf_counter() - start)
             steps_this = int(block_cfg.ppo.num_envs) * int(block_cfg.ppo.rollout_len)
@@ -457,6 +471,7 @@ def train_one_game(
                 "protect": bool(protect),
                 "steps_done": int(steps_done),
                 "target_steps": int(steps_per_game),
+                "progress_frac": float(progress_frac),
                 "block_env_steps": int(steps_this),
                 "recent_score": float(tracked_env.recent_score()),
                 "block_completed_episodes": int(len(tracked_env.block_returns)),
@@ -704,6 +719,9 @@ def _result_header(
             "update_epochs": int(cfg.ppo.update_epochs),
             "num_minibatches": int(cfg.ppo.num_minibatches),
             "seq_chunk": int(cfg.ppo.seq_chunk),
+            "ent_coef": float(cfg.ppo.ent_coef),
+            "anneal_ent": bool(cfg.ppo.anneal_ent),
+            "ent_coef_final": float(cfg.ppo.ent_coef_final),
             "eval_episodes": int(args.eval_episodes),
             "eval_max_steps": int(args.eval_max_steps),
         },
@@ -1052,6 +1070,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--rollout-len", type=int, default=128)
     parser.add_argument("--update-epochs", type=int, default=2)
     parser.add_argument("--num-minibatches", type=int, default=4)
+    parser.add_argument("--ent-coef", type=float, default=0.01)
+    parser.add_argument("--ent-coef-final", type=float, default=0.0)
+    parser.add_argument("--no-anneal-ent", dest="anneal_ent", action="store_false")
     parser.add_argument("--eval-episodes", type=int, default=None)
     parser.add_argument("--eval-seed", type=int, default=None)
     parser.add_argument("--eval-max-steps", type=int, default=evaluate.DEFAULT_EVAL_MAX_STEPS)
@@ -1071,6 +1092,10 @@ def _normalize_args(args: argparse.Namespace) -> argparse.Namespace:
         raise ValueError("--update-epochs must be positive")
     if int(args.num_minibatches) <= 0:
         raise ValueError("--num-minibatches must be positive")
+    if float(args.ent_coef) < 0.0:
+        raise ValueError("--ent-coef must be non-negative")
+    if float(args.ent_coef_final) < 0.0:
+        raise ValueError("--ent-coef-final must be non-negative")
     if int(args.eval_max_steps) < 0:
         raise ValueError("--eval-max-steps must be non-negative")
     if args.smoke:

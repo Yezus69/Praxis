@@ -138,6 +138,40 @@ def _cfg_value(obj: Any, name: str, default: Any) -> Any:
     return getattr(obj, name, default)
 
 
+def _progress_fraction(
+    progress_frac: float | None,
+    steps_done: int | None,
+    total_steps_target: int | None,
+) -> float:
+    if progress_frac is None and steps_done is not None and total_steps_target is not None:
+        total = max(1, int(total_steps_target))
+        progress_frac = float(steps_done) / float(total)
+    if progress_frac is None:
+        return 0.0
+    return min(1.0, max(0.0, float(progress_frac)))
+
+
+def _linear_anneal(start: float, end: float, progress_frac: float) -> float:
+    progress = min(1.0, max(0.0, float(progress_frac)))
+    return float(start) + (float(end) - float(start)) * progress
+
+
+def _annealed_block_hparams(ppo_cfg: Any, progress_frac: float) -> tuple[float, float, float]:
+    ent_start = float(_cfg_value(ppo_cfg, "ent_coef", PPOConfig.ent_coef))
+    ent_final = float(_cfg_value(ppo_cfg, "ent_coef_final", PPOConfig.ent_coef_final))
+    anneal_ent = bool(_cfg_value(ppo_cfg, "anneal_ent", PPOConfig.anneal_ent))
+    ent_coef = _linear_anneal(ent_start, ent_final, progress_frac) if anneal_ent else ent_start
+
+    base_lr = float(_cfg_value(ppo_cfg, "lr", PPOConfig.lr))
+    anneal_lr = bool(_cfg_value(ppo_cfg, "anneal_lr", PPOConfig.anneal_lr))
+    learning_rate = base_lr * (1.0 - progress_frac) if anneal_lr else base_lr
+    if anneal_lr:
+        lr_scale = 0.0 if base_lr <= 0.0 else learning_rate / base_lr
+    else:
+        lr_scale = 1.0
+    return ent_coef, learning_rate, lr_scale
+
+
 def _cfg_optional_int(obj: Any, name: str) -> int | None:
     value = _cfg_value(obj, name, None)
     if value is None:
@@ -737,10 +771,11 @@ def _grad_step(
     mb: Any,
     replay_batch: ReplayBatch,
     cfg: _JitTrainConfig,
+    ent_coef: Any,
     agent: Any,
 ) -> tuple[jnp.ndarray, dict[str, jnp.ndarray], Any]:
     def loss_fn(p):
-        ppo, ppo_aux = total_ppo_objective(p, agent, mb, ema_params, cfg)
+        ppo, ppo_aux = total_ppo_objective(p, agent, mb, ema_params, cfg, ent_coef=ent_coef)
         tube, tube_aux = replay_tube_loss_batched(p, agent, replay_batch, cfg)
         loss = ppo + float(cfg.replay_coef) * tube
         aux = {
@@ -763,10 +798,11 @@ def _grad_step_ppo_only(
     ema_params: Any,
     mb: Any,
     cfg: _JitTrainConfig,
+    ent_coef: Any,
     agent: Any,
 ) -> tuple[jnp.ndarray, dict[str, jnp.ndarray], Any]:
     def loss_fn(p):
-        ppo, aux = total_ppo_objective(p, agent, mb, ema_params, cfg)
+        ppo, aux = total_ppo_objective(p, agent, mb, ema_params, cfg, ent_coef=ent_coef)
         return ppo, aux
 
     (loss, aux), grad = jax.value_and_grad(loss_fn, has_aux=True)(params)
@@ -911,11 +947,18 @@ def train_block(
     constraint_clusters: Sequence[Any] | None = None,
     enable_shaping: bool = False,
     eval_hook: Any = None,
+    progress_frac: float | None = None,
+    steps_done: int | None = None,
+    total_steps_target: int | None = None,
 ) -> tuple[ContinualState, dict[str, Any]]:
     """Run one continual recurrent PPO block and return telemetry."""
 
     cfg = cfg or TFNSConfig()
     ppo_cfg = _cfg_section(cfg, "ppo", PPOConfig())
+    block_progress_frac = _progress_fraction(progress_frac, steps_done, total_steps_target)
+    ent_coef, learning_rate, lr_scale = _annealed_block_hparams(ppo_cfg, block_progress_frac)
+    ent_coef_arg = jnp.asarray(ent_coef, dtype=jnp.float32)
+    update_scale = jnp.asarray(lr_scale, dtype=jnp.float32)
     credit_cfg = _cfg_section(cfg, "credit", CreditConfig())
     detect_cfg = _cfg_section(cfg, "detect", DetectConfig())
     protect_cfg = _cfg_section(cfg, "protect", None)
@@ -1120,6 +1163,7 @@ def train_block(
                     mb,
                     replay_batch,
                     jit_cfg,
+                    ent_coef_arg,
                     agent,
                 )
             else:
@@ -1128,6 +1172,7 @@ def train_block(
                     state.ema_params,
                     mb,
                     jit_cfg,
+                    ent_coef_arg,
                     agent,
                 )
                 zero = jnp.asarray(0.0, dtype=jnp.float32)
@@ -1161,6 +1206,7 @@ def train_block(
                 constraint_fn=constraint_fn,
                 max_update_norm=max_update_norm,
                 backtrack_scales=backtrack_scales,
+                update_scale=update_scale,
             )
             if bool(info["accepted"]):
                 state.params = new_params
@@ -1231,6 +1277,10 @@ def train_block(
             "detector_changed": bool(changed),
             "detector_cusum": float(getattr(state.detector_state, "cusum", 0.0)),
             "block_index": int(state.block_index),
+            "progress_frac": float(block_progress_frac),
+            "ent_coef": float(ent_coef),
+            "learning_rate": float(learning_rate),
+            "lr_scale": float(lr_scale),
         }
     )
     if eval_hook is not None:
