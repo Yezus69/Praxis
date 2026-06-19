@@ -59,7 +59,7 @@ def _tree_get_mu(opt_state: optax.OptState) -> Any:
 
     mu = _find_named_field(opt_state, "mu")
     if mu is _MISSING:
-        raise ValueError("could not locate Adam first-moment tree 'mu'")
+        return _MISSING
     return mu
 
 
@@ -86,6 +86,8 @@ def project_first_moments(
     """Project Adam first moments while leaving count and second moments intact."""
 
     mu = _tree_get_mu(opt_state)
+    if mu is _MISSING or mu is None:
+        return opt_state
     mu_safe = project_update(mu, bases, modules)
     return _tree_set_mu(opt_state, mu_safe)
 
