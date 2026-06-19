@@ -51,7 +51,7 @@ Branch: `task-free-ns`.
 - M4  memory: record + bank + sampling + tests (§23.13, label-perm) .............. DONE (9/9 tests)
 - M5  behavior tubes + constraints QP + sentinel backtracking (§23.8-9,17) ....... DONE (11/11 w/ optimizer)
 - M6  credit: predictor + shaping + tests (§23.12) ............................... DONE (6/6 tests)
-- M7  ppo: rollout + GAE + losses + update orchestration (§23.10-11) ............. TODO
+- M7  ppo: rollout + GAE + recurrent losses + burn-in (§23.10-11) ................ DONE (6/6 tests)
 - M8  consolidate: state/snapshot + certify + lifecycle + plasticity + detect
       + atomic-rollback/gate-orientation/adapter tests (§23.15-17) .............. TODO
 - M9  integration envs + integration tests (§24.1-3) ............................ TODO
