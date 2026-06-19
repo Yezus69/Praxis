@@ -338,15 +338,20 @@ def random_scores(
     *,
     num_envs: int = 1,
     out_dir: str | Path | None = None,
+    max_steps: int | None = None,
 ) -> dict[str, float]:
     """Return cached uniform-random Atari scores and persist after each miss."""
 
+    max_steps_value = evaluate.DEFAULT_EVAL_MAX_STEPS if max_steps is None else int(max_steps)
+    if max_steps_value < 0:
+        raise ValueError("max_steps must be non-negative")
     path = Path(out_dir) / f"random_seed{int(seed)}.json" if out_dir is not None else None
     payload = _read_json(path) if path is not None else {}
     cache_matches = (
         int(payload.get("seed", seed)) == int(seed)
         and int(payload.get("eval_episodes", eval_episodes)) == int(eval_episodes)
         and int(payload.get("num_envs", num_envs)) == int(num_envs)
+        and int(payload.get("max_steps", max_steps_value)) == max_steps_value
     )
     scores = (
         {str(game): float(score) for game, score in (payload.get("scores", {}) or {}).items()}
@@ -357,14 +362,14 @@ def random_scores(
     for index, game in enumerate(games):
         if str(game) in scores:
             continue
-        scores[str(game)] = float(
-            evaluate.random_score(
-                str(game),
-                num_envs=int(num_envs),
-                n_episodes=int(eval_episodes),
-                seed=int(seed) + 1009 * index,
-            )
+        score_info = evaluate.random_score(
+            str(game),
+            num_envs=int(num_envs),
+            n_episodes=int(eval_episodes),
+            seed=int(seed) + 1009 * index,
+            max_steps=max_steps_value,
         )
+        scores[str(game)] = float(score_info["mean"])
         if path is not None:
             _persist_json(
                 path,
@@ -372,6 +377,7 @@ def random_scores(
                     "seed": int(seed),
                     "eval_episodes": int(eval_episodes),
                     "num_envs": int(num_envs),
+                    "max_steps": max_steps_value,
                     "scores": scores,
                 },
             )
@@ -529,6 +535,7 @@ def _eval_primary_greedy(
     *,
     eval_episodes: int,
     seed: int,
+    max_steps: int | None,
 ) -> dict[str, Any]:
     num_envs = _eval_num_envs(cfg, eval_episodes)
     stochastic = evaluate.evaluate_game(
@@ -540,6 +547,7 @@ def _eval_primary_greedy(
         seed=int(seed),
         greedy=False,
         adapter_dormant=getattr(state, "adapter_dormant", None),
+        max_steps=max_steps,
     )
     greedy = evaluate.evaluate_game(
         agent,
@@ -550,6 +558,7 @@ def _eval_primary_greedy(
         seed=int(seed) + 500_003,
         greedy=True,
         adapter_dormant=getattr(state, "adapter_dormant", None),
+        max_steps=max_steps,
     )
     return {
         "stochastic": stochastic,
@@ -567,6 +576,7 @@ def _eval_windows(
     eval_episodes: int,
     seed: int,
     windows: int,
+    max_steps: int | None,
 ) -> list[dict[str, Any]]:
     return [
         _eval_primary_greedy(
@@ -576,6 +586,7 @@ def _eval_windows(
             cfg,
             eval_episodes=eval_episodes,
             seed=int(seed) + 10_003 * index,
+            max_steps=max_steps,
         )
         for index in range(max(1, int(windows)))
     ]
@@ -601,6 +612,7 @@ def _retention_row(
     eval_episodes: int,
     seed: int,
     after_game: str,
+    max_steps: int | None,
 ) -> dict[str, Any]:
     scores: dict[str, float] = {}
     evals: dict[str, Any] = {}
@@ -615,6 +627,7 @@ def _retention_row(
             cfg,
             eval_episodes=eval_episodes,
             seed=int(seed) + 20_011 * index,
+            max_steps=max_steps,
         )
         score = float(eval_row["score"])
         best_scores[str(game)] = max(float(best_scores.get(str(game), score)), score)
@@ -687,6 +700,7 @@ def _result_header(
             "rollout_len": int(cfg.ppo.rollout_len),
             "update_epochs": int(cfg.ppo.update_epochs),
             "eval_episodes": int(args.eval_episodes),
+            "eval_max_steps": int(args.eval_max_steps),
         },
     }
 
@@ -725,6 +739,7 @@ def _run_refs(
             eval_episodes=int(args.eval_episodes),
             seed=int(args.eval_seed) + 50_021 * index,
             windows=max(1, int(cfg.consolidate.stable_windows)),
+            max_steps=int(args.eval_max_steps),
         )
         scores = _window_scores(windows)
         result["refs"][str(game)] = {
@@ -765,6 +780,13 @@ def _run_curriculum(
     random_by_game: Mapping[str, float],
     refs: Mapping[str, Mapping[str, float]],
 ) -> dict[str, Any]:
+    cfg = dataclasses.replace(
+        cfg,
+        consolidate=dataclasses.replace(
+            cfg.consolidate,
+            learned_threshold=float(args.learned_threshold),
+        ),
+    )
     result = _result_header("curriculum", args, cfg, games, random_by_game)
     result.update(
         {
@@ -806,6 +828,7 @@ def _run_curriculum(
             eval_episodes=int(args.eval_episodes),
             seed=int(args.eval_seed) + 110_017 * index,
             windows=max(1, int(cfg.consolidate.stable_windows)),
+            max_steps=int(args.eval_max_steps),
         )
         scores = _window_scores(eval_windows)
         score_windows[game].extend(scores)
@@ -852,6 +875,7 @@ def _run_curriculum(
                 num_envs=_eval_num_envs(cfg, int(args.eval_episodes)),
                 n_episodes=int(args.eval_episodes),
                 seed=int(args.eval_seed) + 120_011 * index,
+                max_steps=int(args.eval_max_steps),
             )
             state, accepted, report = loop.consolidate_skill(
                 state,
@@ -886,6 +910,7 @@ def _run_curriculum(
             eval_episodes=int(args.eval_episodes),
             seed=int(args.eval_seed) + 130_021 * index,
             after_game=game,
+            max_steps=int(args.eval_max_steps),
         )
         for learned_game in certified_meta:
             certified_meta[learned_game]["S_best"] = float(best_scores[learned_game])
@@ -960,6 +985,7 @@ def _run_plain(
             eval_episodes=int(args.eval_episodes),
             seed=int(args.eval_seed) + 210_017 * index,
             windows=max(1, int(cfg.consolidate.stable_windows)),
+            max_steps=int(args.eval_max_steps),
         )
         scores = _window_scores(eval_windows)
         score_windows[game].extend(scores)
@@ -990,6 +1016,7 @@ def _run_plain(
             eval_episodes=int(args.eval_episodes),
             seed=int(args.eval_seed) + 220_021 * index,
             after_game=game,
+            max_steps=int(args.eval_max_steps),
         )
         result["game_results"][game] = {
             "train": train_info,
@@ -1021,6 +1048,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--update-epochs", type=int, default=2)
     parser.add_argument("--eval-episodes", type=int, default=None)
     parser.add_argument("--eval-seed", type=int, default=None)
+    parser.add_argument("--eval-max-steps", type=int, default=evaluate.DEFAULT_EVAL_MAX_STEPS)
+    parser.add_argument("--learned-threshold", type=float, default=0.9)
     parser.add_argument("--out-dir", default="tfns_runs/curriculum")
     parser.add_argument("--refs-json", default=None)
     parser.add_argument("--smoke", action="store_true")
@@ -1034,6 +1063,8 @@ def _normalize_args(args: argparse.Namespace) -> argparse.Namespace:
         raise ValueError("--rollout-len must be positive")
     if int(args.update_epochs) <= 0:
         raise ValueError("--update-epochs must be positive")
+    if int(args.eval_max_steps) < 0:
+        raise ValueError("--eval-max-steps must be non-negative")
     if args.smoke:
         args.num_envs = min(int(args.num_envs), 4)
         args.rollout_len = min(int(args.rollout_len), 32)
@@ -1069,6 +1100,7 @@ def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         int(args.eval_seed),
         num_envs=_eval_num_envs(cfg, int(args.eval_episodes)),
         out_dir=out_dir,
+        max_steps=int(args.eval_max_steps),
     )
     refs = _load_refs(args.refs_json)
 
