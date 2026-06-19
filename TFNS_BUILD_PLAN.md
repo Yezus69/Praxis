@@ -53,7 +53,7 @@ Branch: `task-free-ns`.
 - M6  credit: predictor + shaping + tests (§23.12) ............................... DONE (6/6 tests)
 - M7  ppo: rollout + GAE + recurrent losses + burn-in (§23.10-11) ................ DONE (6/6 tests)
 - M8a consolidate-state + EMA + detector + protected training block (§13,16,19) . DONE
-- M8b consolidate: certify + lifecycle + plasticity + adapters
+- M8b consolidate: certify + lifecycle + plasticity + adapters (§17-19,23.15-16) . DONE (20/20 w/ model)
       + atomic-rollback/gate-orientation/adapter tests (§23.15-17) .............. TODO
 - M9  integration envs + integration tests (§24.1-3) ............................ TODO
 - M10 Atari 2-game smoke (§24.4) + identity-leakage/no-mem-path (§23.1,14) ....... TODO

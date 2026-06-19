@@ -24,9 +24,8 @@ def _apply_activation(x: jnp.ndarray, activation: str) -> jnp.ndarray:
 class Encoder(nn.Module):
     """Nature-style Atari encoder returning a fixed-width visual feature.
 
-    If ``collect_presyn`` is true, the dense-layer input is returned for M2
-    projection work. Convolution patch collection is intentionally deferred to
-    the projection milestone.
+    If ``collect_presyn`` is true, affine inputs are returned for projection
+    and protected-basis construction.
     """
 
     dense_dim: int = 512
@@ -53,10 +52,14 @@ class Encoder(nn.Module):
 
         conv_init = _orthogonal(math.sqrt(2.0))
         x = obs
+        presyn = {"conv1_in": obs} if collect_presyn else None
         for idx, (channels, kernel, stride) in enumerate(
             zip(self.conv_channels, self.conv_kernels, self.conv_strides, strict=True),
             start=1,
         ):
+            if collect_presyn and idx > 1:
+                assert presyn is not None
+                presyn[f"conv{idx}_in"] = x
             x = nn.Conv(
                 features=int(channels),
                 kernel_size=(int(kernel), int(kernel)),
@@ -82,7 +85,9 @@ class Encoder(nn.Module):
         )(dense_in)
         e_t = _apply_activation(x, self.activation)
         if collect_presyn:
-            return e_t, {"encoder_dense": dense_in}
+            assert presyn is not None
+            presyn["encoder_dense"] = dense_in
+            return e_t, presyn
         return e_t
 
 

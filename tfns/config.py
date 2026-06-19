@@ -134,6 +134,7 @@ class RiskConfig:
 class ConsolidateConfig:
     learned_threshold: float = 0.9
     stable_windows: int = 2
+    retention_accept: float = 0.90
 
 
 @dataclasses.dataclass(frozen=True)
