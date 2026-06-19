@@ -17,6 +17,7 @@ _RAW_REWARD_KEYS = (
     "original_reward",
     "env_reward",
 )
+_FIRE_ACTION = 1
 
 
 def _reset_result(result: Any) -> tuple[Any, dict[str, Any]]:
@@ -76,6 +77,7 @@ class AtariEnvHandle:
     num_envs: int
     seed: int
     training: bool
+    fire_reset: bool = True
 
     def close(self) -> None:
         close = getattr(self.env, "close", None)
@@ -86,16 +88,26 @@ class AtariEnvHandle:
 class AtariEnvStep:
     """Callable adapter matching ``tfns.ppo.rollout.collect_rollout``."""
 
-    def __init__(self, env: Any, game: str, num_envs: int, seed: int, training: bool):
+    def __init__(
+        self,
+        env: Any,
+        game: str,
+        num_envs: int,
+        seed: int,
+        training: bool,
+        fire_reset: bool = True,
+    ):
         self.handle = AtariEnvHandle(
             env=env,
             game=str(game),
             num_envs=int(num_envs),
             seed=int(seed),
             training=bool(training),
+            fire_reset=bool(fire_reset),
         )
         self._returns = np.zeros((int(num_envs),), dtype=np.float32)
         self._obs = _nhwc_uint8(_reset_result(env.reset())[0])
+        self._needs_fire = np.full((int(num_envs),), bool(fire_reset), dtype=np.bool_)
 
     @property
     def obs(self) -> np.ndarray:
@@ -119,12 +131,16 @@ class AtariEnvStep:
     def reset(self) -> np.ndarray:
         obs, _ = _reset_result(self.handle.env.reset())
         self._returns[...] = 0.0
+        self._needs_fire[...] = bool(self.handle.fire_reset)
         self._obs = _nhwc_uint8(obs)
         return self._obs
 
     def __call__(self, action_array: Any):
         action = _vec(action_array, np.int32, self.handle.num_envs, "action")
-        obs, reward, terminated, truncated, info = self.handle.env.step(action)
+        fired = self._needs_fire.copy()
+        exec_action = action.copy()
+        exec_action[fired] = _FIRE_ACTION
+        obs, reward, terminated, truncated, info = self.handle.env.step(exec_action)
 
         reward = _vec(reward, np.float32, self.handle.num_envs, "reward")
         terminated = _vec(terminated, np.bool_, self.handle.num_envs, "terminated")
@@ -135,6 +151,11 @@ class AtariEnvStep:
             _info_bool(info, "terminated", terminated, self.handle.num_envs),
             truncated,
         )
+        self._needs_fire = np.where(
+            np.logical_or(ppo_done, true_done),
+            bool(self.handle.fire_reset),
+            False,
+        ).astype(np.bool_)
         raw_reward = _raw_reward(info, reward, self.handle.num_envs)
         reward_clipped = np.clip(reward, -1.0, 1.0).astype(np.float32)
 
@@ -152,6 +173,8 @@ class AtariEnvStep:
             "truncated": truncated,
             "lives": _info_value(info, "lives"),
             "info": info,
+            "fired": fired.astype(np.bool_),
+            "exec_action": exec_action.astype(np.int32),
         }
         return self._obs, reward_clipped, ppo_done.astype(np.bool_), true_done.astype(np.bool_), extra
 
@@ -162,14 +185,26 @@ def make_atari_env_step(
     seed: int,
     *,
     training: bool = True,
+    fire_reset: bool = True,
 ) -> tuple[AtariEnvStep, AtariEnvHandle]:
-    """Create an envpool Atari stepper using verified terminal semantics."""
+    """Create an envpool Atari stepper using verified terminal semantics.
+
+    ``fire_reset`` sends full-action-space FIRE on reset/life starts. This is
+    required by Breakout-style starts and benign for games that do not need it.
+    """
 
     if training:
         env = make_train_env(str(game), int(num_envs), int(seed))
     else:
         env = make_eval_env(str(game), int(num_envs), int(seed))
-    stepper = AtariEnvStep(env, str(game), int(num_envs), int(seed), bool(training))
+    stepper = AtariEnvStep(
+        env,
+        str(game),
+        int(num_envs),
+        int(seed),
+        bool(training),
+        bool(fire_reset),
+    )
     return stepper, stepper.handle
 
 

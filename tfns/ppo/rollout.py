@@ -144,7 +144,20 @@ def _policy_step(agent, params, obs, prev_action, prev_reward_clipped, reset, hi
     )
     action = jax.random.categorical(rng, out.logits, axis=-1).astype(jnp.int32)
     logprob = categorical_log_prob(out.logits, action)
-    return action, logprob, out.value.astype(jnp.float32), out.h_next.astype(jnp.float32)
+    return action, logprob, out.value.astype(jnp.float32), out.h_next.astype(jnp.float32), out.logits
+
+
+@jax.jit
+def _record_executed_action(logits, action, logprob, fired, exec_action):
+    """Replace forced environment actions and old logprobs for PPO storage."""
+
+    fired = jnp.asarray(fired, dtype=bool)
+    exec_action = jnp.asarray(exec_action, dtype=jnp.int32)
+    action = jnp.asarray(action, dtype=jnp.int32)
+    recorded_action = jnp.where(fired, exec_action, action)
+    exec_logprob = categorical_log_prob(logits, recorded_action)
+    recorded_logprob = jnp.where(fired, exec_logprob, jnp.asarray(logprob, dtype=jnp.float32))
+    return recorded_action.astype(jnp.int32), recorded_logprob.astype(jnp.float32)
 
 
 @partial(jax.jit, static_argnames=("agent",))
@@ -216,7 +229,7 @@ def collect_rollout(env_step, agent, params, carry: RolloutCarry, rollout_len: i
 
     for _ in range(rollout_len):
         rng, action_key = jax.random.split(rng)
-        action, logprob, value, h_next = _policy_step(
+        action, logprob, value, h_next, logits = _policy_step(
             agent,
             params,
             obs,
@@ -228,6 +241,23 @@ def collect_rollout(env_step, agent, params, carry: RolloutCarry, rollout_len: i
         )
         next_obs, reward_clipped, ppo_done, reset, extra = env_step(
             np.asarray(jax.device_get(action), dtype=np.int32)
+        )
+        if isinstance(extra, dict):
+            fired = extra.get("fired")
+            exec_action = extra.get("exec_action")
+        else:
+            fired = None
+            exec_action = None
+        if fired is None:
+            fired = np.zeros(tuple(action.shape), dtype=np.bool_)
+        if exec_action is None:
+            exec_action = np.asarray(jax.device_get(action), dtype=np.int32)
+        action, logprob = _record_executed_action(
+            logits,
+            action,
+            logprob,
+            jnp.asarray(fired, dtype=bool),
+            jnp.asarray(exec_action, dtype=jnp.int32),
         )
 
         obs_rows.append(obs)
