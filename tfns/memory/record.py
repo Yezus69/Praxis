@@ -160,6 +160,25 @@ def reconstruct_obs(rec: EpisodeSequence) -> np.ndarray:
     return obs
 
 
+def frames_from_obs(obs_seq: Any) -> tuple[np.ndarray, np.ndarray]:
+    """Return ``(init_stack, new_frames)`` exactly inverse to ``reconstruct_obs``.
+
+    ``obs_seq`` must be a within-episode NHWC uint8 sequence with channels in
+    oldest-to-newest stack order. The first stored init frame is an unused
+    duplicate matching the reconstruction convention.
+    """
+
+    obs = _as_array("obs_seq", obs_seq, np.uint8, (None, OBS_HW, OBS_HW, FRAME_STACK))
+    if int(obs.shape[0]) <= 0:
+        raise ValueError("obs_seq must contain at least one observation.")
+    init_stack = np.stack(
+        [obs[0, ..., 0], obs[0, ..., 0], obs[0, ..., 1], obs[0, ..., 2]],
+        axis=0,
+    )
+    new_frames = obs[..., -1]
+    return np.ascontiguousarray(init_stack), np.ascontiguousarray(new_frames)
+
+
 def nbytes(rec: EpisodeSequence) -> int:
     """Return exact bytes for the stored frame representation and arrays."""
 
@@ -232,6 +251,7 @@ __all__ = [
     "VALID_STATUSES",
     "compress",
     "decompress",
+    "frames_from_obs",
     "make_record",
     "nbytes",
     "reconstruct_obs",
