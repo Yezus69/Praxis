@@ -14,3 +14,9 @@ dependencies = ["numpy", "flax", "optax", "matplotlib", "pytest"]
 
 [tool.setuptools.packages.find]
 include = ["pmac*", "tfns*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: integration tests that run recurrent PPO training loops",
+    "xfail: expected failures that remain as diagnostics",
+]
