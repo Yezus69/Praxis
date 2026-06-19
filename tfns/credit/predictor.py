@@ -16,6 +16,7 @@ each rollout block before using its outputs for priorities or shaping.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from functools import lru_cache, partial
 from typing import Any
 
 import flax.linen as nn
@@ -121,8 +122,47 @@ class ReturnPredictor(nn.Module):
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
         """Apply the predictor with an explicit params tree."""
 
-        variables = params if "params" in params else {"params": params}
-        return self.apply(variables, feat_seq, act_seq, rew_seq, reset_seq, h0)
+        return _apply_predictor(self, params, feat_seq, act_seq, rew_seq, reset_seq, h0)
+
+
+def _apply_predictor(
+    model: ReturnPredictor,
+    params: Mapping[str, Any],
+    feat_seq: jnp.ndarray,
+    act_seq: jnp.ndarray,
+    rew_seq: jnp.ndarray,
+    reset_seq: jnp.ndarray,
+    h0: jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    variables = params if "params" in params else {"params": params}
+    return model.apply(variables, feat_seq, act_seq, rew_seq, reset_seq, h0)
+
+
+@partial(jax.jit, static_argnames=("model",))
+def _unroll_jit(
+    model: ReturnPredictor,
+    params: Mapping[str, Any],
+    feat_seq: jnp.ndarray,
+    act_seq: jnp.ndarray,
+    rew_seq: jnp.ndarray,
+    reset_seq: jnp.ndarray,
+    h0: jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    return _apply_predictor(model, params, feat_seq, act_seq, rew_seq, reset_seq, h0)
+
+
+def unroll(
+    model: ReturnPredictor,
+    params: Mapping[str, Any],
+    feat_seq: jnp.ndarray,
+    act_seq: jnp.ndarray,
+    rew_seq: jnp.ndarray,
+    reset_seq: jnp.ndarray,
+    h0: jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Jitted predictor unroll with the module held static."""
+
+    return _unroll_jit(model, params, feat_seq, act_seq, rew_seq, reset_seq, h0)
 
 
 def discounted_returns(
@@ -220,18 +260,9 @@ def _h0_from_batch(model: ReturnPredictor, batch: Mapping[str, Any], feat_seq: j
     return model.init_hidden(tuple(feat_seq.shape[1:-1]), dtype=jnp.float32)
 
 
-def predictor_loss(params: Mapping[str, Any], batch: Mapping[str, Any]) -> tuple[jnp.ndarray, dict[str, Any]]:
-    """Return predictor MSE loss and diagnostics.
+def _canonical_batch(model: ReturnPredictor, batch: Mapping[str, Any]) -> dict[str, jnp.ndarray]:
+    """Return an array-only predictor batch suitable for jitted calls."""
 
-    Batch fields are time-major. Accepted aliases are:
-    ``features``/``feat_seq``, ``actions``/``act_seq``, ``rewards``/``rew_seq``,
-    ``resets``/``reset_seq``, and optional ``episode_end_mask``/``dones``.
-    The optional ``model`` field supplies the exact ``ReturnPredictor``
-    instance; otherwise a default predictor config is constructed from batch
-    metadata.
-    """
-
-    model = _model_from_batch(batch)
     feat_seq = jax.lax.stop_gradient(
         jnp.asarray(_field(batch, "features", "feat_seq"), dtype=jnp.float32)
     )
@@ -248,10 +279,39 @@ def predictor_loss(params: Mapping[str, Any], batch: Mapping[str, Any]) -> tuple
         "terminals",
         default=None,
     )
-    gamma = float(_field(batch, "gamma", default=0.99))
+    if episode_end_mask is None:
+        episode_end_mask = jnp.zeros_like(rew_seq, dtype=bool)
+    else:
+        episode_end_mask = jnp.broadcast_to(
+            jnp.asarray(episode_end_mask, dtype=bool),
+            rew_seq.shape,
+        )
     h0 = _h0_from_batch(model, batch, feat_seq)
+    return {
+        "features": feat_seq,
+        "actions": act_seq,
+        "rewards": rew_seq,
+        "resets": reset_seq,
+        "episode_end_mask": episode_end_mask,
+        "gamma": jnp.asarray(_field(batch, "gamma", default=0.99), dtype=jnp.float32),
+        "h0": h0,
+    }
 
-    F_seq, Phi_seq = model.unroll(params, feat_seq, act_seq, rew_seq, reset_seq, h0)
+
+def _predictor_loss_impl(
+    model: ReturnPredictor,
+    params: Mapping[str, Any],
+    batch: Mapping[str, jnp.ndarray],
+) -> tuple[jnp.ndarray, dict[str, Any]]:
+    feat_seq = jax.lax.stop_gradient(jnp.asarray(batch["features"], dtype=jnp.float32))
+    act_seq = jnp.asarray(batch["actions"], dtype=jnp.int32)
+    rew_seq = jnp.asarray(batch["rewards"], dtype=jnp.float32)
+    reset_seq = jnp.asarray(batch["resets"], dtype=bool)
+    episode_end_mask = jnp.asarray(batch["episode_end_mask"], dtype=bool)
+    gamma = jnp.asarray(batch["gamma"], dtype=jnp.float32)
+    h0 = jnp.asarray(batch["h0"], dtype=jnp.float32)
+
+    F_seq, Phi_seq = _apply_predictor(model, params, feat_seq, act_seq, rew_seq, reset_seq, h0)
     G0, remaining = discounted_returns(rew_seq, gamma, episode_end_mask)
     G0_for_F = jnp.concatenate([G0, G0[-1:]], axis=0)
 
@@ -272,11 +332,61 @@ def predictor_loss(params: Mapping[str, Any], batch: Mapping[str, Any]) -> tuple
     return loss, aux
 
 
+@partial(jax.jit, static_argnames=("model",))
+def _predictor_loss_jit(
+    model: ReturnPredictor,
+    params: Mapping[str, Any],
+    batch: Mapping[str, jnp.ndarray],
+) -> tuple[jnp.ndarray, dict[str, Any]]:
+    return _predictor_loss_impl(model, params, batch)
+
+
+def predictor_loss(params: Mapping[str, Any], batch: Mapping[str, Any]) -> tuple[jnp.ndarray, dict[str, Any]]:
+    """Return predictor MSE loss and diagnostics.
+
+    Batch fields are time-major. Accepted aliases are:
+    ``features``/``feat_seq``, ``actions``/``act_seq``, ``rewards``/``rew_seq``,
+    ``resets``/``reset_seq``, and optional ``episode_end_mask``/``dones``.
+    The optional ``model`` field supplies the exact ``ReturnPredictor``
+    instance; otherwise a default predictor config is constructed from batch
+    metadata.
+
+    This compatibility entry point may be used directly by tests and dispatches
+    to a jitted wrapper. Hot training and validation paths call
+    ``_predictor_loss_impl`` from their own jitted wrappers.
+    """
+
+    model = _model_from_batch(batch)
+    return _predictor_loss_jit(model, params, _canonical_batch(model, batch))
+
+
 def make_predictor_optimizer(cfg: Any = None) -> optax.GradientTransformation:
     """Create the predictor's own Adam optimizer, separate from PPO/policy."""
 
     learning_rate = float(_cfg_value(cfg, "predictor_lr", "learning_rate", "lr", default=1e-3))
+    return _adam_optimizer(learning_rate)
+
+
+@lru_cache(maxsize=None)
+def _adam_optimizer(learning_rate: float) -> optax.GradientTransformation:
     return optax.adam(learning_rate=learning_rate)
+
+
+@partial(jax.jit, static_argnames=("model", "tx"))
+def _train_step_jit(
+    model: ReturnPredictor,
+    tx: optax.GradientTransformation,
+    params: Mapping[str, Any],
+    opt_state: optax.OptState,
+    batch: Mapping[str, jnp.ndarray],
+) -> tuple[Mapping[str, Any], optax.OptState, dict[str, Any]]:
+    def loss_fn(p):
+        return _predictor_loss_impl(model, p, batch)
+
+    (loss, aux), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
+    updates, opt_state = tx.update(grads, opt_state, params)
+    params = optax.apply_updates(params, updates)
+    return params, opt_state, {**aux, "loss": loss}
 
 
 def train_step(
@@ -287,23 +397,26 @@ def train_step(
 ) -> tuple[Mapping[str, Any], optax.OptState, dict[str, Any]]:
     """Apply one predictor-only Adam step."""
 
-    def loss_fn(p):
-        return predictor_loss(p, batch)
+    model = _model_from_batch(batch)
+    return _train_step_jit(model, tx, params, opt_state, _canonical_batch(model, batch))
 
-    (loss, aux), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
-    updates, opt_state = tx.update(grads, opt_state, params)
-    params = optax.apply_updates(params, updates)
-    aux = dict(aux)
-    aux["loss"] = loss
-    return params, opt_state, aux
+
+@partial(jax.jit, static_argnames=("model",))
+def _validate_jit(
+    model: ReturnPredictor,
+    params: Mapping[str, Any],
+    val_batch: Mapping[str, jnp.ndarray],
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    _, aux = _predictor_loss_impl(model, params, val_batch)
+    G0 = jax.lax.stop_gradient(jnp.asarray(aux["G0"], dtype=jnp.float32))
+    return aux["mse_F"], jnp.var(G0)
 
 
 def validate(params: Mapping[str, Any], val_batch: Mapping[str, Any]) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Return held-out ``F`` MSE and constant-return baseline ``Var(G0)``."""
 
-    _, aux = predictor_loss(params, val_batch)
-    G0 = jax.lax.stop_gradient(jnp.asarray(aux["G0"], dtype=jnp.float32))
-    return aux["mse_F"], jnp.var(G0)
+    model = _model_from_batch(val_batch)
+    return _validate_jit(model, params, _canonical_batch(model, val_batch))
 
 
 __all__ = [
@@ -312,5 +425,6 @@ __all__ = [
     "make_predictor_optimizer",
     "predictor_loss",
     "train_step",
+    "unroll",
     "validate",
 ]

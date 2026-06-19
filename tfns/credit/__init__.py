@@ -14,6 +14,7 @@ from tfns.credit.predictor import (
     make_predictor_optimizer,
     predictor_loss,
     train_step,
+    unroll,
     validate,
 )
 
@@ -29,5 +30,6 @@ __all__ = [
     "shaping_eta",
     "telescoping_residual",
     "train_step",
+    "unroll",
     "validate",
 ]

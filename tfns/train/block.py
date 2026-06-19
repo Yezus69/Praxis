@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import dataclasses
 from collections.abc import Mapping, Sequence
-from functools import partial
+from functools import lru_cache, partial
 from typing import Any
 
 from flax import struct
@@ -26,6 +26,7 @@ from tfns.credit import (
     shaping_enabled,
     shaping_eta,
     train_step as predictor_train_step,
+    unroll as predictor_unroll,
     validate,
 )
 from tfns.detect import PageHinkleyDetector, signature_window
@@ -49,6 +50,7 @@ from tfns.ppo import (
     reconstruct_hidden,
     total_ppo_objective,
 )
+from tfns.model.encoder import Encoder
 from tfns.ppo.rollout import categorical_entropy
 from tfns.protect.optimizer import optimizer_safe_step
 from tfns.protect.projection import build_protected_modules
@@ -307,6 +309,11 @@ def _pad_keys(keys: Any) -> np.ndarray:
     return (arr / np.maximum(norm, _EPS)).astype(np.float32)
 
 
+@lru_cache(maxsize=None)
+def _return_predictor(act_dim: int) -> ReturnPredictor:
+    return ReturnPredictor(act_dim=int(act_dim))
+
+
 def _predictor_batch(
     model: ReturnPredictor,
     features: Any,
@@ -342,19 +349,63 @@ def _rollout_outputs(agent: Any, params: Any, rollout: Any, adapter_dormant: Any
     return outputs
 
 
-def _rollout_features(agent: Any, params: Any, ema_params: Any, rollout: Any, adapter_dormant: Any) -> Any:
-    ema_encoder = _encoder_params(ema_params) if ema_params is not None else None
+@partial(jax.jit, static_argnames=("agent",))
+def _rollout_encoder_features(agent: Any, params: Any, obs_seq: Any) -> jnp.ndarray:
+    cfg = agent.model_config
+    encoder = Encoder(
+        dense_dim=int(cfg.dense_dim),
+        activation=str(cfg.activation),
+        frame_stack=int(cfg.frame_stack),
+        obs_hw=int(cfg.obs_hw),
+        conv_channels=tuple(cfg.conv_channels),
+        conv_kernels=tuple(cfg.conv_kernels),
+        conv_strides=tuple(cfg.conv_strides),
+    )
+    obs_seq = jnp.asarray(obs_seq)
+    flat_obs = obs_seq.reshape((-1,) + tuple(obs_seq.shape[2:]))
+    flat_features = encoder.apply({"params": _encoder_params(params)}, flat_obs)
+    features = flat_features.reshape(obs_seq.shape[:2] + flat_features.shape[1:])
+    return jax.lax.stop_gradient(features)
+
+
+@partial(jax.jit, static_argnames=("agent",))
+def _rollout_q_key_features(
+    agent: Any,
+    params: Any,
+    obs_seq: Any,
+    prev_action: Any,
+    prev_reward_clipped: Any,
+    reset_seq: Any,
+    h0: Any,
+    adapter_dormant: Any,
+) -> jnp.ndarray:
     outputs, _ = agent.unroll(
         params,
-        jnp.asarray(rollout.obs),
-        jnp.asarray(rollout.prev_action, dtype=jnp.int32),
-        jnp.asarray(rollout.prev_reward_clipped, dtype=jnp.float32),
-        jnp.asarray(rollout.reset_mask, dtype=bool),
-        jnp.asarray(rollout.h0, dtype=jnp.float32),
+        jnp.asarray(obs_seq),
+        jnp.asarray(prev_action, dtype=jnp.int32),
+        jnp.asarray(prev_reward_clipped, dtype=jnp.float32),
+        jnp.asarray(reset_seq, dtype=bool),
+        jnp.asarray(h0, dtype=jnp.float32),
         adapter_dormant=adapter_dormant,
-        ema_encoder_params=ema_encoder,
     )
-    return outputs.ema_features if outputs.ema_features is not None else outputs.q_key
+    return jax.lax.stop_gradient(outputs.q_key)
+
+
+def _rollout_features(agent: Any, params: Any, ema_params: Any, rollout: Any, adapter_dormant: Any) -> Any:
+    if ema_params is not None:
+        return _rollout_encoder_features(agent, ema_params, rollout.obs)
+    if adapter_dormant is None:
+        adapter_dormant = jnp.ones((int(agent.adapter_config.num_adapters),), dtype=bool)
+    return _rollout_q_key_features(
+        agent,
+        params,
+        rollout.obs,
+        rollout.prev_action,
+        rollout.prev_reward_clipped,
+        rollout.reset_mask,
+        rollout.h0,
+        adapter_dormant,
+    )
 
 
 def _td_residual(rollout: Any, reward: Any, cfg: Any) -> jnp.ndarray:
@@ -900,7 +951,7 @@ def train_block(
         state.rng = rollout_info["rng"]
 
     features = _rollout_features(agent, state.params, state.ema_params, rollout, state.adapter_dormant)
-    predictor = ReturnPredictor(act_dim=int(agent.model_config.act_dim))
+    predictor = _return_predictor(int(agent.model_config.act_dim))
     predictor_tx = make_predictor_optimizer(credit_cfg)
     if state.predictor_params is None:
         init_batch = _predictor_batch(predictor, features, rollout, cfg)
@@ -936,7 +987,8 @@ def train_block(
     _append_predictor_history(state, mse_val, var_g)
 
     full_pred_batch = _predictor_batch(predictor, features, rollout, cfg)
-    F_seq, Phi_seq = predictor.unroll(
+    F_seq, Phi_seq = predictor_unroll(
+        predictor,
         frozen_predictor_params,
         full_pred_batch["features"],
         full_pred_batch["actions"],
