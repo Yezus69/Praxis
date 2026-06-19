@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import math
+import dataclasses
 from collections.abc import Mapping, Sequence
+from functools import partial
 from typing import Any
 
+from flax import struct
 import jax
 import jax.numpy as jnp
 import numpy as np
 
 from tfns.behavior import behavior_components, behavior_distance, combined_tol, tube_loss
-from tfns.config import CreditConfig, DetectConfig, PPOConfig, ReplayConfig, TFNSConfig
+from tfns.config import AuxConfig, CreditConfig, DetectConfig, PPOConfig, ReplayConfig, TFNSConfig
 from tfns.consolidate.state import ContinualState, ema_update
 from tfns.credit import (
     ReturnPredictor,
@@ -26,7 +29,16 @@ from tfns.credit import (
     validate,
 )
 from tfns.detect import PageHinkleyDetector, signature_window
-from tfns.memory.record import ACT_DIM, KEY_DIM, EpisodeSequence, frames_from_obs, make_record, seq_len
+from tfns.memory.record import (
+    ACT_DIM,
+    FRAME_STACK,
+    KEY_DIM,
+    OBS_HW,
+    EpisodeSequence,
+    frames_from_obs,
+    make_record,
+    seq_len,
+)
 from tfns.memory.sampling import cluster_probs, cluster_risk, replay_transition_count, sample_sequences
 from tfns.ppo import (
     RolloutCarry,
@@ -41,10 +53,70 @@ from tfns.protect.optimizer import optimizer_safe_step
 from tfns.protect.projection import build_protected_modules
 from tfns.protect.sentinel import make_sentinel_acceptor
 from tfns.protect.constraints import make_constraint_fn
-from tfns.utils import tree_global_norm
 
 _EPS = 1.0e-8
 _MISSING = object()
+
+
+@dataclasses.dataclass(frozen=True)
+class _JitPPOConfig:
+    clip_coef: float
+    vf_clip: float
+    ent_coef: float
+    vf_coef: float
+
+
+@dataclasses.dataclass(frozen=True)
+class _JitAuxConfig:
+    aux_coef: float
+    next_feat_coef: float
+    reward_cat_coef: float
+    terminal_coef: float
+
+
+@dataclasses.dataclass(frozen=True)
+class _JitReplayConfig:
+    seq_len: int
+    burn_in: int
+    batch_size: int
+
+
+@dataclasses.dataclass(frozen=True)
+class _JitBehaviorConfig:
+    teacher_temp: float
+    kl_tol: float
+    value_tol: float
+    key_cos_tol: float
+    lambda_v: float
+    lambda_q: float
+    tail_frac: float
+
+
+@dataclasses.dataclass(frozen=True)
+class _JitTrainConfig:
+    ppo: _JitPPOConfig
+    aux: _JitAuxConfig
+    replay: _JitReplayConfig
+    behavior: _JitBehaviorConfig
+    replay_coef: float
+
+
+@struct.dataclass
+class ReplayBatch:
+    """Fixed-shape replay batch consumed by the jitted replay tube loss."""
+
+    obs: Any
+    prev_action: Any
+    prev_reward: Any
+    prev_reward_clipped: Any
+    reset_mask: Any
+    actions: Any
+    teacher_logits: Any
+    teacher_value: Any
+    key_anchor: Any
+    burn_in: Any
+    valid: Any
+    seq_weight: Any
 
 
 def _cfg_section(cfg: Any, name: str, default: Any) -> Any:
@@ -61,6 +133,72 @@ def _cfg_value(obj: Any, name: str, default: Any) -> Any:
     if isinstance(obj, Mapping):
         return obj.get(name, default)
     return getattr(obj, name, default)
+
+
+def _cfg_optional_int(obj: Any, name: str) -> int | None:
+    value = _cfg_value(obj, name, None)
+    if value is None:
+        return None
+    return int(value)
+
+
+def _fixed_replay_batch_size(cfg: Any, on_policy_count: int | None = None) -> int:
+    replay_cfg = _cfg_section(cfg, "replay", ReplayConfig())
+    configured = _cfg_optional_int(replay_cfg, "batch_size")
+    if configured is not None:
+        return max(1, configured)
+
+    if on_policy_count is None:
+        ppo_cfg = _cfg_section(cfg, "ppo", PPOConfig())
+        rollout_len = int(_cfg_value(ppo_cfg, "rollout_len", PPOConfig.rollout_len))
+        num_envs = int(_cfg_value(ppo_cfg, "num_envs", PPOConfig.num_envs))
+        on_policy_count = rollout_len * num_envs
+
+    seq = max(1, int(_cfg_value(replay_cfg, "seq_len", ReplayConfig.seq_len)))
+    return max(1, int(math.ceil(max(1, int(on_policy_count)) / seq)))
+
+
+def _make_jit_train_config(cfg: Any, replay_batch_size: int) -> _JitTrainConfig:
+    ppo_cfg = _cfg_section(cfg, "ppo", PPOConfig())
+    aux_cfg = _cfg_section(cfg, "aux", AuxConfig())
+    replay_cfg = _cfg_section(cfg, "replay", ReplayConfig())
+    behavior_cfg = _cfg_section(cfg, "behavior", None)
+    replay_coef = float(
+        _cfg_value(
+            cfg,
+            "replay_coef",
+            _cfg_value(replay_cfg, "replay_coef", 1.0),
+        )
+    )
+    return _JitTrainConfig(
+        ppo=_JitPPOConfig(
+            clip_coef=float(_cfg_value(ppo_cfg, "clip_coef", PPOConfig.clip_coef)),
+            vf_clip=float(_cfg_value(ppo_cfg, "vf_clip", PPOConfig.vf_clip)),
+            ent_coef=float(_cfg_value(ppo_cfg, "ent_coef", PPOConfig.ent_coef)),
+            vf_coef=float(_cfg_value(ppo_cfg, "vf_coef", PPOConfig.vf_coef)),
+        ),
+        aux=_JitAuxConfig(
+            aux_coef=float(_cfg_value(aux_cfg, "aux_coef", AuxConfig.aux_coef)),
+            next_feat_coef=float(_cfg_value(aux_cfg, "next_feat_coef", AuxConfig.next_feat_coef)),
+            reward_cat_coef=float(_cfg_value(aux_cfg, "reward_cat_coef", AuxConfig.reward_cat_coef)),
+            terminal_coef=float(_cfg_value(aux_cfg, "terminal_coef", AuxConfig.terminal_coef)),
+        ),
+        replay=_JitReplayConfig(
+            seq_len=int(_cfg_value(replay_cfg, "seq_len", ReplayConfig.seq_len)),
+            burn_in=int(_cfg_value(replay_cfg, "burn_in", ReplayConfig.burn_in)),
+            batch_size=int(replay_batch_size),
+        ),
+        behavior=_JitBehaviorConfig(
+            teacher_temp=float(_cfg_value(behavior_cfg, "teacher_temp", 1.0)),
+            kl_tol=float(_cfg_value(behavior_cfg, "kl_tol", 0.01)),
+            value_tol=float(_cfg_value(behavior_cfg, "value_tol", 0.1)),
+            key_cos_tol=float(_cfg_value(behavior_cfg, "key_cos_tol", 0.02)),
+            lambda_v=float(_cfg_value(behavior_cfg, "lambda_v", 1.0)),
+            lambda_q=float(_cfg_value(behavior_cfg, "lambda_q", 1.0)),
+            tail_frac=float(_cfg_value(behavior_cfg, "tail_frac", 0.10)),
+        ),
+        replay_coef=replay_coef,
+    )
 
 
 def _get(obj: Any, *names: str, default: Any = _MISSING) -> Any:
@@ -236,10 +374,6 @@ def _cluster_risks(memory: Any, cfg: Any, robust_stats: Mapping[str, Any] | None
     return {int(cid): cluster_risk({}, cfg) + float(stored.get(int(cid), 0.0)) for cid in clusters}
 
 
-def _tree_add(a: Any, b: Any, scale: float) -> Any:
-    return jax.tree_util.tree_map(lambda x, y: x + float(scale) * y, a, b)
-
-
 def _record_inputs(rec: EpisodeSequence, total: int) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     obs = reconstruct_record_obs(rec, total)
     return (
@@ -371,6 +505,202 @@ def _cluster_tube_loss(
         cfg,
         weight=float(_get(cluster, "risk_weight", "seq_importance", default=1.0)),
     )
+
+
+def stack_replay_batch(
+    records: Sequence[EpisodeSequence],
+    cfg: Any,
+    *,
+    batch_size: int | None = None,
+) -> ReplayBatch:
+    """Return a fixed ``(R, L, ...)`` replay pytree for jitted replay loss.
+
+    ``R`` is the configured replay batch size and ``L`` is ``replay.seq_len``.
+    Short records and unused slots are padded with zeros and ``valid=False``.
+    """
+
+    replay_cfg = _cfg_section(cfg, "replay", ReplayConfig())
+    length = max(1, int(_cfg_value(replay_cfg, "seq_len", ReplayConfig.seq_len)))
+    rows = int(batch_size) if batch_size is not None else _fixed_replay_batch_size(cfg)
+    rows = max(1, rows)
+
+    obs = np.zeros((rows, length, OBS_HW, OBS_HW, FRAME_STACK), dtype=np.uint8)
+    prev_action = np.zeros((rows, length), dtype=np.int32)
+    prev_reward = np.zeros((rows, length), dtype=np.float32)
+    reset = np.zeros((rows, length), dtype=np.bool_)
+    actions = np.zeros((rows, length), dtype=np.int32)
+    teacher_logits = np.zeros((rows, length, ACT_DIM), dtype=np.float32)
+    teacher_value = np.zeros((rows, length), dtype=np.float32)
+    key_anchor = np.zeros((rows, length, KEY_DIM), dtype=np.float32)
+    burn_in = np.zeros((rows,), dtype=np.int32)
+    valid = np.zeros((rows, length), dtype=np.bool_)
+    seq_weight = np.ones((rows,), dtype=np.float32)
+
+    burn_default = int(_cfg_value(replay_cfg, "burn_in", ReplayConfig.burn_in))
+    for row, rec in enumerate(list(records)[:rows]):
+        if not isinstance(rec, EpisodeSequence):
+            raise TypeError("stack_replay_batch expects EpisodeSequence records")
+        total = min(length, seq_len(rec))
+        rec_burn = min(max(0, burn_default), total)
+        burn_in[row] = rec_burn
+        if total <= 0:
+            continue
+
+        rec_obs = np.asarray(jax.device_get(reconstruct_record_obs(rec, total)), dtype=np.uint8)
+        obs[row, :total] = rec_obs
+        prev_action[row, :total] = np.asarray(rec.actions[:total], dtype=np.int32)
+        actions[row, :total] = np.asarray(rec.actions[:total], dtype=np.int32)
+        prev_reward[row, :total] = np.asarray(rec.rewards_clipped[:total], dtype=np.float32)
+        reset[row, :total] = np.asarray(rec.reset_mask[:total], dtype=np.bool_)
+        teacher_logits[row, :total] = np.asarray(rec.teacher_logits[:total], dtype=np.float32)
+        teacher_value[row, :total] = np.asarray(rec.teacher_value[:total], dtype=np.float32)
+        key_anchor[row, :total] = np.asarray(rec.key_anchor[:total], dtype=np.float32)
+        valid[row, :total] = True
+        seq_weight[row] = max(1.0, float(rec.seq_importance))
+
+    prev_reward_arr = jnp.asarray(prev_reward, dtype=jnp.float32)
+    return ReplayBatch(
+        obs=jnp.asarray(obs, dtype=jnp.uint8),
+        prev_action=jnp.asarray(prev_action, dtype=jnp.int32),
+        prev_reward=prev_reward_arr,
+        prev_reward_clipped=prev_reward_arr,
+        reset_mask=jnp.asarray(reset, dtype=bool),
+        actions=jnp.asarray(actions, dtype=jnp.int32),
+        teacher_logits=jnp.asarray(teacher_logits, dtype=jnp.float32),
+        teacher_value=jnp.asarray(teacher_value, dtype=jnp.float32),
+        key_anchor=jnp.asarray(key_anchor, dtype=jnp.float32),
+        burn_in=jnp.asarray(burn_in, dtype=jnp.int32),
+        valid=jnp.asarray(valid, dtype=bool),
+        seq_weight=jnp.asarray(seq_weight, dtype=jnp.float32),
+    )
+
+
+def _replay_batch_tube(
+    outputs: Any,
+    replay_batch: ReplayBatch,
+    cfg: Any,
+    burn_in: int,
+) -> dict[str, jnp.ndarray]:
+    behavior_cfg = _cfg_section(cfg, "behavior", None)
+    teacher_logits = jnp.swapaxes(replay_batch.teacher_logits[:, burn_in:], 0, 1)
+    teacher_value = jnp.swapaxes(replay_batch.teacher_value[:, burn_in:], 0, 1)
+    teacher_key = jnp.swapaxes(replay_batch.key_anchor[:, burn_in:], 0, 1)
+    comps = behavior_components(
+        _match_last_dim(teacher_logits, outputs.logits.shape[-1]),
+        jnp.asarray(teacher_value, dtype=jnp.float32),
+        _match_last_dim(teacher_key, outputs.q_key.shape[-1]),
+        outputs.logits,
+        outputs.value,
+        outputs.q_key,
+        temp=float(_cfg_value(behavior_cfg, "teacher_temp", 1.0)),
+    )
+    dist = behavior_distance(
+        comps,
+        lambda_v=float(_cfg_value(behavior_cfg, "lambda_v", 1.0)),
+        lambda_q=float(_cfg_value(behavior_cfg, "lambda_q", 1.0)),
+    )
+    viol = jnp.square(
+        jnp.maximum(dist - jnp.asarray(combined_tol(behavior_cfg), dtype=jnp.float32), 0.0)
+    )
+    viol = jnp.swapaxes(viol, 0, 1)
+    protected_valid = replay_batch.valid[:, burn_in:].astype(jnp.float32)
+    record_count = jnp.sum(protected_valid, axis=1)
+    record_active = record_count > 0.0
+    safe_count = jnp.maximum(record_count, 1.0)
+
+    weighted = replay_batch.seq_weight[:, None] * viol * protected_valid
+    mean_by_record = jnp.sum(weighted, axis=1) / safe_count
+
+    masked_viol = jnp.where(protected_valid > 0.0, viol, 0.0)
+    sorted_viol = jnp.flip(jnp.sort(masked_viol, axis=1), axis=1)
+    tail_frac = float(_cfg_value(behavior_cfg, "tail_frac", 0.10))
+    count_int = record_count.astype(jnp.int32)
+    k = jnp.maximum(1, jnp.ceil(record_count * tail_frac).astype(jnp.int32))
+    k = jnp.minimum(jnp.maximum(count_int, 1), k)
+    positions = jnp.arange(sorted_viol.shape[1], dtype=jnp.int32)[None, :]
+    tail_mask = (positions < k[:, None]).astype(jnp.float32)
+    tail_by_record = jnp.sum(sorted_viol * tail_mask, axis=1) / k.astype(jnp.float32)
+
+    active = record_active.astype(jnp.float32)
+    denom = jnp.maximum(jnp.sum(active), 1.0)
+    mean = jnp.sum(jnp.where(record_active, mean_by_record, 0.0)) / denom
+    tail = jnp.sum(jnp.where(record_active, tail_by_record, 0.0)) / denom
+    total_by_record = mean_by_record + tail_by_record
+    total = jnp.sum(jnp.where(record_active, total_by_record, 0.0)) / denom
+    return {
+        "mean": mean.astype(jnp.float32),
+        "tail": tail.astype(jnp.float32),
+        "total": total.astype(jnp.float32),
+    }
+
+
+def replay_tube_loss_batched(
+    params: Any,
+    agent: Any,
+    replay_batch: ReplayBatch,
+    cfg: Any,
+) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
+    """Return behavior-tube replay loss for a fixed-shape replay batch."""
+
+    replay_cfg = _cfg_section(cfg, "replay", ReplayConfig())
+    length = int(replay_batch.obs.shape[1])
+    burn_in = min(max(0, int(_cfg_value(replay_cfg, "burn_in", ReplayConfig.burn_in))), length)
+    if burn_in >= length:
+        zero = jnp.asarray(0.0, dtype=jnp.float32)
+        return zero, {"mean": zero, "tail": zero, "total": zero}
+
+    obs = jnp.swapaxes(replay_batch.obs, 0, 1)
+    actions = jnp.swapaxes(replay_batch.prev_action, 0, 1)
+    rewards = jnp.swapaxes(replay_batch.prev_reward_clipped, 0, 1)
+    resets = jnp.swapaxes(replay_batch.reset_mask, 0, 1)
+    if burn_in > 0:
+        h0 = reconstruct_hidden(
+            agent,
+            params,
+            obs[:burn_in],
+            actions[:burn_in],
+            rewards[:burn_in],
+            resets[:burn_in],
+        )
+    else:
+        h0 = agent.init_hidden(int(replay_batch.obs.shape[0]), dtype=jnp.float32)
+    outputs, _ = agent.unroll(
+        params,
+        obs[burn_in:],
+        actions[burn_in:],
+        rewards[burn_in:],
+        resets[burn_in:],
+        h0,
+    )
+    losses = _replay_batch_tube(outputs, replay_batch, cfg, burn_in)
+    return losses["total"], losses
+
+
+@partial(jax.jit, static_argnames=("cfg", "agent"))
+def _grad_step(
+    params: Any,
+    ema_params: Any,
+    mb: Any,
+    replay_batch: ReplayBatch,
+    cfg: _JitTrainConfig,
+    agent: Any,
+) -> tuple[jnp.ndarray, dict[str, jnp.ndarray], Any]:
+    def loss_fn(p):
+        ppo, ppo_aux = total_ppo_objective(p, agent, mb, ema_params, cfg)
+        tube, tube_aux = replay_tube_loss_batched(p, agent, replay_batch, cfg)
+        loss = ppo + float(cfg.replay_coef) * tube
+        aux = {
+            **ppo_aux,
+            "ppo_loss": ppo.astype(jnp.float32),
+            "replay_loss": tube.astype(jnp.float32),
+            "replay_tube_mean": tube_aux["mean"],
+            "replay_tube_tail": tube_aux["tail"],
+            "replay_tube_total": tube_aux["total"],
+        }
+        return loss.astype(jnp.float32), aux
+
+    (loss, aux), grad = jax.value_and_grad(loss_fn, has_aux=True)(params)
+    return loss.astype(jnp.float32), aux, grad
 
 
 def replay_tube_loss(
@@ -648,7 +978,6 @@ def train_block(
         "max_update_norm",
         _cfg_value(ppo_cfg, "max_grad_norm", PPOConfig.max_grad_norm),
     )
-    replay_coef = float(_cfg_value(cfg, "replay_coef", _cfg_value(_cfg_section(cfg, "replay", None), "replay_coef", 1.0)))
     backtrack_scales = tuple(_cfg_value(protect_cfg, "backtrack_scales", (1.0, 0.5, 0.25, 0.125, 0.0625, 0.03125)))
 
     telemetry_lists: dict[str, list[float]] = {
@@ -661,8 +990,6 @@ def train_block(
         "replay_tube_mean": [],
         "replay_tube_tail": [],
         "replay_tube_total": [],
-        "ppo_grad_norm": [],
-        "replay_grad_norm": [],
         "raw_grad_norm": [],
         "candidate_delta_norm": [],
         "projected_delta_norm": [],
@@ -677,11 +1004,15 @@ def train_block(
     seq_chunk = int(_cfg_value(ppo_cfg, "seq_chunk", PPOConfig.seq_chunk))
     minibatch_size = _cfg_value(ppo_cfg, "minibatch_size", None)
     on_policy_count = int(np.prod(np.asarray(rollout.action.shape)))
+    replay_batch_size = _fixed_replay_batch_size(cfg, on_policy_count)
+    jit_cfg = _make_jit_train_config(cfg, replay_batch_size)
+    replay_coef = float(jit_cfg.replay_coef)
     risks = _cluster_risks(state.memory, cfg, state.robust_stats)
     probs = cluster_probs(risks) if risks else None
     max_risk = max(risks.values()) if risks else 0.0
     replay_count = replay_transition_count(on_policy_count, max_risk, cfg)
     replay_records_per_update = max(0, int(math.ceil(replay_count / max(1, int(_cfg_value(_cfg_section(cfg, "replay", ReplayConfig()), "seq_len", ReplayConfig.seq_len))))))
+    replay_records_per_update = min(replay_records_per_update, replay_batch_size)
 
     for epoch in range(epochs):
         state.rng, (epoch_key,) = _split_rng(state.rng, 1)
@@ -698,16 +1029,15 @@ def train_block(
         for mb in mb_iter:
             replay_seed = _np_seed(jax.random.fold_in(replay_key, update_index))
             replay_records = sample_sequences(state.memory, replay_seed, replay_records_per_update, probs)
-
-            def ppo_only(p):
-                return total_ppo_objective(p, agent, mb, state.ema_params, cfg)
-
-            def replay_only(p):
-                return replay_tube_loss(p, agent, replay_records, cfg)
-
-            (ppo_value, ppo_aux), ppo_grad = jax.value_and_grad(ppo_only, has_aux=True)(state.params)
-            (replay_value, replay_aux), replay_grad = jax.value_and_grad(replay_only, has_aux=True)(state.params)
-            grad = _tree_add(ppo_grad, replay_grad, replay_coef)
+            replay_batch = stack_replay_batch(replay_records, jit_cfg, batch_size=replay_batch_size)
+            loss_value, aux, grad = _grad_step(
+                state.params,
+                state.ema_params,
+                mb,
+                replay_batch,
+                jit_cfg,
+                agent,
+            )
 
             constraint_fn = None
             if constraints and update_index % constraint_cadence == 0:
@@ -745,14 +1075,12 @@ def train_block(
             else:
                 reject_count += 1
 
-            telemetry_lists["loss"].append(_as_float(ppo_value + replay_coef * replay_value))
+            telemetry_lists["loss"].append(_as_float(loss_value))
             for name in ("pg_loss", "v_loss", "entropy", "approx_kl", "aux_loss"):
-                telemetry_lists[name].append(_as_float(ppo_aux.get(name, 0.0)))
-            telemetry_lists["replay_tube_mean"].append(_as_float(replay_aux["mean"]))
-            telemetry_lists["replay_tube_tail"].append(_as_float(replay_aux["tail"]))
-            telemetry_lists["replay_tube_total"].append(_as_float(replay_aux["total"]))
-            telemetry_lists["ppo_grad_norm"].append(_as_float(tree_global_norm(ppo_grad)))
-            telemetry_lists["replay_grad_norm"].append(_as_float(tree_global_norm(replay_grad)))
+                telemetry_lists[name].append(_as_float(aux.get(name, 0.0)))
+            telemetry_lists["replay_tube_mean"].append(_as_float(aux["replay_tube_mean"]))
+            telemetry_lists["replay_tube_tail"].append(_as_float(aux["replay_tube_tail"]))
+            telemetry_lists["replay_tube_total"].append(_as_float(aux["replay_tube_total"]))
             for name in ("raw_grad_norm", "candidate_delta_norm", "projected_delta_norm", "applied_norm"):
                 telemetry_lists[name].append(_as_float(info[name]))
             telemetry_lists["backtrack_scales"].append(float(info["applied_scale"]))
@@ -812,6 +1140,9 @@ def train_block(
 
 
 __all__ = [
+    "ReplayBatch",
     "replay_tube_loss",
+    "replay_tube_loss_batched",
+    "stack_replay_batch",
     "train_block",
 ]

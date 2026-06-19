@@ -6,10 +6,12 @@ from tfns.consolidate.certify import (
     random_normalized_progress,
 )
 from tfns.consolidate.lifecycle import (
+    apply_rejection_feedback,
     build_sentinel_clusters,
     collect_protected_activations,
     consolidate,
     expand_protected_bases,
+    slow_replay,
 )
 from tfns.consolidate.plasticity import (
     activate_adapter,
@@ -30,6 +32,7 @@ __all__ = [
     "ContinualState",
     "Snapshot",
     "activate_adapter",
+    "apply_rejection_feedback",
     "build_sentinel_clusters",
     "closed_loop_gate",
     "collect_protected_activations",
@@ -43,5 +46,6 @@ __all__ = [
     "restore",
     "serialize",
     "should_activate_adapter",
+    "slow_replay",
     "snapshot",
 ]

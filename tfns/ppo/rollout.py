@@ -66,8 +66,8 @@ class SequenceMinibatch:
     """Sequence-major recurrent PPO minibatch.
 
     Per-step arrays have shape ``(B, L, ...)`` and ``h0_chunk`` has shape
-    ``(B, H)``. ``valid_mask`` is all true for current fixed-size chunks but is
-    consumed by losses so future padded sequence batches have the same surface.
+    ``(B, H)``. ``valid_mask`` marks real sequence rows; the final minibatch is
+    padded when needed so every yielded minibatch has the same ``B``.
     """
 
     obs: Any
@@ -372,7 +372,9 @@ def make_sequence_minibatches(
     """Yield shuffled contiguous recurrent sequence minibatches.
 
     The time axis is split into fixed contiguous chunks; each ``(chunk, env)``
-    pair remains intact as one sequence. If ``agent`` and ``params`` are
+    pair remains intact as one sequence. A trailing short minibatch is padded
+    to ``minibatch_size`` with ``valid_mask=False`` rows so jitted update steps
+    see one fixed sequence-count shape. If ``agent`` and ``params`` are
     supplied, chunk hidden states are recomputed once from ``rollout.h0`` over
     the full rollout. Otherwise they come from ``rollout.h0`` and the optional
     ``hidden_after`` cache collected under the same policy. Replay callers
@@ -450,7 +452,14 @@ def make_sequence_minibatches(
 
     permutation = np.asarray(jax.device_get(jax.random.permutation(rng, num_seq)), dtype=np.int64)
     for start in range(0, num_seq, minibatch_size):
-        idx = jnp.asarray(permutation[start : start + minibatch_size], dtype=jnp.int32)
+        raw_idx = permutation[start : start + minibatch_size]
+        row_valid_np = np.ones((int(raw_idx.shape[0]),), dtype=np.bool_)
+        if int(raw_idx.shape[0]) < minibatch_size:
+            pad = minibatch_size - int(raw_idx.shape[0])
+            raw_idx = np.concatenate([raw_idx, np.zeros((pad,), dtype=np.int64)], axis=0)
+            row_valid_np = np.concatenate([row_valid_np, np.zeros((pad,), dtype=np.bool_)], axis=0)
+        idx = jnp.asarray(raw_idx, dtype=jnp.int32)
+        row_valid = jnp.asarray(row_valid_np, dtype=bool)[:, None]
         yield SequenceMinibatch(
             obs=_take(fields["obs"], idx),
             prev_action=_take(fields["prev_action"], idx),
@@ -464,13 +473,13 @@ def make_sequence_minibatches(
             ppo_mask=_take(fields["ppo_mask"], idx),
             reset_mask=_take(fields["reset_mask"], idx),
             h0_chunk=_take(h0_seq, idx),
-            valid_mask=_take(valid_mask, idx),
+            valid_mask=jnp.logical_and(_take(valid_mask, idx), row_valid),
             next_obs=_take(fields["next_obs"], idx),
-            next_obs_mask=_take(fields["next_obs_mask"], idx),
+            next_obs_mask=jnp.logical_and(_take(fields["next_obs_mask"], idx), row_valid),
             true_terminal=_take(fields["true_terminal"], idx),
-            seq_id=_take(seq_id, idx),
-            chunk_start=_take(chunk_start, idx),
-            env_index=_take(env_index, idx),
+            seq_id=jnp.where(row_valid[:, 0], _take(seq_id, idx), -1),
+            chunk_start=jnp.where(row_valid[:, 0], _take(chunk_start, idx), -1),
+            env_index=jnp.where(row_valid[:, 0], _take(env_index, idx), -1),
         )
 
 

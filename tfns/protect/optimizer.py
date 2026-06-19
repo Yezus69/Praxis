@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from functools import partial
 from typing import Any
 
 import jax
@@ -14,6 +15,7 @@ from tfns.utils import tree_add_scaled, tree_global_norm
 
 
 _MISSING = object()
+_SAFE_CORE_CACHE: dict[tuple[int, tuple[Any, ...], float | None], Any] = {}
 
 
 def _is_namedtuple(value: Any) -> bool:
@@ -97,6 +99,85 @@ def _tree_mul(tree: Any, scale: Any) -> Any:
     return jax.tree_util.tree_map(lambda leaf: leaf * scale, tree)
 
 
+def _path_signature(path: Any) -> tuple[str, ...] | None:
+    if path is None:
+        return None
+    return tuple(path)
+
+
+def _gate_signature(gate_paths: Any) -> tuple[Any, ...] | None:
+    if gate_paths is None:
+        return None
+    return tuple(
+        (gate, tuple(paths[0]), tuple(paths[1]), tuple(paths[2]))
+        for gate, paths in sorted(gate_paths.items())
+    )
+
+
+def _modules_signature(modules: Mapping[str, ProtectedModule]) -> tuple[Any, ...]:
+    return tuple(
+        (
+            name,
+            module.kind,
+            int(module.d_aug),
+            _path_signature(module.kernel_path),
+            _path_signature(module.bias_path),
+            _gate_signature(module.gate_paths),
+            module.kh,
+            module.kw,
+            tuple(module.stride) if module.stride is not None else None,
+            module.c_in,
+        )
+        for name, module in sorted(modules.items())
+    )
+
+
+def _get_safe_core(
+    tx: optax.GradientTransformation,
+    modules: Mapping[str, ProtectedModule],
+    max_update_norm: float | None,
+) -> Any:
+    norm_key = None if max_update_norm is None else float(max_update_norm)
+    key = (id(tx), _modules_signature(modules), norm_key)
+    cached = _SAFE_CORE_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    static_modules = dict(modules)
+
+    @jax.jit
+    def _safe_core(params: Any, opt_state: optax.OptState, grad: Any, bases: Mapping[str, jnp.ndarray]):
+        raw_grad_norm = tree_global_norm(grad)
+
+        g_proj = project_update(grad, bases, static_modules)
+        updates, cand_state = tx.update(g_proj, opt_state, params)
+        candidate_delta_norm = tree_global_norm(updates)
+
+        updates_safe = project_update(updates, bases, static_modules)
+        projected_delta_norm = tree_global_norm(updates_safe)
+        cand_state = project_first_moments(cand_state, bases, static_modules)
+
+        if norm_key is not None:
+            updates_safe = _norm_bound_updates(updates_safe, norm_key)
+
+        return updates_safe, cand_state, {
+            "raw_grad_norm": raw_grad_norm,
+            "candidate_delta_norm": candidate_delta_norm,
+            "projected_delta_norm": projected_delta_norm,
+        }
+
+    _SAFE_CORE_CACHE[key] = _safe_core
+    return _safe_core
+
+
+@partial(jax.jit, static_argnames=("max_update_norm",))
+def _norm_bound_updates(updates_safe: Any, max_update_norm: float) -> Any:
+    norm = tree_global_norm(updates_safe)
+    max_norm = jnp.asarray(max_update_norm, dtype=jnp.float32)
+    scale = jnp.minimum(jnp.asarray(1.0, dtype=jnp.float32), max_norm / (norm + 1.0e-8))
+    return _tree_mul(updates_safe, scale)
+
+
 def optimizer_safe_step(
     params: Any,
     opt_state: optax.OptState,
@@ -112,25 +193,20 @@ def optimizer_safe_step(
 ) -> tuple[Any, optax.OptState, dict[str, Any]]:
     """Apply the section-13 protected Adam sequence as one pure step."""
 
-    raw_grad_norm = tree_global_norm(grad)
-
-    g_proj = project_update(grad, bases, modules)
-    updates, cand_state = tx.update(g_proj, opt_state, params)
-    candidate_delta_norm = tree_global_norm(updates)
-
-    updates_safe = project_update(updates, bases, modules)
-    projected_delta_norm = tree_global_norm(updates_safe)
-
-    cand_state = project_first_moments(cand_state, bases, modules)
+    core_norm = None if constraint_fn is not None else max_update_norm
+    updates_safe, cand_state, core_info = _get_safe_core(tx, modules, core_norm)(
+        params,
+        opt_state,
+        grad,
+        bases,
+    )
 
     if constraint_fn is not None:
         updates_safe = constraint_fn(updates_safe, params)
 
     if max_update_norm is not None:
-        norm = tree_global_norm(updates_safe)
-        max_norm = jnp.asarray(max_update_norm, dtype=jnp.float32)
-        scale = jnp.minimum(jnp.asarray(1.0, dtype=jnp.float32), max_norm / (norm + 1.0e-8))
-        updates_safe = _tree_mul(updates_safe, scale)
+        if constraint_fn is not None:
+            updates_safe = _norm_bound_updates(updates_safe, float(max_update_norm))
 
     accepted = False
     applied_scale = 0.0
@@ -163,9 +239,9 @@ def optimizer_safe_step(
         applied_norm = jnp.asarray(0.0, dtype=jnp.float32)
 
     info = {
-        "raw_grad_norm": raw_grad_norm,
-        "candidate_delta_norm": candidate_delta_norm,
-        "projected_delta_norm": projected_delta_norm,
+        "raw_grad_norm": core_info["raw_grad_norm"],
+        "candidate_delta_norm": core_info["candidate_delta_norm"],
+        "projected_delta_norm": core_info["projected_delta_norm"],
         "applied_norm": applied_norm,
         "applied_scale": applied_scale if accepted else 0.0,
         "accepted": accepted,

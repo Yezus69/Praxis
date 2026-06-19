@@ -65,6 +65,7 @@ class ReplayConfig:
     burn_in: int = 16
     protected_region: int = 48
     replay_frac_start: float = 0.25
+    batch_size: int | None = None
 
 
 @dataclasses.dataclass(frozen=True)

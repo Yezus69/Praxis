@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from functools import partial
 from typing import Any
 
 import jax
@@ -96,7 +97,7 @@ def _router_drift(current: Any, target: Any, burn_in: int) -> tuple[jnp.ndarray,
     return jnp.max(jnp.stack(l1_values)), jnp.max(jnp.stack(lmax_values))
 
 
-def sentinel_cluster_metrics(
+def _sentinel_cluster_metrics_impl(
     agent: Any,
     params: Any,
     cluster_batch: Any,
@@ -192,6 +193,47 @@ def sentinel_cluster_metrics(
         "router_lmax": router_lmax,
         "non_finite": jnp.logical_not(finite),
     }
+
+
+@partial(jax.jit, static_argnames=("agent", "burn_in"))
+def _sentinel_cluster_metrics_jit(
+    agent: Any,
+    params: Any,
+    cluster_batch: Any,
+    *,
+    burn_in: int,
+    ema_key_anchor: Any = None,
+) -> dict[str, jnp.ndarray]:
+    return _sentinel_cluster_metrics_impl(
+        agent,
+        params,
+        cluster_batch,
+        burn_in=burn_in,
+        ema_key_anchor=ema_key_anchor,
+    )
+
+
+def sentinel_cluster_metrics(
+    agent: Any,
+    params: Any,
+    cluster_batch: Any,
+    *,
+    burn_in: int,
+    ema_key_anchor: Any = None,
+) -> dict[str, jnp.ndarray]:
+    """Return max protected-region sentinel metrics for one cluster.
+
+    The stored sequence is unrolled from its initial hidden state through the
+    burn-in region; only timesteps after ``burn_in`` contribute to gates.
+    """
+
+    return _sentinel_cluster_metrics_jit(
+        agent,
+        params,
+        cluster_batch,
+        burn_in=int(burn_in),
+        ema_key_anchor=ema_key_anchor,
+    )
 
 
 def make_sentinel_acceptor(agent: Any, clusters: Sequence[Any], tols: Any) -> Any:
