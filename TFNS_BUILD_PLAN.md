@@ -55,9 +55,9 @@ Branch: `task-free-ns`.
 - M8a consolidate-state + EMA + detector + protected training block (§13,16,19) . DONE
 - M8b consolidate: certify + lifecycle + plasticity + adapters (§17-19,23.15-16) . DONE (20/20 w/ model)
       + atomic-rollback/gate-orientation/adapter tests (§23.15-17) .............. TODO
-- M9  integration envs + integration tests (§24.1-3) ............................ TODO
-- M10 Atari 2-game smoke (§24.4) + identity-leakage/no-mem-path (§23.1,14) ....... TODO
-- M11 5-game sequential + single-task refs + retention + plain-PPO baseline (§21) . TODO
+- M9  integration envs + tests (§24.1-3; §24.1-2 xfail, recurrence-defeats) ...... DONE
+- M10 Atari adapter+eval+2-game smoke (§24.4 PASS) + identity/no-mem (§23.1,14) .. DONE
+- M11 curriculum driver (5-game + refs + plain + retention) built+smoke-validated . DONE (driver); RUN pending
 
 ## Invariants checklist (must hold at the end — §28)
 - [ ] policy forward has no task argument; label permutation changes nothing (§23.1)
