@@ -13,4 +13,4 @@ license = { text = "Apache-2.0" }
 dependencies = ["numpy", "flax", "optax", "matplotlib", "pytest"]
 
 [tool.setuptools.packages.find]
-include = ["pmac*"]
+include = ["pmac*", "tfns*"]
