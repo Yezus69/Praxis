@@ -175,10 +175,12 @@ def _with_rollout_len(cfg: TFNSConfig, rollout_len: int) -> TFNSConfig:
 
 
 def _base_cfg(args: argparse.Namespace) -> TFNSConfig:
+    base = TFNSConfig()
+    num_minibatches = int(getattr(args, "num_minibatches", base.ppo.num_minibatches))
     if args.smoke:
         num_envs = min(int(args.num_envs), 4)
         rollout_len = min(int(args.rollout_len), 32)
-        seq_chunk = _divisor_at_most(rollout_len, min(16, rollout_len))
+        seq_chunk = _divisor_at_most(rollout_len, min(int(base.ppo.seq_chunk), rollout_len))
         burn_in = min(4, max(0, seq_chunk // 4))
         return TFNSConfig(
             model=ModelConfig(
@@ -196,7 +198,8 @@ def _base_cfg(args: argparse.Namespace) -> TFNSConfig:
                 num_envs=num_envs,
                 rollout_len=rollout_len,
                 lr=2.5e-4,
-                update_epochs=1,
+                update_epochs=int(args.update_epochs),
+                num_minibatches=num_minibatches,
                 seq_chunk=seq_chunk,
             ),
             replay=ReplayConfig(
@@ -218,7 +221,6 @@ def _base_cfg(args: argparse.Namespace) -> TFNSConfig:
             ),
         )
 
-    base = TFNSConfig()
     seq_chunk = _divisor_at_most(int(args.rollout_len), min(int(base.ppo.seq_chunk), int(args.rollout_len)))
     replay_len = max(1, min(int(base.replay.seq_len), int(args.rollout_len)))
     burn_in = min(int(base.replay.burn_in), max(0, replay_len - 1))
@@ -230,6 +232,7 @@ def _base_cfg(args: argparse.Namespace) -> TFNSConfig:
             num_envs=int(args.num_envs),
             rollout_len=int(args.rollout_len),
             update_epochs=int(args.update_epochs),
+            num_minibatches=num_minibatches,
             seq_chunk=seq_chunk,
         ),
         replay=dataclasses.replace(
@@ -699,6 +702,8 @@ def _result_header(
             "num_envs": int(cfg.ppo.num_envs),
             "rollout_len": int(cfg.ppo.rollout_len),
             "update_epochs": int(cfg.ppo.update_epochs),
+            "num_minibatches": int(cfg.ppo.num_minibatches),
+            "seq_chunk": int(cfg.ppo.seq_chunk),
             "eval_episodes": int(args.eval_episodes),
             "eval_max_steps": int(args.eval_max_steps),
         },
@@ -1046,6 +1051,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-envs", type=int, default=128)
     parser.add_argument("--rollout-len", type=int, default=128)
     parser.add_argument("--update-epochs", type=int, default=2)
+    parser.add_argument("--num-minibatches", type=int, default=4)
     parser.add_argument("--eval-episodes", type=int, default=None)
     parser.add_argument("--eval-seed", type=int, default=None)
     parser.add_argument("--eval-max-steps", type=int, default=evaluate.DEFAULT_EVAL_MAX_STEPS)
@@ -1063,12 +1069,13 @@ def _normalize_args(args: argparse.Namespace) -> argparse.Namespace:
         raise ValueError("--rollout-len must be positive")
     if int(args.update_epochs) <= 0:
         raise ValueError("--update-epochs must be positive")
+    if int(args.num_minibatches) <= 0:
+        raise ValueError("--num-minibatches must be positive")
     if int(args.eval_max_steps) < 0:
         raise ValueError("--eval-max-steps must be non-negative")
     if args.smoke:
         args.num_envs = min(int(args.num_envs), 4)
         args.rollout_len = min(int(args.rollout_len), 32)
-        args.update_epochs = 1
         if args.eval_episodes is None:
             args.eval_episodes = 4
         if args.steps_per_game is None:

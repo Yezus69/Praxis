@@ -55,6 +55,7 @@ class PPOConfig:
     max_grad_norm: float = 0.5
     lr: float = 2.5e-4
     update_epochs: int = 4
+    num_minibatches: int = 4
     seq_chunk: int = 32
     anneal_lr: bool = True
 

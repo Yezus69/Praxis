@@ -1095,6 +1095,14 @@ def train_block(
         agent=agent,
         params=state.params,
     )
+    if minibatch_size is None:
+        num_minibatches = int(_cfg_value(ppo_cfg, "num_minibatches", PPOConfig.num_minibatches))
+        if num_minibatches <= 0:
+            raise ValueError("num_minibatches must be positive")
+        num_chunks = int(rollout.action.shape[0]) // seq_chunk
+        num_envs = int(rollout.action.shape[1])
+        num_seq = num_chunks * num_envs
+        minibatch_size = max(1, num_seq // num_minibatches)
 
     for epoch in range(epochs):
         state.rng, (epoch_key,) = _split_rng(state.rng, 1)
