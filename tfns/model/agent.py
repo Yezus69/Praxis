@@ -224,7 +224,7 @@ class RecurrentAgent(nn.Module):
                 ema_encoder_params=ema_encoder_params,
                 collect_presyn=collect_presyn,
             )
-            return out.h_next, out
+            return out.h_next.astype(h_prev.dtype), out
 
         h_final, outputs = jax.lax.scan(step, h0, (obs_seq, act_seq, rew_seq, reset_seq))
         return outputs, h_final

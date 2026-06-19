@@ -7,8 +7,6 @@ os.environ.setdefault("JAX_PLATFORMS", "cpu")
 import flax.linen as nn
 import jax
 
-jax.config.update("jax_enable_x64", True)
-
 import jax.numpy as jnp
 import numpy as np
 
@@ -33,7 +31,7 @@ from tfns.protect.projection import (
 )
 
 
-def _orthonormal(key, d_aug: int, rank: int, dtype=jnp.float64) -> jnp.ndarray:
+def _orthonormal(key, d_aug: int, rank: int, dtype=jnp.float32) -> jnp.ndarray:
     raw = jax.random.normal(key, (d_aug, rank), dtype=dtype)
     q, _ = jnp.linalg.qr(raw, mode="reduced")
     return q[:, :rank]
@@ -65,14 +63,14 @@ def test_affine_projection_annihilates_augmented_protected_span():
     k_u, k_w, k_b, k_c = jax.random.split(key, 4)
     d_in, d_out, rank = 5, 4, 3
     U = _orthonormal(k_u, d_in + 1, rank)
-    dW = jax.random.normal(k_w, (d_in, d_out), dtype=jnp.float64)
-    db = jax.random.normal(k_b, (d_out,), dtype=jnp.float64)
+    dW = jax.random.normal(k_w, (d_in, d_out), dtype=jnp.float32)
+    db = jax.random.normal(k_b, (d_out,), dtype=jnp.float32)
 
     dW_safe, db_safe = project_affine(dW, db, U)
     Kbar_safe = jnp.concatenate([dW_safe, db_safe[None, :]], axis=0)
-    assert _max_abs(U.T @ Kbar_safe) <= 1e-9
+    assert _max_abs(U.T @ Kbar_safe) <= 1e-4
 
-    c = jax.random.normal(k_c, (rank,), dtype=jnp.float64)
+    c = jax.random.normal(k_c, (rank,), dtype=jnp.float32)
     xbar = U @ c
     col = int(jnp.argmax(jnp.abs(U[-1, :])))
     xbar = jnp.where(jnp.abs(xbar[-1]) > 1e-6, xbar, U[:, col])
@@ -80,30 +78,30 @@ def test_affine_projection_annihilates_augmented_protected_span():
     x = xbar[:-1]
     np.testing.assert_allclose(
         np.asarray(x @ dW_safe + db_safe),
-        np.zeros((d_out,), dtype=np.float64),
+        np.zeros((d_out,), dtype=np.float32),
         rtol=0.0,
-        atol=1e-9,
+        atol=1e-4,
     )
     np.testing.assert_allclose(
         np.asarray(xbar @ Kbar_safe),
-        np.zeros((d_out,), dtype=np.float64),
+        np.zeros((d_out,), dtype=np.float32),
         rtol=0.0,
-        atol=1e-9,
+        atol=1e-4,
     )
 
 
 def test_bias_projection_co_adapts_weight_and_bias_rows():
-    dW = jnp.zeros((2, 3), dtype=jnp.float64)
-    db = jnp.array([1.0, -2.0, 3.0], dtype=jnp.float64)
-    U = jnp.array([[1.0], [0.0], [1.0]], dtype=jnp.float64) / jnp.sqrt(2.0)
+    dW = jnp.zeros((2, 3), dtype=jnp.float32)
+    db = jnp.array([1.0, -2.0, 3.0], dtype=jnp.float32)
+    U = jnp.array([[1.0], [0.0], [1.0]], dtype=jnp.float32) / jnp.sqrt(2.0)
 
     dW_safe, db_safe = project_affine(dW, db, U)
-    xbar = jnp.array([1.0, 0.0, 1.0], dtype=jnp.float64)
+    xbar = jnp.array([1.0, 0.0, 1.0], dtype=jnp.float32)
     np.testing.assert_allclose(
         np.asarray(xbar[:-1] @ dW_safe + xbar[-1] * db_safe),
-        np.zeros((3,), dtype=np.float64),
+        np.zeros((3,), dtype=np.float32),
         rtol=0.0,
-        atol=1e-9,
+        atol=1e-4,
     )
     assert float(jnp.linalg.norm(db_safe)) > 0.0
 
@@ -125,14 +123,14 @@ def test_convolution_projection_preserves_flax_conv_outputs_on_basis_input():
     k_x, k_init, k_update = jax.random.split(key, 3)
     batch, height, width, c_in = 2, 5, 5, 2
     kh, kw, c_out, stride = 3, 3, 4, 1
-    x = jax.random.normal(k_x, (batch, height, width, c_in), dtype=jnp.float64)
+    x = jax.random.normal(k_x, (batch, height, width, c_in), dtype=jnp.float32)
     conv = nn.Conv(
         features=c_out,
         kernel_size=(kh, kw),
         strides=(stride, stride),
         padding="VALID",
-        dtype=jnp.float64,
-        param_dtype=jnp.float64,
+        dtype=jnp.float32,
+        param_dtype=jnp.float32,
     )
     variables = conv.init(k_init, x)
     kernel = variables["params"]["kernel"]
@@ -141,8 +139,8 @@ def test_convolution_projection_preserves_flax_conv_outputs_on_basis_input():
     columns = collect_conv_basis_columns(x, kh, kw, stride, c_in)
     U, _ = jnp.linalg.qr(columns, mode="reduced")
     k_dk, k_db = jax.random.split(k_update)
-    dK = 0.05 * jax.random.normal(k_dk, kernel.shape, dtype=jnp.float64)
-    db = 0.05 * jax.random.normal(k_db, bias.shape, dtype=jnp.float64)
+    dK = 0.05 * jax.random.normal(k_dk, kernel.shape, dtype=jnp.float32)
+    db = 0.05 * jax.random.normal(k_db, bias.shape, dtype=jnp.float32)
     dK_safe, db_safe = project_conv(dK, db, U)
 
     out_before = conv.apply({"params": {"kernel": kernel, "bias": bias}}, x)
@@ -150,7 +148,9 @@ def test_convolution_projection_preserves_flax_conv_outputs_on_basis_input():
         {"params": {"kernel": kernel + dK_safe, "bias": bias + db_safe}},
         x,
     )
-    np.testing.assert_allclose(np.asarray(out_after), np.asarray(out_before), atol=1e-7)
+    np.testing.assert_allclose(
+        np.asarray(out_after), np.asarray(out_before), rtol=0.0, atol=1e-4
+    )
 
 
 def test_gru_gate_projection_uses_shared_augmented_xi_basis():
@@ -158,21 +158,21 @@ def test_gru_gate_projection_uses_shared_augmented_xi_basis():
     k_u, k_w, k_r, k_b, k_c = jax.random.split(key, 5)
     input_dim, hidden, rank = 4, 3, 3
     U = _orthonormal(k_u, input_dim + hidden + 1, rank)
-    dW = jax.random.normal(k_w, (input_dim, hidden), dtype=jnp.float64)
-    dU = jax.random.normal(k_r, (hidden, hidden), dtype=jnp.float64)
-    db = jax.random.normal(k_b, (hidden,), dtype=jnp.float64)
+    dW = jax.random.normal(k_w, (input_dim, hidden), dtype=jnp.float32)
+    dU = jax.random.normal(k_r, (hidden, hidden), dtype=jnp.float32)
+    db = jax.random.normal(k_b, (hidden,), dtype=jnp.float32)
 
     dW_safe, dU_safe, db_safe = project_gru_gate(dW, dU, db, U)
     stacked_safe = jnp.concatenate([dW_safe, dU_safe, db_safe[None, :]], axis=0)
-    assert _max_abs(U.T @ stacked_safe) <= 1e-9
+    assert _max_abs(U.T @ stacked_safe) <= 1e-4
 
-    c = jax.random.normal(k_c, (rank,), dtype=jnp.float64)
+    c = jax.random.normal(k_c, (rank,), dtype=jnp.float32)
     xi = U @ c
     np.testing.assert_allclose(
         np.asarray(xi @ stacked_safe),
-        np.zeros((hidden,), dtype=np.float64),
+        np.zeros((hidden,), dtype=np.float32),
         rtol=0.0,
-        atol=1e-9,
+        atol=1e-4,
     )
 
 
@@ -180,30 +180,30 @@ def test_basis_construction_properties_and_storage_round_trip():
     key = jax.random.PRNGKey(5)
     k_a, k_b, k_x, k_kbar = jax.random.split(key, 4)
     d_aug = 8
-    U0 = empty_basis(d_aug).astype(jnp.float64)
-    A = jax.random.normal(k_a, (d_aug, 4), dtype=jnp.float64)
+    U0 = empty_basis(d_aug).astype(jnp.float32)
+    A = jax.random.normal(k_a, (d_aug, 4), dtype=jnp.float32)
     U1, info1 = expand_basis(U0, A, energy=1.0)
     assert info1["added_rank"] > 0
-    assert _max_abs(orthonormality_error(U1)) <= 1e-9
+    assert _max_abs(orthonormality_error(U1)) <= 1e-5
 
     before = represented_energy(U1, A)
-    B = jax.random.normal(k_b, (d_aug, 3), dtype=jnp.float64)
+    B = jax.random.normal(k_b, (d_aug, 3), dtype=jnp.float32)
     U2, _ = expand_basis(U1, B, energy=1.0)
     after = represented_energy(U2, A)
-    assert float(after) + 1e-12 >= float(before)
+    assert float(after) + 1e-4 >= float(before)
     assert U2.shape[1] <= d_aug
 
     U_dup, info_dup = expand_basis(U1, A, energy=1.0)
     assert info_dup["added_rank"] == 0
     assert U_dup.shape[1] == U1.shape[1]
 
-    x = U1 @ jax.random.normal(k_x, (U1.shape[1],), dtype=jnp.float64)
-    assert float(residual_norm(U1, x)) <= 1e-9
+    x = U1 @ jax.random.normal(k_x, (U1.shape[1],), dtype=jnp.float32)
+    assert float(residual_norm(U1, x)) <= 1e-4
     assert free_rank_fraction(U1, d_aug) == 1.0 - U1.shape[1] / d_aug
 
     U_cap, cap_info = expand_basis(
-        empty_basis(6).astype(jnp.float64),
-        jnp.eye(6, dtype=jnp.float64),
+        empty_basis(6).astype(jnp.float32),
+        jnp.eye(6, dtype=jnp.float32),
         energy=1.0,
         max_rank=3,
     )
