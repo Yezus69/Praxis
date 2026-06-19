@@ -91,6 +91,31 @@ class SequenceMinibatch:
     env_index: Any = None
 
 
+@struct.dataclass
+class SequenceDataset:
+    """Precomputed recurrent PPO sequence tensors for one rollout block."""
+
+    obs: Any
+    prev_action: Any
+    prev_reward_clipped: Any
+    action: Any
+    old_logprob: Any
+    value: Any
+    reward: Any
+    adv: Any
+    ret: Any
+    ppo_mask: Any
+    reset_mask: Any
+    h0_seq: Any
+    valid_mask: Any
+    next_obs: Any = None
+    next_obs_mask: Any = None
+    true_terminal: Any = None
+    seq_id: Any = None
+    chunk_start: Any = None
+    env_index: Any = None
+
+
 def categorical_log_prob(logits: Any, actions: Any) -> jnp.ndarray:
     """Return categorical log-probabilities for integer ``actions``."""
 
@@ -381,6 +406,28 @@ def make_sequence_minibatches(
     should use :func:`reconstruct_hidden` instead of trusting stored hidden.
     """
 
+    dataset = build_sequence_dataset(
+        rollout,
+        adv,
+        ret,
+        seq_chunk,
+        agent=agent,
+        params=params,
+    )
+    yield from iter_minibatches(dataset, minibatch_size, rng)
+
+
+def build_sequence_dataset(
+    rollout: RolloutBatch,
+    adv: Any,
+    ret: Any,
+    seq_chunk: int,
+    *,
+    agent=None,
+    params=None,
+) -> SequenceDataset:
+    """Build full recurrent PPO sequence tensors once for a rollout block."""
+
     seq_chunk = int(seq_chunk)
     if seq_chunk <= 0:
         raise ValueError("seq_chunk must be positive")
@@ -390,11 +437,6 @@ def make_sequence_minibatches(
         raise ValueError("rollout length must be divisible by seq_chunk")
     num_chunks = T // seq_chunk
     num_seq = num_chunks * N
-    if minibatch_size is None:
-        minibatch_size = num_seq
-    minibatch_size = int(minibatch_size)
-    if minibatch_size <= 0:
-        raise ValueError("minibatch_size must be positive")
 
     h0_by_chunk = _hidden_chunk_starts(
         rollout,
@@ -450,6 +492,43 @@ def make_sequence_minibatches(
     env_index = jnp.tile(jnp.arange(N, dtype=jnp.int32), num_chunks)
     seq_id = jnp.arange(num_seq, dtype=jnp.int32)
 
+    return SequenceDataset(
+        obs=fields["obs"],
+        prev_action=fields["prev_action"],
+        prev_reward_clipped=fields["prev_reward_clipped"],
+        action=fields["action"],
+        old_logprob=fields["old_logprob"],
+        value=fields["value"],
+        reward=fields["reward"],
+        adv=fields["adv"],
+        ret=fields["ret"],
+        ppo_mask=fields["ppo_mask"],
+        reset_mask=fields["reset_mask"],
+        h0_seq=h0_seq,
+        valid_mask=valid_mask,
+        next_obs=fields["next_obs"],
+        next_obs_mask=fields["next_obs_mask"],
+        true_terminal=fields["true_terminal"],
+        seq_id=seq_id,
+        chunk_start=chunk_start,
+        env_index=env_index,
+    )
+
+
+def iter_minibatches(
+    dataset: SequenceDataset,
+    minibatch_size: int | None,
+    rng: Any,
+) -> Iterator[SequenceMinibatch]:
+    """Yield shuffled minibatches from precomputed sequence tensors."""
+
+    num_seq = int(dataset.action.shape[0])
+    if minibatch_size is None:
+        minibatch_size = num_seq
+    minibatch_size = int(minibatch_size)
+    if minibatch_size <= 0:
+        raise ValueError("minibatch_size must be positive")
+
     permutation = np.asarray(jax.device_get(jax.random.permutation(rng, num_seq)), dtype=np.int64)
     for start in range(0, num_seq, minibatch_size):
         raw_idx = permutation[start : start + minibatch_size]
@@ -461,36 +540,39 @@ def make_sequence_minibatches(
         idx = jnp.asarray(raw_idx, dtype=jnp.int32)
         row_valid = jnp.asarray(row_valid_np, dtype=bool)[:, None]
         yield SequenceMinibatch(
-            obs=_take(fields["obs"], idx),
-            prev_action=_take(fields["prev_action"], idx),
-            prev_reward_clipped=_take(fields["prev_reward_clipped"], idx),
-            action=_take(fields["action"], idx),
-            old_logprob=_take(fields["old_logprob"], idx),
-            value=_take(fields["value"], idx),
-            reward=_take(fields["reward"], idx),
-            adv=_take(fields["adv"], idx),
-            ret=_take(fields["ret"], idx),
-            ppo_mask=_take(fields["ppo_mask"], idx),
-            reset_mask=_take(fields["reset_mask"], idx),
-            h0_chunk=_take(h0_seq, idx),
-            valid_mask=jnp.logical_and(_take(valid_mask, idx), row_valid),
-            next_obs=_take(fields["next_obs"], idx),
-            next_obs_mask=jnp.logical_and(_take(fields["next_obs_mask"], idx), row_valid),
-            true_terminal=_take(fields["true_terminal"], idx),
-            seq_id=jnp.where(row_valid[:, 0], _take(seq_id, idx), -1),
-            chunk_start=jnp.where(row_valid[:, 0], _take(chunk_start, idx), -1),
-            env_index=jnp.where(row_valid[:, 0], _take(env_index, idx), -1),
+            obs=_take(dataset.obs, idx),
+            prev_action=_take(dataset.prev_action, idx),
+            prev_reward_clipped=_take(dataset.prev_reward_clipped, idx),
+            action=_take(dataset.action, idx),
+            old_logprob=_take(dataset.old_logprob, idx),
+            value=_take(dataset.value, idx),
+            reward=_take(dataset.reward, idx),
+            adv=_take(dataset.adv, idx),
+            ret=_take(dataset.ret, idx),
+            ppo_mask=_take(dataset.ppo_mask, idx),
+            reset_mask=_take(dataset.reset_mask, idx),
+            h0_chunk=_take(dataset.h0_seq, idx),
+            valid_mask=jnp.logical_and(_take(dataset.valid_mask, idx), row_valid),
+            next_obs=_take(dataset.next_obs, idx),
+            next_obs_mask=jnp.logical_and(_take(dataset.next_obs_mask, idx), row_valid),
+            true_terminal=_take(dataset.true_terminal, idx),
+            seq_id=jnp.where(row_valid[:, 0], _take(dataset.seq_id, idx), -1),
+            chunk_start=jnp.where(row_valid[:, 0], _take(dataset.chunk_start, idx), -1),
+            env_index=jnp.where(row_valid[:, 0], _take(dataset.env_index, idx), -1),
         )
 
 
 __all__ = [
     "RolloutBatch",
     "RolloutCarry",
+    "SequenceDataset",
     "SequenceMinibatch",
+    "build_sequence_dataset",
     "categorical_entropy",
     "categorical_log_prob",
     "collect_rollout",
     "compute_gae",
+    "iter_minibatches",
     "make_sequence_minibatches",
     "reconstruct_hidden",
 ]

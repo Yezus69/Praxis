@@ -42,9 +42,10 @@ from tfns.memory.record import (
 from tfns.memory.sampling import cluster_probs, cluster_risk, replay_transition_count, sample_sequences
 from tfns.ppo import (
     RolloutCarry,
+    build_sequence_dataset,
     collect_rollout,
     compute_gae,
-    make_sequence_minibatches,
+    iter_minibatches,
     reconstruct_hidden,
     total_ppo_objective,
 )
@@ -148,14 +149,16 @@ def _fixed_replay_batch_size(cfg: Any, on_policy_count: int | None = None) -> in
     if configured is not None:
         return max(1, configured)
 
+    ppo_cfg = _cfg_section(cfg, "ppo", PPOConfig())
+    num_envs = max(1, int(_cfg_value(ppo_cfg, "num_envs", PPOConfig.num_envs)))
     if on_policy_count is None:
-        ppo_cfg = _cfg_section(cfg, "ppo", PPOConfig())
         rollout_len = int(_cfg_value(ppo_cfg, "rollout_len", PPOConfig.rollout_len))
-        num_envs = int(_cfg_value(ppo_cfg, "num_envs", PPOConfig.num_envs))
         on_policy_count = rollout_len * num_envs
 
     seq = max(1, int(_cfg_value(replay_cfg, "seq_len", ReplayConfig.seq_len)))
-    return max(1, int(math.ceil(max(1, int(on_policy_count)) / seq)))
+    replay_frac = float(_cfg_value(replay_cfg, "replay_frac_start", ReplayConfig.replay_frac_start))
+    default_rows = int(round(replay_frac * max(1, int(on_policy_count)) / seq))
+    return max(1, min(num_envs, default_rows))
 
 
 def _make_jit_train_config(cfg: Any, replay_batch_size: int) -> _JitTrainConfig:
@@ -703,6 +706,22 @@ def _grad_step(
     return loss.astype(jnp.float32), aux, grad
 
 
+@partial(jax.jit, static_argnames=("agent", "cfg"))
+def _grad_step_ppo_only(
+    params: Any,
+    ema_params: Any,
+    mb: Any,
+    cfg: _JitTrainConfig,
+    agent: Any,
+) -> tuple[jnp.ndarray, dict[str, jnp.ndarray], Any]:
+    def loss_fn(p):
+        ppo, aux = total_ppo_objective(p, agent, mb, ema_params, cfg)
+        return ppo, aux
+
+    (loss, aux), grad = jax.value_and_grad(loss_fn, has_aux=True)(params)
+    return loss.astype(jnp.float32), aux, grad
+
+
 def replay_tube_loss(
     params: Any,
     agent: Any,
@@ -1006,38 +1025,58 @@ def train_block(
     on_policy_count = int(np.prod(np.asarray(rollout.action.shape)))
     replay_batch_size = _fixed_replay_batch_size(cfg, on_policy_count)
     jit_cfg = _make_jit_train_config(cfg, replay_batch_size)
-    replay_coef = float(jit_cfg.replay_coef)
     risks = _cluster_risks(state.memory, cfg, state.robust_stats)
     probs = cluster_probs(risks) if risks else None
     max_risk = max(risks.values()) if risks else 0.0
     replay_count = replay_transition_count(on_policy_count, max_risk, cfg)
-    replay_records_per_update = max(0, int(math.ceil(replay_count / max(1, int(_cfg_value(_cfg_section(cfg, "replay", ReplayConfig()), "seq_len", ReplayConfig.seq_len))))))
+    replay_seq_len = max(
+        1,
+        int(_cfg_value(_cfg_section(cfg, "replay", ReplayConfig()), "seq_len", ReplayConfig.seq_len)),
+    )
+    replay_records_per_update = max(0, int(math.ceil(replay_count / replay_seq_len)))
     replay_records_per_update = min(replay_records_per_update, replay_batch_size)
+    sequence_dataset = build_sequence_dataset(
+        rollout,
+        adv,
+        ret,
+        seq_chunk,
+        agent=agent,
+        params=state.params,
+    )
 
     for epoch in range(epochs):
         state.rng, (epoch_key,) = _split_rng(state.rng, 1)
-        mb_iter = make_sequence_minibatches(
-            rollout,
-            adv,
-            ret,
-            seq_chunk,
-            epoch_key,
-            minibatch_size=minibatch_size,
-            agent=agent,
-            params=state.params,
-        )
+        mb_iter = iter_minibatches(sequence_dataset, minibatch_size, epoch_key)
         for mb in mb_iter:
-            replay_seed = _np_seed(jax.random.fold_in(replay_key, update_index))
-            replay_records = sample_sequences(state.memory, replay_seed, replay_records_per_update, probs)
-            replay_batch = stack_replay_batch(replay_records, jit_cfg, batch_size=replay_batch_size)
-            loss_value, aux, grad = _grad_step(
-                state.params,
-                state.ema_params,
-                mb,
-                replay_batch,
-                jit_cfg,
-                agent,
-            )
+            replay_records = []
+            if replay_records_per_update > 0 and state.memory is not None and len(state.memory) > 0:
+                replay_seed = _np_seed(jax.random.fold_in(replay_key, update_index))
+                replay_records = sample_sequences(state.memory, replay_seed, replay_records_per_update, probs)
+            if replay_records:
+                replay_batch = stack_replay_batch(replay_records, jit_cfg, batch_size=replay_batch_size)
+                loss_value, aux, grad = _grad_step(
+                    state.params,
+                    state.ema_params,
+                    mb,
+                    replay_batch,
+                    jit_cfg,
+                    agent,
+                )
+            else:
+                loss_value, aux, grad = _grad_step_ppo_only(
+                    state.params,
+                    state.ema_params,
+                    mb,
+                    jit_cfg,
+                    agent,
+                )
+                zero = jnp.asarray(0.0, dtype=jnp.float32)
+                aux = {
+                    **aux,
+                    "replay_tube_mean": zero,
+                    "replay_tube_tail": zero,
+                    "replay_tube_total": zero,
+                }
 
             constraint_fn = None
             if constraints and update_index % constraint_cadence == 0:
