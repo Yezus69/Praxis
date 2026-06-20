@@ -53,6 +53,14 @@ def _step_raw_reward(extra: Any, reward_clipped: Any, num_envs: int) -> np.ndarr
     return arr
 
 
+def _executed_action(extra: Any, fallback: np.ndarray) -> np.ndarray:
+    if isinstance(extra, Mapping):
+        value = extra.get("exec_action")
+        if value is not None:
+            return np.asarray(value, dtype=np.int32)
+    return np.asarray(fallback, dtype=np.int32)
+
+
 def _eval_result(
     returns: Sequence[float],
     running_returns: Any,
@@ -158,6 +166,7 @@ def evaluate_game(
             )
             action_np = np.asarray(jax.device_get(action), dtype=np.int32)
             next_obs, reward_clipped, _ppo_done, reset, extra = env_step(action_np)
+            exec_action = _executed_action(extra, action_np)
 
             returns.extend(float(value) for value in extra.get("episode_returns", ()))
             running_returns += _step_raw_reward(extra, reward_clipped, env_count)
@@ -166,7 +175,7 @@ def evaluate_game(
             reset_jnp = jnp.asarray(reset, dtype=bool)
             hidden = jnp.where(reset_jnp[:, None], jnp.zeros_like(h_next), h_next)
             obs = jnp.asarray(next_obs)
-            prev_action = jnp.asarray(action_np, dtype=jnp.int32)
+            prev_action = jnp.asarray(exec_action, dtype=jnp.int32)
             prev_reward = jnp.asarray(reward_clipped, dtype=jnp.float32)
             prev_reset = reset_jnp
 

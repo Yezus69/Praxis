@@ -471,6 +471,16 @@ def _cluster_risks(memory: Any, cfg: Any, robust_stats: Mapping[str, Any] | None
     return {int(cid): cluster_risk({}, cfg) + float(stored.get(int(cid), 0.0)) for cid in clusters}
 
 
+def _clusters_with_status(memory: Any, status: str) -> set[int]:
+    if memory is None or not hasattr(memory, "records"):
+        return set()
+    return {
+        int(rec.cluster_id)
+        for rec in memory.records()
+        if getattr(rec, "status", None) == status and rec.cluster_id is not None
+    }
+
+
 def _record_inputs(rec: EpisodeSequence, total: int) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     obs = reconstruct_record_obs(rec, total)
     return (
@@ -1145,7 +1155,9 @@ def train_block(
     on_policy_count = int(np.prod(np.asarray(rollout.action.shape)))
     replay_batch_size = _fixed_replay_batch_size(cfg, on_policy_count)
     jit_cfg = _make_jit_train_config(cfg, replay_batch_size)
-    risks = _cluster_risks(state.memory, cfg, state.robust_stats)
+    protected_cluster_ids = _clusters_with_status(state.memory, "protected")
+    all_risks = _cluster_risks(state.memory, cfg, state.robust_stats)
+    risks = {cid: risk for cid, risk in all_risks.items() if cid in protected_cluster_ids}
     probs = cluster_probs(risks) if risks else None
     max_risk = max(risks.values()) if risks else 0.0
     replay_count = replay_transition_count(on_policy_count, max_risk, cfg)
@@ -1179,7 +1191,13 @@ def train_block(
             replay_records = []
             if replay_records_per_update > 0 and state.memory is not None and len(state.memory) > 0:
                 replay_seed = _np_seed(jax.random.fold_in(replay_key, update_index))
-                replay_records = sample_sequences(state.memory, replay_seed, replay_records_per_update, probs)
+                replay_records = sample_sequences(
+                    state.memory,
+                    replay_seed,
+                    replay_records_per_update,
+                    probs,
+                    statuses={"protected"},
+                )
             if replay_records:
                 replay_batch = stack_replay_batch(replay_records, jit_cfg, batch_size=replay_batch_size)
                 loss_value, aux, grad = _grad_step(

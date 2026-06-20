@@ -58,11 +58,21 @@ def _unroll_minibatch(params, agent, mb: SequenceMinibatch):
     )
 
 
-def _ppo_terms(outputs, mb: SequenceMinibatch, cfg: Any) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
+def _ppo_terms(
+    outputs,
+    mb: SequenceMinibatch,
+    cfg: Any,
+    *,
+    ent_coef: Any | None = None,
+) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
     ppo_cfg = _cfg_section(cfg, "ppo", PPOConfig())
     clip_coef = _cfg_value(ppo_cfg, "clip_coef", PPOConfig.clip_coef)
     vf_clip = _cfg_value(ppo_cfg, "vf_clip", PPOConfig.vf_clip)
-    ent_coef = _cfg_value(ppo_cfg, "ent_coef", PPOConfig.ent_coef)
+    ent_coef_value = (
+        jnp.asarray(ent_coef, dtype=jnp.float32)
+        if ent_coef is not None
+        else jnp.asarray(_cfg_value(ppo_cfg, "ent_coef", PPOConfig.ent_coef), dtype=jnp.float32)
+    )
     vf_coef = _cfg_value(ppo_cfg, "vf_coef", PPOConfig.vf_coef)
 
     action = _time_major(mb.action).astype(jnp.int32)
@@ -94,11 +104,12 @@ def _ppo_terms(outputs, mb: SequenceMinibatch, cfg: Any) -> tuple[jnp.ndarray, d
     entropy_loss = _mask_mean(entropy, valid)
     approx_kl = _mask_mean((ratio - 1.0) - logratio, valid)
     clipfrac = _mask_mean((jnp.abs(ratio - 1.0) > clip_coef).astype(jnp.float32), valid)
-    loss = pg_loss + vf_coef * v_loss - ent_coef * entropy_loss
+    loss = pg_loss + vf_coef * v_loss - ent_coef_value * entropy_loss
     aux = {
         "pg_loss": pg_loss,
         "v_loss": v_loss,
         "entropy": entropy_loss,
+        "ent_coef": ent_coef_value,
         "approx_kl": approx_kl,
         "clipfrac": clipfrac,
     }
@@ -228,6 +239,8 @@ def total_ppo_objective(
     mb: SequenceMinibatch,
     ema_encoder_params,
     cfg: Any,
+    *,
+    ent_coef: Any | None = None,
 ) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
     """Return PPO plus predictive auxiliary losses.
 
@@ -236,7 +249,7 @@ def total_ppo_objective(
     """
 
     outputs, _ = _unroll_minibatch(params, agent, mb)
-    ppo, ppo_aux = _ppo_terms(outputs, mb, cfg)
+    ppo, ppo_aux = _ppo_terms(outputs, mb, cfg, ent_coef=ent_coef)
     aux_loss, aux_aux = _aux_terms(outputs, params, agent, mb, ema_encoder_params, cfg)
     total = ppo + aux_loss
     merged = {"loss": total.astype(jnp.float32), **ppo_aux, **aux_aux}

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Container
 
 import numpy as np
 
@@ -70,6 +70,8 @@ def sample_sequences(
     rng: np.random.Generator | np.random.RandomState | int,
     n: int,
     cluster_probs: Mapping[int, float] | None = None,
+    *,
+    statuses: Container[str] | None = None,
 ) -> list[EpisodeSequence]:
     """Sample clusters, then sequences inside those clusters, without labels."""
 
@@ -78,7 +80,24 @@ def sample_sequences(
 
     generator = rng if hasattr(rng, "choice") else np.random.default_rng(rng)
     clusters = bank.clusters()
-    cluster_ids = list(clusters.keys())
+    records = bank.records()
+    if statuses is None:
+        eligible_clusters = {cid: tuple(indices) for cid, indices in clusters.items()}
+    else:
+        allowed = set(statuses)
+        eligible_clusters = {
+            cid: tuple(
+                idx
+                for idx in indices
+                if getattr(records[int(idx)], "status", None) in allowed
+            )
+            for cid, indices in clusters.items()
+        }
+        eligible_clusters = {
+            cid: indices for cid, indices in eligible_clusters.items() if indices
+        }
+
+    cluster_ids = list(eligible_clusters.keys())
     if not cluster_ids:
         return []
 
@@ -88,11 +107,10 @@ def sample_sequences(
         raw = np.asarray([max(0.0, float(cluster_probs.get(cid, 0.0))) for cid in cluster_ids], dtype=np.float64)
         probs = _normalize_probs(raw)
 
-    records = bank.records()
     sampled: list[EpisodeSequence] = []
     for _ in range(n):
         cid = int(generator.choice(cluster_ids, p=probs))
-        indices = clusters[cid]
+        indices = eligible_clusters[cid]
         rec_idx = int(generator.choice(indices))
         sampled.append(records[rec_idx])
     return sampled

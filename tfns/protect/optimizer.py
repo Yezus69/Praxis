@@ -146,11 +146,18 @@ def _get_safe_core(
     static_modules = dict(modules)
 
     @jax.jit
-    def _safe_core(params: Any, opt_state: optax.OptState, grad: Any, bases: Mapping[str, jnp.ndarray]):
+    def _safe_core(
+        params: Any,
+        opt_state: optax.OptState,
+        grad: Any,
+        bases: Mapping[str, jnp.ndarray],
+        update_scale: Any,
+    ):
         raw_grad_norm = tree_global_norm(grad)
 
         g_proj = project_update(grad, bases, static_modules)
         updates, cand_state = tx.update(g_proj, opt_state, params)
+        updates = _tree_mul(updates, update_scale)
         candidate_delta_norm = tree_global_norm(updates)
 
         updates_safe = project_update(updates, bases, static_modules)
@@ -190,6 +197,7 @@ def optimizer_safe_step(
     accept_fn: Any = None,
     backtrack_scales: tuple[float, ...] = (1.0, 0.5, 0.25, 0.125, 0.0625, 0.03125),
     constraint_fn: Any = None,
+    update_scale: Any = 1.0,
 ) -> tuple[Any, optax.OptState, dict[str, Any]]:
     """Apply the section-13 protected Adam sequence as one pure step."""
 
@@ -199,6 +207,7 @@ def optimizer_safe_step(
         opt_state,
         grad,
         bases,
+        jnp.asarray(update_scale, dtype=jnp.float32),
     )
 
     if constraint_fn is not None:

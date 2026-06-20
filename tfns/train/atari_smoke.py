@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from collections.abc import Mapping
 from datetime import datetime
 from functools import partial
 from pathlib import Path
@@ -29,7 +30,7 @@ from tfns.config import (
 from tfns.envs import ACT_DIM, FIVE_GAMES
 from tfns.model.agent import RecurrentAgent
 from tfns.train.atari_env import make_atari_env_step
-from tfns.train.evaluate import evaluate_game, make_closed_loop_eval_fn
+from tfns.train.evaluate import DEFAULT_EVAL_MAX_STEPS, evaluate_game, make_closed_loop_eval_fn
 from tfns.train.loop import consolidate_skill, init_state, make_optimizer, run_blocks
 
 
@@ -202,12 +203,17 @@ def _action_trace(
                 agent=agent,
             )
             action_np = np.asarray(jax.device_get(action), dtype=np.int32)
-            next_obs, reward_clipped, _ppo_done, reset, _extra = env_step(action_np)
-            actions.append(action_np)
+            next_obs, reward_clipped, _ppo_done, reset, extra = env_step(action_np)
+            exec_action = (
+                np.asarray(extra.get("exec_action"), dtype=np.int32)
+                if isinstance(extra, Mapping) and extra.get("exec_action") is not None
+                else action_np
+            )
+            actions.append(exec_action)
             reset_jnp = jnp.asarray(reset, dtype=bool)
             hidden = jnp.where(reset_jnp[:, None], jnp.zeros_like(h_next), h_next)
             obs = jnp.asarray(next_obs)
-            prev_action = jnp.asarray(action_np, dtype=jnp.int32)
+            prev_action = jnp.asarray(exec_action, dtype=jnp.int32)
             prev_reward = jnp.asarray(reward_clipped, dtype=jnp.float32)
             prev_reset = reset_jnp
         return np.stack(actions, axis=0)
@@ -251,10 +257,13 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
     parser.add_argument("--blocks-per-game", type=int, default=2)
     parser.add_argument("--rollout-len", type=int, default=32)
     parser.add_argument("--eval-episodes", type=int, default=4)
+    parser.add_argument("--eval-max-steps", type=int, default=DEFAULT_EVAL_MAX_STEPS)
     parser.add_argument("--trace-steps", type=int, default=32)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--output-dir", default="tfns_runs/atari_smoke")
     args = parser.parse_args(argv)
+    if int(args.eval_max_steps) < 0:
+        raise ValueError("--eval-max-steps must be non-negative")
 
     games = list(args.games)[:2]
     if len(games) != 2:
@@ -287,6 +296,7 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
         n_episodes=max(1, int(args.eval_episodes)),
         seed=int(args.seed) + 2000,
         adapter_dormant=state.adapter_dormant,
+        max_steps=int(args.eval_max_steps),
     )["mean"]
     learned_meta = {games[0]: _calibrated_meta(games[0], float(score_a))}
     eval_fn = make_closed_loop_eval_fn(
@@ -295,6 +305,7 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
         num_envs=max(1, min(cfg.ppo.num_envs, args.num_envs)),
         n_episodes=max(1, int(args.eval_episodes)),
         seed=int(args.seed) + 3000,
+        max_steps=int(args.eval_max_steps),
     )
     score_windows = [float(score_a), float(score_a)]
     state, consolidation_accepted, consolidation_report = consolidate_skill(
@@ -337,6 +348,7 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
             n_episodes=max(1, int(args.eval_episodes)),
             seed=int(args.seed) + 4000 + index,
             adapter_dormant=state.adapter_dormant,
+            max_steps=int(args.eval_max_steps),
         )
         for index, game in enumerate(games)
     }
@@ -386,6 +398,8 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
             "rollout_len": int(cfg.ppo.rollout_len),
             "seq_chunk": int(cfg.ppo.seq_chunk),
             "blocks_per_game": int(args.blocks_per_game),
+            "eval_episodes": int(args.eval_episodes),
+            "eval_max_steps": int(args.eval_max_steps),
         },
         "throughput": {
             games[0]: {
