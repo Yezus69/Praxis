@@ -110,6 +110,8 @@ class SequenceMemoryBank:
             raise ValueError("byte_budget must be positive.")
         if self.config.max_clusters <= 0:
             raise ValueError("max_clusters must be positive.")
+        if self.config.max_records <= 0:
+            raise ValueError("max_records must be positive.")
 
         self.compress_frames = bool(compress_frames)
         self._records: list[EpisodeSequence] = []
@@ -187,25 +189,36 @@ class SequenceMemoryBank:
         cluster_risk: Any | None = None,
         sentinel_certs: Mapping[Any, Any] | None = None,
     ) -> bool:
-        """Remove lowest-utility evictable records until the budget is met."""
+        """Remove lowest-utility evictable records until byte/count caps are met.
 
-        while self._bytes > self.config.byte_budget:
-            evictable = [
-                (idx, self._utility(idx, cluster_risk=cluster_risk))
-                for idx in range(len(self._records))
-                if self._is_evictable(idx, sentinel_certs)
-            ]
-            if not evictable:
-                return False
-            idx, _ = min(evictable, key=lambda item: item[1])
+        Utilities include O(n^2) similarity matrices, so they are computed once
+        per call and used as a fixed eviction order. Sentinel certificates,
+        min-per-cluster eligibility, and cheap byte/count checks are refreshed
+        after each removal.
+        """
+
+        if self._within_limits():
+            return True
+
+        utilities = self._utility_array(cluster_risk=cluster_risk)
+        if utilities.size == 0:
+            return False
+
+        order = np.argsort(utilities, kind="stable")
+        candidates = [self._records[int(idx)] for idx in order]
+        for rec in candidates:
+            if self._within_limits():
+                return True
+            idx = self._index_of_identity(rec)
+            if idx is None:
+                continue
+            if not self._is_evictable(idx, sentinel_certs):
+                continue
             self._remove_index(idx)
-        return True
+        return self._within_limits()
 
     def eviction_utilities(self, cluster_risk: Any | None = None) -> np.ndarray:
-        return np.asarray(
-            [self._utility(idx, cluster_risk=cluster_risk) for idx in range(len(self._records))],
-            dtype=np.float32,
-        )
+        return self._utility_array(cluster_risk=cluster_risk)
 
     def age_penalty(self, rec: EpisodeSequence) -> float:
         idx = self._index_of_identity(rec)
@@ -388,6 +401,12 @@ class SequenceMemoryBank:
             return False
         return True
 
+    def _within_limits(self) -> bool:
+        return (
+            self._bytes <= self.config.byte_budget
+            and len(self._records) <= self.config.max_records
+        )
+
     def _cert_for(self, rec: EpisodeSequence, sentinel_certs: Mapping[Any, Any] | None) -> Any | None:
         if sentinel_certs is None:
             return None
@@ -396,18 +415,31 @@ class SequenceMemoryBank:
         return sentinel_certs.get((rec.episode_id, rec.chunk_index))
 
     def _utility(self, idx: int, *, cluster_risk: Any | None) -> float:
-        rec = self._records[idx]
+        utilities = self._utility_array(cluster_risk=cluster_risk)
+        return float(utilities[idx])
+
+    def _utility_array(self, *, cluster_risk: Any | None) -> np.ndarray:
+        n = len(self._records)
+        if n == 0:
+            return np.asarray([], dtype=np.float32)
+
         coverages = self._marginal_coverages()
         redundancies = self._redundancies()
-        redundancy = float(redundancies[idx])
-        return float(
-            rec.seq_importance
-            + self.config.lam_risk * self._risk_for_cluster(rec.cluster_id, cluster_risk)
-            + self.config.lam_cover * float(coverages[idx])
-            + self.config.lam_causal * self._causal_value(rec)
-            - self.config.lam_red * redundancy
-            - self.config.lam_age * self._age_penalty(idx, redundancy)
+        seq_importance = np.asarray([rec.seq_importance for rec in self._records], dtype=np.float32)
+        risks = np.asarray(
+            [self._risk_for_cluster(rec.cluster_id, cluster_risk) for rec in self._records],
+            dtype=np.float32,
         )
+        causal_values = np.asarray([self._causal_value(rec) for rec in self._records], dtype=np.float32)
+        age_penalties = self._age_penalties(redundancies)
+        return (
+            seq_importance
+            + np.float32(self.config.lam_risk) * risks
+            + np.float32(self.config.lam_cover) * coverages
+            + np.float32(self.config.lam_causal) * causal_values
+            - np.float32(self.config.lam_red) * redundancies
+            - np.float32(self.config.lam_age) * age_penalties
+        ).astype(np.float32)
 
     def _risk_for_cluster(self, cluster_id: int, cluster_risk: Any | None) -> float:
         if cluster_risk is None:
@@ -422,8 +454,7 @@ class SequenceMemoryBank:
             return np.asarray([], dtype=np.float32)
         if n == 1:
             return np.ones((1,), dtype=np.float32)
-        sigs = np.stack(self._signatures, axis=0)
-        sims = sigs @ sigs.T
+        sims = self._signature_cosine_matrix()
         np.fill_diagonal(sims, -np.inf)
         max_other = np.max(sims, axis=1)
         return (1.0 - max_other).astype(np.float32)
@@ -433,27 +464,40 @@ class SequenceMemoryBank:
         if n <= 1:
             return np.zeros((n,), dtype=np.float32)
 
-        policies = [_softmax_mean(rec.teacher_logits) for rec in self._records]
-        values = [float(np.mean(rec.teacher_value)) for rec in self._records]
-        causals = [float(np.mean(rec.causal_contrib)) for rec in self._records]
-        out = np.zeros((n,), dtype=np.float32)
+        sig_cos = self._signature_cosine_matrix()
+        policy_cos = np.maximum(self._cosine_matrix(self._policy_matrix()), 0.0)
+        values = np.asarray([float(np.mean(rec.teacher_value)) for rec in self._records], dtype=np.float32)
+        causals = np.asarray([float(np.mean(rec.causal_contrib)) for rec in self._records], dtype=np.float32)
+        value_sim = 1.0 / (1.0 + np.abs(values[:, None] - values[None, :]))
+        causal_sim = 1.0 / (1.0 + np.abs(causals[:, None] - causals[None, :]))
+        combined = 0.25 * (0.5 * (sig_cos + 1.0) + policy_cos + value_sim + causal_sim)
+        eligible = sig_cos >= np.float32(self.config.cluster_sim_thresh)
+        np.fill_diagonal(eligible, False)
+        return np.max(np.where(eligible, combined, 0.0), axis=1).astype(np.float32)
 
-        for i in range(n):
-            best = 0.0
-            for j in range(n):
-                if i == j:
-                    continue
-                sig_cos = _cosine(self._signatures[i], self._signatures[j])
-                if sig_cos < self.config.cluster_sim_thresh:
-                    continue
-                sig_sim = 0.5 * (sig_cos + 1.0)
-                policy_sim = max(0.0, _cosine(policies[i], policies[j]))
-                value_sim = 1.0 / (1.0 + abs(values[i] - values[j]))
-                causal_sim = 1.0 / (1.0 + abs(causals[i] - causals[j]))
-                combined = 0.25 * (sig_sim + policy_sim + value_sim + causal_sim)
-                best = max(best, combined)
-            out[i] = best
-        return out
+    def _signature_matrix(self) -> np.ndarray:
+        if not self._signatures:
+            return np.zeros((0, 0), dtype=np.float32)
+        return np.stack(self._signatures, axis=0).astype(np.float32, copy=False)
+
+    def _policy_matrix(self) -> np.ndarray:
+        if not self._records:
+            return np.zeros((0, 18), dtype=np.float32)
+        return np.stack([_softmax_mean(rec.teacher_logits) for rec in self._records], axis=0).astype(
+            np.float32,
+            copy=False,
+        )
+
+    def _signature_cosine_matrix(self) -> np.ndarray:
+        return self._cosine_matrix(self._signature_matrix())
+
+    def _cosine_matrix(self, matrix: np.ndarray) -> np.ndarray:
+        rows = np.asarray(matrix, dtype=np.float32)
+        if rows.ndim != 2 or rows.shape[0] == 0:
+            return np.zeros((0, 0), dtype=np.float32)
+        norms = np.linalg.norm(rows, axis=1, keepdims=True)
+        normalized = np.divide(rows, norms, out=np.zeros_like(rows, dtype=np.float32), where=norms > _EPS)
+        return (normalized @ normalized.T).astype(np.float32)
 
     def _causal_value(self, rec: EpisodeSequence) -> float:
         values = np.abs(np.asarray(rec.causal_contrib, dtype=np.float32))
@@ -467,6 +511,16 @@ class SequenceMemoryBank:
         if max_age <= 0.0:
             return 0.0
         return float(ages[idx] / max_age)
+
+    def _age_penalties(self, redundancies: np.ndarray) -> np.ndarray:
+        n = len(self._records)
+        if n == 0:
+            return np.asarray([], dtype=np.float32)
+        ages = np.asarray([self._clock - added for added in self._added_at], dtype=np.float32)
+        max_age = float(np.max(ages)) if ages.size else 1.0
+        if max_age <= 0.0:
+            return np.zeros((n,), dtype=np.float32)
+        return np.where(redundancies >= _REDUNDANCY_THRESHOLD, ages / max_age, 0.0).astype(np.float32)
 
 
 __all__ = [

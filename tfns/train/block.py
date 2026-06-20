@@ -14,7 +14,15 @@ import jax.numpy as jnp
 import numpy as np
 
 from tfns.behavior import behavior_components, behavior_distance, combined_tol, tube_loss
-from tfns.config import AuxConfig, CreditConfig, DetectConfig, PPOConfig, ReplayConfig, TFNSConfig
+from tfns.config import (
+    AuxConfig,
+    CreditConfig,
+    DetectConfig,
+    MemoryConfig,
+    PPOConfig,
+    ReplayConfig,
+    TFNSConfig,
+)
 from tfns.consolidate.state import ContinualState, ema_update
 from tfns.credit import (
     ReturnPredictor,
@@ -30,6 +38,7 @@ from tfns.credit import (
     validate,
 )
 from tfns.detect import PageHinkleyDetector, signature_window
+from tfns.memory.bank import sequence_signature
 from tfns.memory.record import (
     ACT_DIM,
     FRAME_STACK,
@@ -874,6 +883,12 @@ def _admit_rollout_memories(
     surprise: Any,
     cfg: Any,
 ) -> int:
+    memory_cfg = _cfg_section(cfg, "memory", MemoryConfig())
+    max_admit_value = _cfg_value(memory_cfg, "max_admit_per_block", MemoryConfig.max_admit_per_block)
+    max_admit = 0 if max_admit_value is None else max(0, int(max_admit_value))
+    if max_admit <= 0 or state.memory is None:
+        return 0
+
     current_outputs = _rollout_outputs(agent, state.params, rollout, state.adapter_dormant)
     ema_outputs = _rollout_outputs(agent, state.ema_params, rollout, state.adapter_dormant)
     entropy = categorical_entropy(current_outputs.logits)
@@ -893,8 +908,9 @@ def _admit_rollout_memories(
     surprise_np = np.asarray(jax.device_get(surprise), dtype=np.float32)
     entropy_np = np.asarray(jax.device_get(entropy), dtype=np.float32)
 
-    admitted = 0
+    candidates: list[tuple[float, int, EpisodeSequence]] = []
     episode_base = int(state.block_index) * 1_000_000
+    candidate_order = 0
     for env_index in range(int(action_np.shape[1])):
         start = 0
         chunk_index = 0
@@ -929,10 +945,19 @@ def _admit_rollout_memories(
                     chunk_index=chunk_index,
                     status="transient",
                 )
-                if state.memory.add(rec):
-                    admitted += 1
+                novelty = state.memory._novelty(sequence_signature(rec))
+                score = state.memory.sequence_score(rec, novelty=novelty)
+                rec.seq_importance = float(score)
+                candidates.append((float(score), candidate_order, rec))
+                candidate_order += 1
                 chunk_index += 1
             start = end
+
+    candidates.sort(key=lambda item: (-item[0], item[1]))
+    admitted = 0
+    for _, _, rec in candidates[:max_admit]:
+        if state.memory.add(rec):
+            admitted += 1
     return admitted
 
 

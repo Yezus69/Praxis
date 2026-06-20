@@ -95,6 +95,8 @@ class MemoryConfig:
     cluster_sim_thresh: float = 0.9
     cluster_merge_thresh: float = 0.97
     max_clusters: int = 64
+    max_admit_per_block: int = 32
+    max_records: int = 4000
 
 
 @dataclasses.dataclass(frozen=True)

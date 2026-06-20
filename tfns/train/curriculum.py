@@ -216,7 +216,7 @@ def _base_cfg(args: argparse.Namespace) -> TFNSConfig:
                 replay_frac_start=0.25,
                 batch_size=max(1, min(4, num_envs)),
             ),
-            memory=MemoryConfig(byte_budget=1 << 28, min_per_cluster=0, max_clusters=32),
+            memory=MemoryConfig(byte_budget=1 << 28, min_per_cluster=0, max_clusters=32, max_records=300, max_admit_per_block=16),
             behavior=BehaviorConfig(kl_tol=0.25, value_tol=10.0, key_cos_tol=0.50),
             protect=ProtectConfig(residual_energy=0.95, max_rank_frac=0.80),
             consolidate=ConsolidateConfig(
