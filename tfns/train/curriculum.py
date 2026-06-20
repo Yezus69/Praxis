@@ -216,13 +216,13 @@ def _base_cfg(args: argparse.Namespace) -> TFNSConfig:
                 replay_frac_start=0.25,
                 batch_size=max(1, min(4, num_envs)),
             ),
-            memory=MemoryConfig(byte_budget=1 << 28, min_per_cluster=0, max_clusters=32, max_records=300, max_admit_per_block=16),
+            memory=MemoryConfig(byte_budget=1 << 24, min_per_cluster=0, max_clusters=32, max_records=300, max_admit_per_block=16),
             behavior=BehaviorConfig(kl_tol=0.25, value_tol=10.0, key_cos_tol=0.50),
             protect=ProtectConfig(residual_energy=0.95, max_rank_frac=0.80),
             consolidate=ConsolidateConfig(
                 learned_threshold=0.10,
                 stable_windows=2,
-                retention_accept=0.10,
+                retention_accept=float(args.retention_accept),
                 slow_replay_steps=1,
                 slow_replay_max_update_norm=0.01,
             ),
@@ -808,6 +808,7 @@ def _run_curriculum(
         consolidate=dataclasses.replace(
             cfg.consolidate,
             learned_threshold=float(args.learned_threshold),
+            retention_accept=float(args.retention_accept),
         ),
     )
     result = _result_header("curriculum", args, cfg, games, random_by_game)
@@ -1077,6 +1078,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval-seed", type=int, default=None)
     parser.add_argument("--eval-max-steps", type=int, default=evaluate.DEFAULT_EVAL_MAX_STEPS)
     parser.add_argument("--learned-threshold", type=float, default=0.9)
+    parser.add_argument("--retention-accept", type=float, default=0.9)
     parser.add_argument("--out-dir", default="tfns_runs/curriculum")
     parser.add_argument("--refs-json", default=None)
     parser.add_argument("--smoke", action="store_true")
