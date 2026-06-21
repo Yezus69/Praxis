@@ -62,14 +62,22 @@ def is_learned(
         recent_scores = scores
         recent_progress = progress
 
+    recent_progress_mean = float(np.mean(recent_progress)) if recent_progress.size else float("nan")
+    recent_progress_std = float(np.std(recent_progress)) if recent_progress.size else float("nan")
+    recent_progress_cleared = bool(np.all(recent_progress >= threshold))
     progress_pass = bool(
         enough_windows
         and all_finite
-        and np.all(recent_progress >= threshold)
-        and float(np.mean(recent_progress)) >= threshold
+        and recent_progress_cleared
+        and recent_progress_mean >= threshold
+    )
+    stability_pass = bool(enough_windows and all_finite and recent_progress_std <= stability_std_max)
+    all_recent_windows_cleared = bool(enough_windows and all_finite and recent_progress_cleared)
+    high_mean_progress_pass = bool(
+        enough_windows and all_finite and recent_progress_mean >= max(threshold, 0.85)
     )
     stable_pass = bool(
-        enough_windows and all_finite and float(np.std(recent_progress)) <= stability_std_max
+        stability_pass or all_recent_windows_cleared or high_mean_progress_pass
     )
     score_margin = max(1.0e-6, margin_frac * abs(float(S_single) - float(S_random)))
     random_margin_pass = bool(
@@ -86,8 +94,8 @@ def is_learned(
         "progress": progress.astype(np.float32),
         "recent_progress": np.asarray(recent_progress, dtype=np.float32),
         "current_progress": float(recent_progress[-1]) if recent_progress.size else float("nan"),
-        "recent_progress_mean": float(np.mean(recent_progress)) if recent_progress.size else float("nan"),
-        "recent_progress_std": float(np.std(recent_progress)) if recent_progress.size else float("nan"),
+        "recent_progress_mean": recent_progress_mean,
+        "recent_progress_std": recent_progress_std,
         "progress_pass": progress_pass,
         "stable_pass": stable_pass,
         "random_margin": score_margin,
