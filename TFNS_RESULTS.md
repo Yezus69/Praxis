@@ -23,6 +23,17 @@ the protected (TFNS) run and the plain-PPO baseline. Evaluation: 30 completed ep
 - **TFNS retains 78% (stochastic) / ~100% (greedy) of SpaceInvaders** after learning a second game.
 - **Plain PPO catastrophically forgets**: down to 7% (stochastic) / 34% (greedy).
 - Normalized forgetting: TFNS 0.22 vs plain ~0.93. Retention AUC 0.89.
+
+### Replicated across 2 seeds (stochastic SpaceInvaders retention)
+
+| | seed 0 | seed 1 | mean |
+|---|---|---|---|
+| **TFNS (protected)** | 0.78 | 0.91 | **0.85** |
+| Plain PPO | 0.073 | 0.066 | **0.07** |
+
+Both seeds: TFNS consolidated SpaceInvaders (gate accepted) and held it through BeamRider training
+(seed 1: 354.7 → 335.7); plain collapsed (seed 1: 352.3 → 155.5). The protection benefit (~12× retention)
+is consistent across seeds.
 - Consolidation of SpaceInvaders was **accepted** (closed-loop gate retention 1.07), building **6
   protected sentinel clusters**; BeamRider then learned **under** that protection (it learns in the
   complementary null-space subspace while SpaceInvaders activations are preserved).
