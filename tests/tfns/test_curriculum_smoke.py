@@ -83,7 +83,13 @@ def test_smoke_curriculum_driver_persists_results_and_progress(tmp_path, monkeyp
     monkeypatch.setattr(
         curriculum.evaluate,
         "random_score",
-        lambda game, *, num_envs, n_episodes, seed: 0.0,
+        lambda game, *, num_envs, n_episodes, seed, max_steps=None: {
+            "mean": 0.0,
+            "sem": 0.0,
+            "n": int(n_episodes),
+            "returns": [0.0] * int(n_episodes),
+            "capped": False,
+        },
     )
 
     def fake_run_blocks(state, agent, tx, env_step, cfg, n_blocks, **kwargs):
@@ -104,7 +110,18 @@ def test_smoke_curriculum_driver_persists_results_and_progress(tmp_path, monkeyp
 
     monkeypatch.setattr(curriculum.loop, "run_blocks", fake_run_blocks)
 
-    def fake_eval_game(agent, params, game, *, num_envs, n_episodes, seed, greedy=False, adapter_dormant=None):
+    def fake_eval_game(
+        agent,
+        params,
+        game,
+        *,
+        num_envs,
+        n_episodes,
+        seed,
+        greedy=False,
+        adapter_dormant=None,
+        max_steps=None,
+    ):
         score = 12.0 if game == games[0] else 9.0
         if greedy:
             score -= 1.0
@@ -113,6 +130,7 @@ def test_smoke_curriculum_driver_persists_results_and_progress(tmp_path, monkeyp
             "sem": 0.0,
             "n": int(n_episodes),
             "returns": [score] * int(n_episodes),
+            "capped": False,
         }
 
     monkeypatch.setattr(curriculum.evaluate, "evaluate_game", fake_eval_game)

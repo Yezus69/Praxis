@@ -15,6 +15,7 @@ from tfns.ppo.rollout import (
     RolloutBatch,
     RolloutCarry,
     SequenceMinibatch,
+    categorical_log_prob,
     collect_rollout,
     compute_gae,
     make_sequence_minibatches,
@@ -288,6 +289,80 @@ def test_collect_rollout_uses_distinct_shifted_reset_and_ppo_masks():
     np.testing.assert_array_equal(np.asarray(rollout.reset_mask), np.asarray(expected_reset_inputs))
     np.testing.assert_array_equal(np.asarray(new_carry.prev_reset), np.asarray(true_reset[-1]))
     assert len(info["extras"]) == T
+
+
+def test_collect_rollout_records_forced_exec_action_and_logprob():
+    agent = _tiny_agent()
+    T, N = 2, 2
+    params = _init_agent(agent, N)
+    obs_script = _obs(T + 1, N, offset=51)
+    rewards = jnp.zeros((T, N), dtype=jnp.float32)
+    ppo_done = jnp.zeros((T, N), dtype=bool)
+    true_reset = jnp.zeros((T, N), dtype=bool)
+    fired_script = [
+        np.array([True, False], dtype=np.bool_),
+        np.array([False, True], dtype=np.bool_),
+    ]
+
+    class FireEnv:
+        def __init__(self):
+            self.obs = obs_script[0]
+            self.t = 0
+            self.exec_actions = []
+
+        def __call__(self, action):
+            action = np.asarray(action, dtype=np.int32)
+            t = self.t
+            self.t += 1
+            fired = fired_script[t]
+            exec_action = action.copy()
+            exec_action[fired] = 1
+            self.exec_actions.append(exec_action.copy())
+            self.obs = obs_script[t + 1]
+            return (
+                self.obs,
+                rewards[t],
+                ppo_done[t],
+                true_reset[t],
+                {"fired": fired.copy(), "exec_action": exec_action.copy()},
+            )
+
+    env = FireEnv()
+    carry = RolloutCarry(
+        hidden=agent.init_hidden(N),
+        prev_action=jnp.zeros((N,), dtype=jnp.int32),
+        prev_reward_clipped=jnp.zeros((N,), dtype=jnp.float32),
+        prev_reset=jnp.zeros((N,), dtype=bool),
+    )
+    rollout, new_carry, _info = collect_rollout(
+        env,
+        agent,
+        params,
+        carry,
+        T,
+        jax.random.PRNGKey(17),
+    )
+
+    expected_actions = np.stack(env.exec_actions, axis=0)
+    np.testing.assert_array_equal(np.asarray(rollout.action), expected_actions)
+    np.testing.assert_array_equal(np.asarray(rollout.prev_action[1]), expected_actions[0])
+    np.testing.assert_array_equal(np.asarray(new_carry.prev_action), expected_actions[-1])
+
+    outputs, _ = agent.unroll(
+        params,
+        rollout.obs,
+        rollout.prev_action,
+        rollout.prev_reward_clipped,
+        rollout.reset_mask,
+        rollout.h0,
+    )
+    expected_logprob = categorical_log_prob(outputs.logits, rollout.action)
+    np.testing.assert_allclose(
+        np.asarray(rollout.logprob),
+        np.asarray(expected_logprob),
+        rtol=1e-6,
+        atol=1e-6,
+    )
 
 
 def test_ppo_loss_runs_and_is_differentiable():

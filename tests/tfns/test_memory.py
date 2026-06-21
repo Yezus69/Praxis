@@ -243,6 +243,22 @@ def test_sampling_helpers_are_risk_based_and_label_free():
     sampled = sample_sequences(bank, np.random.default_rng(0), 3)
     assert all(item is rec for item in sampled)
 
+    transient = _record(t=64, signature=_signature(5), episode_id=2)
+    protected = _record(t=64, signature=_signature(6), episode_id=3)
+    protected.status = "protected"
+    mixed_bank = SequenceMemoryBank(MemoryConfig(byte_budget=nbytes(rec) * 4, min_per_cluster=0))
+    assert mixed_bank.add(transient)
+    assert mixed_bank.add(protected)
+    protected_sample = sample_sequences(
+        mixed_bank,
+        np.random.default_rng(1),
+        6,
+        statuses={"protected"},
+    )
+    assert protected_sample
+    assert all(item.status == "protected" for item in protected_sample)
+    assert sample_sequences(mixed_bank, np.random.default_rng(2), 6, statuses={"archived"}) == []
+
     burn_slice, protected_slice = burn_in_split(rec, 16, 64)
     assert (burn_slice.start, burn_slice.stop) == (0, 16)
     assert (protected_slice.start, protected_slice.stop) == (16, 64)

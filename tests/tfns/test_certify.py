@@ -35,6 +35,29 @@ def test_is_learned_rejects_weak_or_unstable_and_accepts_strong_stable():
     assert strong_info["stable_pass"] is True
 
 
+def test_is_learned_accepts_noisy_recent_windows_when_all_clear_threshold():
+    cfg = {"learned_threshold": 0.9, "stable_windows": 2, "stability_std_max": 0.01}
+
+    learned, info = is_learned([9.1, 11.0], S_random=0.0, S_single=10.0, cfg=cfg)
+
+    assert info["recent_progress_std"] > cfg["stability_std_max"]
+    assert info["progress_pass"] is True
+    assert info["stable_pass"] is True
+    assert learned is True
+
+
+def test_is_learned_mean_stability_relaxation_still_requires_progress_pass():
+    cfg = {"learned_threshold": 0.8, "stable_windows": 2, "stability_std_max": 0.01}
+
+    learned, info = is_learned([10.1, 7.1], S_random=0.0, S_single=10.0, cfg=cfg)
+
+    assert info["recent_progress_mean"] >= 0.85
+    assert info["recent_progress_std"] > cfg["stability_std_max"]
+    assert info["stable_pass"] is True
+    assert info["progress_pass"] is False
+    assert learned is False
+
+
 def test_is_learned_requires_score_above_random_margin():
     cfg = TFNSConfig(consolidate=ConsolidateConfig(learned_threshold=0.9, stable_windows=2))
 

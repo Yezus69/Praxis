@@ -9,6 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 
+import tfns.train.block as block_mod
 from tfns.config import (
     AdapterConfig,
     AuxConfig,
@@ -208,6 +209,37 @@ def test_train_block_empty_protection_runs_and_admits_memory():
     assert _tree_norm(_tree_delta(state.ema_params, ema_before)) < _tree_norm(
         _tree_delta(state.params, params_before)
     )
+
+
+def test_train_block_uses_ppo_only_with_only_transient_memory(monkeypatch):
+    cfg = _cfg()
+    agent = RecurrentAgent(model_config=cfg.model, adapter_config=cfg.adapter)
+    env = TinyEnv(num_envs=cfg.ppo.num_envs, act_dim=cfg.model.act_dim)
+    tx = optax.adam(1.0e-3)
+    state = _init_state(agent, cfg, env, tx)
+    state, _ = train_block(state, agent, tx, env, cfg)
+    assert len(state.memory) >= 1
+    assert all(rec.status == "transient" for rec in state.memory.records())
+
+    calls = {"ppo_only": 0}
+    original_ppo_only = block_mod._grad_step_ppo_only
+
+    def fail_replay_path(*args, **kwargs):
+        raise AssertionError("transient records must not enter replay tube loss")
+
+    def count_ppo_only(*args, **kwargs):
+        calls["ppo_only"] += 1
+        return original_ppo_only(*args, **kwargs)
+
+    monkeypatch.setattr(block_mod, "_grad_step", fail_replay_path)
+    monkeypatch.setattr(block_mod, "_grad_step_ppo_only", count_ppo_only)
+
+    state, telemetry = train_block(state, agent, tx, env, cfg)
+
+    assert calls["ppo_only"] >= 1
+    assert telemetry["replay_tube_mean"] == 0.0
+    assert telemetry["replay_tube_tail"] == 0.0
+    assert telemetry["replay_tube_total"] == 0.0
 
 
 def test_train_block_protected_path_respects_basis_null_space_and_replay_zero():
