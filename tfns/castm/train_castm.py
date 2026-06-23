@@ -74,6 +74,7 @@ class TrainConfig:
     anchor_frames: int = 2048
     proto_per_ctx: int = 8
     scratch_mult: float = 1.0
+    naive: bool = False
 
 
 # --- PPO loss (feed-forward) ---------------------------------------------------
@@ -424,9 +425,16 @@ def run(cfg: TrainConfig):
     retention_matrix = []  # list of dicts: after game i, scores for games 0..i
     full_curves = {}
 
+    naive = bool(getattr(cfg, "naive", False))
+    if naive:
+        log("NAIVE BASELINE: every game fine-tunes the shared net (no freeze, no "
+            "addressed memory) — the catastrophic-forgetting control.")
+
     for gi, game in enumerate(cfg.games):
         ctx_id = ctx_ids[gi]
-        mode = "shared" if gi == 0 else "scratch"
+        # CASTM: game 0 -> shared W0, later games -> isolated scratch committed to
+        # their address. Naive control: ALL games fine-tune the same shared net.
+        mode = "shared" if (gi == 0 or naive) else "scratch"
         banks, best, curve, committed = train_one_game(
             cfg, cfg_ff, banks, book, game, ctx_id, mode=mode, rng=rng, out_dir=out_dir, log=log
         )
@@ -505,11 +513,12 @@ def parse_args() -> TrainConfig:
     p.add_argument("--out-dir", type=str, default="castm_runs/oracle/run")
     p.add_argument("--inferred-eval", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--scratch-mult", type=float, default=1.0)
+    p.add_argument("--naive", action="store_true", help="catastrophic-forgetting control: fine-tune shared net on all games")
     args = p.parse_args()
     return TrainConfig(
         games=tuple(args.games), steps_per_game=args.steps_per_game, num_envs=args.num_envs,
         seed=args.seed, eval_episodes=args.eval_episodes, lr_scratch=args.lr_scratch, out_dir=args.out_dir,
-        inferred_eval=args.inferred_eval, scratch_mult=args.scratch_mult,
+        inferred_eval=args.inferred_eval, scratch_mult=args.scratch_mult, naive=args.naive,
     )
 
 
