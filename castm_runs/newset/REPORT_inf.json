@@ -1,0 +1,366 @@
+{
+  "refs": {
+    "BeamRider-v5": {
+      "single": 728.5999755859375,
+      "final": 596.4000244140625
+    },
+    "Breakout-v5": {
+      "single": 16.5,
+      "final": 16.049999237060547
+    },
+    "Pong-v5": {
+      "single": -19.450000762939453,
+      "final": -21.0
+    },
+    "Seaquest-v5": {
+      "single": 834.0,
+      "final": 826.0
+    },
+    "SpaceInvaders-v5": {
+      "single": 456.25,
+      "final": 456.25
+    }
+  },
+  "analyses": {
+    "castm_runs/newset/plastic_inf_seed1": {
+      "games": [
+        "Breakout-v5",
+        "Pong-v5",
+        "SpaceInvaders-v5",
+        "Seaquest-v5",
+        "BeamRider-v5"
+      ],
+      "per_game": {
+        "Breakout-v5": {
+          "S_random": 1.100000023841858,
+          "S_single": 16.5,
+          "S_best_after_learn": 12.25,
+          "S_final": 11.199999809265137,
+          "progress_final": 0.6558441425000896,
+          "retention_final": 0.905829578292524,
+          "forgetting": 0.06818183062848227,
+          "score_history": [
+            12.25,
+            11.199999809265137,
+            11.800000190734863,
+            11.550000190734863,
+            11.199999809265137
+          ]
+        },
+        "Pong-v5": {
+          "S_random": -20.299999237060547,
+          "S_single": -19.450000762939453,
+          "S_best_after_learn": -21.0,
+          "S_final": -21.0,
+          "progress_final": -0.8235317780163577,
+          "retention_final": 1.000000014285699,
+          "forgetting": 0.0,
+          "score_history": [
+            -21.0,
+            -21.0,
+            -21.0,
+            -21.0
+          ]
+        },
+        "SpaceInvaders-v5": {
+          "S_random": 110.75,
+          "S_single": 456.25,
+          "S_best_after_learn": 205.75,
+          "S_final": 201.75,
+          "progress_final": 0.26338639651914947,
+          "retention_final": 0.9578947367412743,
+          "forgetting": 0.011577424022819749,
+          "score_history": [
+            201.25,
+            205.75,
+            201.75
+          ]
+        },
+        "Seaquest-v5": {
+          "S_random": 58.0,
+          "S_single": 834.0,
+          "S_best_after_learn": 787.0,
+          "S_final": 763.0,
+          "progress_final": 0.9085051546274677,
+          "retention_final": 0.9670781892871457,
+          "forgetting": 0.030927835051147823,
+          "score_history": [
+            787.0,
+            763.0
+          ]
+        },
+        "BeamRider-v5": {
+          "S_random": 481.79998779296875,
+          "S_single": 728.5999755859375,
+          "S_best_after_learn": 582.5999755859375,
+          "S_final": 582.5999755859375,
+          "progress_final": 0.40842784754690425,
+          "retention_final": 0.9999999999007937,
+          "forgetting": 0.0,
+          "score_history": [
+            582.5999755859375
+          ]
+        }
+      },
+      "min_progress": -0.8235317780163577,
+      "min_retention": 0.905829578292524,
+      "current_progress": 0.40842784754690425,
+      "routing_accuracy": {
+        "per_game": {
+          "Breakout-v5": 1.0,
+          "Pong-v5": 1.0,
+          "SpaceInvaders-v5": 1.0,
+          "Seaquest-v5": 1.0,
+          "BeamRider-v5": 0.96484375
+        },
+        "overall": 0.99296875,
+        "confusion": {
+          "Breakout-v5": {
+            "0": 2048,
+            "1": 0,
+            "2": 0,
+            "3": 0,
+            "4": 0
+          },
+          "Pong-v5": {
+            "0": 0,
+            "1": 2048,
+            "2": 0,
+            "3": 0,
+            "4": 0
+          },
+          "SpaceInvaders-v5": {
+            "0": 0,
+            "1": 0,
+            "2": 2048,
+            "3": 0,
+            "4": 0
+          },
+          "Seaquest-v5": {
+            "0": 0,
+            "1": 0,
+            "2": 0,
+            "3": 2048,
+            "4": 0
+          },
+          "BeamRider-v5": {
+            "0": 18,
+            "1": 0,
+            "2": 4,
+            "3": 50,
+            "4": 1976
+          }
+        }
+      },
+      "inferred": {
+        "Breakout-v5": {
+          "inferred_mean": 13.0,
+          "route_acc": 1.0,
+          "inferred_progress": 0.7727272718736443,
+          "oracle_mean": 11.199999809265137
+        },
+        "Pong-v5": {
+          "inferred_mean": -21.0,
+          "route_acc": 1.0,
+          "inferred_progress": -0.8235317780163577,
+          "oracle_mean": -21.0
+        },
+        "SpaceInvaders-v5": {
+          "inferred_mean": 234.25,
+          "route_acc": 0.9828252032520325,
+          "inferred_progress": 0.35745296670455995,
+          "oracle_mean": 201.75
+        },
+        "Seaquest-v5": {
+          "inferred_mean": 808.0,
+          "route_acc": 1.0,
+          "inferred_progress": 0.9664948453483699,
+          "oracle_mean": 763.0
+        },
+        "BeamRider-v5": {
+          "inferred_mean": 591.7999877929688,
+          "route_acc": 0.9930640243902439,
+          "inferred_progress": 0.445705046338243,
+          "oracle_mean": 582.5999755859375
+        }
+      },
+      "gate_21_4_five": {
+        "min_P>=0.90": false,
+        "min_R>=0.90 & P_cur>=0.90": false,
+        "min_P": -0.8235317780163577,
+        "min_R": 0.905829578292524,
+        "P_current": 0.40842784754690425
+      }
+    },
+    "castm_runs/newset/plastic_inf_seed2": {
+      "games": [
+        "Breakout-v5",
+        "Pong-v5",
+        "SpaceInvaders-v5",
+        "Seaquest-v5",
+        "BeamRider-v5"
+      ],
+      "per_game": {
+        "Breakout-v5": {
+          "S_random": 1.149999976158142,
+          "S_single": 16.5,
+          "S_best_after_learn": 5.650000095367432,
+          "S_final": 5.0,
+          "progress_final": 0.25081433324780683,
+          "retention_final": 0.8555555362880299,
+          "forgetting": 0.042345282992468314,
+          "score_history": [
+            5.0,
+            4.900000095367432,
+            5.550000190734863,
+            5.650000095367432,
+            5.0
+          ]
+        },
+        "Pong-v5": {
+          "S_random": -20.25,
+          "S_single": -19.450000762939453,
+          "S_best_after_learn": -15.100000381469727,
+          "S_final": -15.100000381469727,
+          "progress_final": 6.4375055819777565,
+          "retention_final": 0.9999999980582523,
+          "forgetting": 0.0,
+          "score_history": [
+            -15.75,
+            -15.300000190734863,
+            -16.299999237060547,
+            -15.100000381469727
+          ]
+        },
+        "SpaceInvaders-v5": {
+          "S_random": 107.25,
+          "S_single": 456.25,
+          "S_best_after_learn": 345.25,
+          "S_final": 320.0,
+          "progress_final": 0.6095988538507278,
+          "retention_final": 0.893907562987651,
+          "forgetting": 0.07234957019850008,
+          "score_history": [
+            328.25,
+            345.25,
+            320.0
+          ]
+        },
+        "Seaquest-v5": {
+          "S_random": 66.0,
+          "S_single": 834.0,
+          "S_best_after_learn": 804.0,
+          "S_final": 795.0,
+          "progress_final": 0.9492187499876403,
+          "retention_final": 0.9878048780353956,
+          "forgetting": 0.011718749999847455,
+          "score_history": [
+            804.0,
+            795.0
+          ]
+        },
+        "BeamRider-v5": {
+          "S_random": 396.3999938964844,
+          "S_single": 728.5999755859375,
+          "S_best_after_learn": 572.4000244140625,
+          "S_final": 572.4000244140625,
+          "progress_final": 0.5298014455545885,
+          "retention_final": 0.9999999999431818,
+          "forgetting": 0.0,
+          "score_history": [
+            572.4000244140625
+          ]
+        }
+      },
+      "min_progress": 0.25081433324780683,
+      "min_retention": 0.8555555362880299,
+      "current_progress": 0.5298014455545885,
+      "routing_accuracy": {
+        "per_game": {
+          "Breakout-v5": 1.0,
+          "Pong-v5": 1.0,
+          "SpaceInvaders-v5": 1.0,
+          "Seaquest-v5": 1.0,
+          "BeamRider-v5": 0.8876953125
+        },
+        "overall": 0.9775390625,
+        "confusion": {
+          "Breakout-v5": {
+            "0": 2048,
+            "1": 0,
+            "2": 0,
+            "3": 0,
+            "4": 0
+          },
+          "Pong-v5": {
+            "0": 0,
+            "1": 2048,
+            "2": 0,
+            "3": 0,
+            "4": 0
+          },
+          "SpaceInvaders-v5": {
+            "0": 0,
+            "1": 0,
+            "2": 2048,
+            "3": 0,
+            "4": 0
+          },
+          "Seaquest-v5": {
+            "0": 0,
+            "1": 0,
+            "2": 0,
+            "3": 2048,
+            "4": 0
+          },
+          "BeamRider-v5": {
+            "0": 0,
+            "1": 5,
+            "2": 10,
+            "3": 215,
+            "4": 1818
+          }
+        }
+      },
+      "inferred": {
+        "Breakout-v5": {
+          "inferred_mean": 5.650000095367432,
+          "route_acc": 1.0,
+          "inferred_progress": 0.29315961624027514,
+          "oracle_mean": 5.0
+        },
+        "Pong-v5": {
+          "inferred_mean": -16.399999618530273,
+          "route_acc": 1.0,
+          "inferred_progress": 4.812505006243267,
+          "oracle_mean": -15.100000381469727
+        },
+        "SpaceInvaders-v5": {
+          "inferred_mean": 318.75,
+          "route_acc": 0.9170829170829171,
+          "inferred_progress": 0.6060171919597129,
+          "oracle_mean": 320.0
+        },
+        "Seaquest-v5": {
+          "inferred_mean": 812.0,
+          "route_acc": 1.0,
+          "inferred_progress": 0.9713541666540189,
+          "oracle_mean": 795.0
+        },
+        "BeamRider-v5": {
+          "inferred_mean": 586.5999755859375,
+          "route_acc": 0.9766563604240283,
+          "inferred_progress": 0.5725466350613174,
+          "oracle_mean": 572.4000244140625
+        }
+      },
+      "gate_21_4_five": {
+        "min_P>=0.90": false,
+        "min_R>=0.90 & P_cur>=0.90": false,
+        "min_P": 0.25081433324780683,
+        "min_R": 0.8555555362880299,
+        "P_current": 0.5298014455545885
+      }
+    }
+  }
+}

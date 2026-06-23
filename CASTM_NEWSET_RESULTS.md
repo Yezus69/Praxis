@@ -64,6 +64,40 @@ mechanism — not weight freezing — does the work.
   Without it, *both* arms collapsed at SpaceInvaders — a continued-RL instability,
   not a memory issue. Fixing it is part of making fully-plastic continual RL work.
 
+## Task-free (inferred) routing + 2-seed replication
+
+Re-ran the fully-plastic system with **content-based routing** (no game IDs): after
+the curriculum, prototypes are built from the *final* encoder (handles query
+drift), and each game is evaluated with the address chosen per-step from the
+observation alone.
+
+**Retention (oracle-addressed) and routing, two seeds:**
+
+| | seed1 | seed2 |
+|---|---|---|
+| min retention | 0.91 | 0.86 |
+| mean retention | ≈0.95 | ≈0.95 |
+| max forgetting | 0.07 | 0.07 |
+| **router top-1 (held-out)** | **0.993** | **0.978** |
+
+**Inferred ≈ oracle** (the address is inferred, scores barely change), e.g.:
+
+| game | seed1 oracle→inferred | seed2 oracle→inferred | route acc |
+|---|---|---|---|
+| Breakout | 11.2 → 13.0 | 5.0 → 5.7 | 1.00 |
+| SpaceInvaders | 202 → 234 | 320 → 319 | 0.92–0.98 |
+| Seaquest | 763 → 808 | 795 → 812 | 1.00 |
+| BeamRider | 583 → 592 | 572 → 587 | 0.98–0.99 |
+
+→ **The oracle caveat is removed**: retention holds under task-free content
+routing (no game/task identity anywhere in the policy or routing path).
+
+**Honest plasticity variance across seeds:** Breakout learned to ~12 (seed1) /
+~5 (seed2); Pong learned to −15 (seed2) but failed (−21 ≈ random) in seed1 — it
+is sparse-reward and under-trained at 1.5M steps (its single-task reference only
+reaches −19.45). SpaceInvaders/Seaquest/BeamRider learned and retained in both.
+So *retention* replicates robustly; *plasticity* is the variable dimension.
+
 ## Verdict
 
 On a fresh 5-game set including Breakout, with **no frozen weights**, the
