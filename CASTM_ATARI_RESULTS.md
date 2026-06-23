@@ -91,13 +91,29 @@ learnable by a low-rank scratch at this budget.**
 
 Five-context routing top-1 (held-out): order1 = **0.9948**, order2 = **0.9856**.
 
-## Stage F (partial) — replication and a plasticity probe
+## Stage F — replication and the §25 scratch-rank ablation
 
-- **Replication:** exact retention (min_R = 1.000) confirmed across 2 seeds
-  (seed1, seed3) and 2 orders (order1, order2). A 3rd seed (seed2) is running.
-- **§25 plasticity probe (running):** Alien → Asterix → Tennis with a **4×
-  scratchpad** (ranks 32/64/32 vs 8/16/8), to test whether higher scratch rank
-  closes the Asterix/Tennis plasticity gap. Result appended on completion.
+- **Replication:** exact retention (min_R = 1.000, forgetting 0.000) confirmed
+  across **3 seeds** (seed1/2/3) and **2 curriculum orders** (order1/order2) — 6
+  multi-game runs, every committed write noninterfering at ~5e-8 to ~4e-7.
+
+- **Scratch-rank ablation (§25 prescription "increase scratch rank"):** rerun
+  with a **4× scratchpad** (ranks 32/64/32 vs 8/16/8). Retention stays exact;
+  plasticity of the weak games changes sharply:
+
+  | Game | scratch ×1 progress | scratch ×4 progress | retention (both) |
+  |---|---|---|---|
+  | Asterix | 0.36 | **1.32** (probe) / 1.08 (5-game) | 1.000 |
+  | Tennis | 0.65 (o1) / ≈0 (o2) | ≈0 | 1.000 |
+  | Defender | 0.85–1.6 | 1.41 | 1.000 |
+
+  **Higher scratch rank closes the Asterix plasticity gap entirely** (0.36 → 1.32,
+  above the reference 975), validating the spec's first remedy. **Tennis is not
+  fixed by rank** — it is intrinsically hard at this budget (its own single-task
+  reference reaches only −4.35) and most dissimilar from the Alien backbone,
+  pointing to the deeper remedies (contextualize earlier layers / per-context
+  backbone adaptation via exact compensated shared consolidation). Routing in the
+  ×4 probe is 1.000 across 3 contexts.
 
 ## Interpretation
 
