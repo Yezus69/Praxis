@@ -62,6 +62,9 @@ class PlasticConfig:
     out_dir: str = "castm_runs/plastic/run"
     fire_reset: bool = True
     resolve: bool = True  # False = naive control (no memory protection, identical training)
+    inferred_eval: bool = True
+    anchor_frames: int = 2048
+    proto_per_ctx: int = 8
 
 
 def loss_plastic(trainable, banks_frozen, cfg_ff, k, ctx_id, batch, clip, vf, ent):
@@ -334,6 +337,33 @@ def run(cfg: PlasticConfig):
         }
         (out_dir / "results.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
         log(f"persisted after {game}")
+
+    # --- Task-free inferred-address evaluation (drops the oracle caveat) ---------
+    inferred = None
+    if cfg.inferred_eval and cfg.resolve:
+        from tfns.castm import infer_eval as ie
+        log("=== INFERRED ROUTING (task-free): build prototypes from final encoder ===")
+        prototypes = {}
+        for gi, game in enumerate(cfg.games):
+            c = ctx_ids[gi]
+            q = ie.collect_anchor_queries(cfg_ff, banks, book, game, c, num_envs=cfg.num_envs,
+                                          n_frames=cfg.anchor_frames, seed=cfg.seed + 4000 + gi,
+                                          fire_reset=cfg.fire_reset)
+            prototypes[c] = ie.build_prototypes(q, m_p=cfg.proto_per_ctx)
+        racc = ie.routing_accuracy(cfg_ff, banks, book, list(cfg.games), ctx_ids, prototypes,
+                                   num_envs=cfg.num_envs, n_frames=cfg.anchor_frames,
+                                   seed=cfg.seed + 6000, fire_reset=cfg.fire_reset)
+        log(f"  router top-1 accuracy overall={racc['overall']:.4f} per_game={racc['per_game']}")
+        inferred_scores = {}
+        for gi, game in enumerate(cfg.games):
+            ev = ie.inferred_eval_game(cfg_ff, banks, book, game, ctx_ids[gi], prototypes, ctx_ids,
+                                       num_envs=min(cfg.num_envs, cfg.eval_episodes), n_episodes=cfg.eval_episodes,
+                                       seed=cfg.seed + 8000 + gi, fire_reset=cfg.fire_reset)
+            inferred_scores[game] = ev
+            log(f"  inferred[{game}] mean={ev['mean']:.1f} route_acc={ev['route_acc']:.4f} valid={ev['valid']}")
+        inferred = {"routing_accuracy": racc, "scores": inferred_scores}
+        payload["inferred"] = inferred
+        (out_dir / "results.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     log("DONE")
     return payload
