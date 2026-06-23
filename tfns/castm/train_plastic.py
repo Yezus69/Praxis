@@ -57,7 +57,7 @@ class PlasticConfig:
     ent_coef: float = 0.01
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
-    lr: float = 1.5e-4
+    lr: float = 2.5e-4
     mem_rank: int = 64
     out_dir: str = "castm_runs/plastic/run"
     fire_reset: bool = True
