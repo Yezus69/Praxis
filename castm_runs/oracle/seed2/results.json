@@ -1,0 +1,678 @@
+{
+  "config": {
+    "games": [
+      "Alien-v5",
+      "Defender-v5"
+    ],
+    "steps_per_game": 2000000,
+    "num_envs": 32,
+    "num_steps": 128,
+    "seed": 2,
+    "eval_episodes": 20,
+    "eval_every_updates": 25,
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "num_minibatches": 4,
+    "update_epochs": 4,
+    "clip_coef": 0.1,
+    "ent_coef": 0.01,
+    "vf_coef": 0.5,
+    "max_grad_norm": 0.5,
+    "lr_shared": 0.00025,
+    "lr_scratch": 0.001,
+    "out_dir": "castm_runs/oracle/seed2",
+    "fire_reset": true,
+    "inferred_eval": true,
+    "anchor_frames": 2048,
+    "proto_per_ctx": 8
+  },
+  "random_scores": {
+    "Alien-v5": 182.5,
+    "Defender-v5": 3277.5
+  },
+  "best_after_learn": {
+    "Alien-v5": 821.0,
+    "Defender-v5": 12457.5
+  },
+  "retention_matrix": [
+    {
+      "after_game": "Alien-v5",
+      "after_index": 0,
+      "scores": {
+        "Alien-v5": {
+          "mean": 755.0,
+          "std": 265.1131896972656,
+          "n": 20,
+          "valid": true,
+          "returns": [
+            540.0,
+            1000.0,
+            1080.0,
+            570.0,
+            1040.0,
+            550.0,
+            430.0,
+            580.0,
+            530.0,
+            1100.0,
+            530.0,
+            530.0,
+            520.0,
+            580.0,
+            670.0,
+            1110.0,
+            1150.0,
+            1240.0,
+            620.0,
+            730.0
+          ]
+        }
+      }
+    },
+    {
+      "after_game": "Defender-v5",
+      "after_index": 1,
+      "scores": {
+        "Alien-v5": {
+          "mean": 755.0,
+          "std": 265.1131896972656,
+          "n": 20,
+          "valid": true,
+          "returns": [
+            540.0,
+            1000.0,
+            1080.0,
+            570.0,
+            1040.0,
+            550.0,
+            430.0,
+            580.0,
+            530.0,
+            1100.0,
+            530.0,
+            530.0,
+            520.0,
+            580.0,
+            670.0,
+            1110.0,
+            1150.0,
+            1240.0,
+            620.0,
+            730.0
+          ]
+        },
+        "Defender-v5": {
+          "mean": 10732.5,
+          "std": 5159.7548828125,
+          "n": 20,
+          "valid": true,
+          "returns": [
+            3850.0,
+            4650.0,
+            8150.0,
+            9500.0,
+            11900.0,
+            11600.0,
+            9650.0,
+            11900.0,
+            4850.0,
+            9650.0,
+            5550.0,
+            6100.0,
+            17050.0,
+            7850.0,
+            12750.0,
+            18850.0,
+            9850.0,
+            23100.0,
+            8500.0,
+            19350.0
+          ]
+        }
+      }
+    }
+  ],
+  "learning_curves": {
+    "Alien-v5": [
+      {
+        "game": "Alien-v5",
+        "ctx": 0,
+        "update": 1,
+        "steps": 4096,
+        "eval_mean": 175.5,
+        "eval_valid": true,
+        "sps": 114.2401989185964,
+        "loss": 0.24113500118255615,
+        "entropy": 2.8901147842407227,
+        "approx_kl": 0.00024281132209580392
+      },
+      {
+        "game": "Alien-v5",
+        "ctx": 0,
+        "update": 25,
+        "steps": 102400,
+        "eval_mean": 270.5,
+        "eval_valid": true,
+        "sps": 1024.724665762635,
+        "loss": 0.20316028594970703,
+        "entropy": 2.6248717308044434,
+        "approx_kl": 0.0022133649326860905
+      },
+      {
+        "game": "Alien-v5",
+        "ctx": 0,
+        "update": 50,
+        "steps": 204800,
+        "eval_mean": 276.5,
+        "eval_valid": true,
+        "sps": 1250.0912707629332,
+        "loss": 0.13440223038196564,
+        "entropy": 2.4561469554901123,
+        "approx_kl": 0.001491058268584311
+      },
+      {
+        "game": "Alien-v5",
+        "ctx": 0,
+        "update": 75,
+        "steps": 307200,
+        "eval_mean": 295.5,
+        "eval_valid": true,
+        "sps": 1348.0328230457435,
+        "loss": 0.17663675546646118,
+        "entropy": 2.0043716430664062,
+        "approx_kl": 0.0024992264807224274
+      },
+      {
+        "game": "Alien-v5",
+        "ctx": 0,
+        "update": 100,
+        "steps": 409600,
+        "eval_mean": 271.0,
+        "eval_valid": true,
+        "sps": 1399.9731824951687,
+        "loss": 0.18743553757667542,
+        "entropy": 1.7081109285354614,
+        "approx_kl": 0.0008173511596396565
+      },
+      {
+        "game": "Alien-v5",
+        "ctx": 0,
+        "update": 125,
+        "steps": 512000,
+        "eval_mean": 305.0,
+        "eval_valid": true,
+        "sps": 1436.40479613832,
+        "loss": 0.20303615927696228,
+        "entropy": 1.722511887550354,
+        "approx_kl": 0.0015083428006619215
+      },
+      {
+        "game": "Alien-v5",
+        "ctx": 0,
+        "update": 150,
+        "steps": 614400,
+        "eval_mean": 366.0,
+        "eval_valid": true,
+        "sps": 1459.5532853007205,
+        "loss": 0.17729084193706512,
+        "entropy": 1.5592256784439087,
+        "approx_kl": 0.0014769084518775344
+      },
+      {
+        "game": "Alien-v5",
+        "ctx": 0,
+        "update": 175,
+        "steps": 716800,
+        "eval_mean": 410.0,
+        "eval_valid": true,
+        "sps": 1480.211157471442,
+        "loss": 0.24300527572631836,
+        "entropy": 1.5259379148483276,
+        "approx_kl": 0.001260739634744823
+      },
+      {
+        "game": "Alien-v5",
+        "ctx": 0,
+        "update": 200,
+        "steps": 819200,
+        "eval_mean": 470.0,
+        "eval_valid": true,
+        "sps": 1489.7254995101216,
+        "loss": 0.19908782839775085,
+        "entropy": 1.502342700958252,
+        "approx_kl": 0.0011103866854682565
+      },
+      {
+        "game": "Alien-v5",
+        "ctx": 0,
+        "update": 225,
+        "steps": 921600,
+        "eval_mean": 490.0,
+        "eval_valid": true,
+        "sps": 1501.4056421170117,
+        "loss": 0.21089649200439453,
+        "entropy": 1.3216445446014404,
+        "approx_kl": 0.000633177172858268
+      },
+      {
+        "game": "Alien-v5",
+        "ctx": 0,
+        "update": 250,
+        "steps": 1024000,
+        "eval_mean": 475.0,
+        "eval_valid": true,
+        "sps": 1511.9484823029886,
+        "loss": 0.24199128150939941,
+        "entropy": 1.2894788980484009,
+        "approx_kl": 0.0011544842272996902
+      },
+      {
+        "game": "Alien-v5",
+        "ctx": 0,
+        "update": 275,
+        "steps": 1126400,
+        "eval_mean": 679.0,
+        "eval_valid": true,
+        "sps": 1517.8853008428782,
+        "loss": 0.23622368276119232,
+        "entropy": 1.32389497756958,
+        "approx_kl": 0.001436181366443634
+      },
+      {
+        "game": "Alien-v5",
+        "ctx": 0,
+        "update": 300,
+        "steps": 1228800,
+        "eval_mean": 666.5,
+        "eval_valid": true,
+        "sps": 1521.8880559896018,
+        "loss": 0.2634682059288025,
+        "entropy": 1.325714111328125,
+        "approx_kl": 0.001269778236746788
+      },
+      {
+        "game": "Alien-v5",
+        "ctx": 0,
+        "update": 325,
+        "steps": 1331200,
+        "eval_mean": 615.0,
+        "eval_valid": true,
+        "sps": 1527.680064565881,
+        "loss": 0.2278439998626709,
+        "entropy": 1.4101169109344482,
+        "approx_kl": 0.001329696155153215
+      },
+      {
+        "game": "Alien-v5",
+        "ctx": 0,
+        "update": 350,
+        "steps": 1433600,
+        "eval_mean": 739.5,
+        "eval_valid": true,
+        "sps": 1532.38968244215,
+        "loss": 0.3176646828651428,
+        "entropy": 1.3303649425506592,
+        "approx_kl": 0.0008759904885664582
+      },
+      {
+        "game": "Alien-v5",
+        "ctx": 0,
+        "update": 375,
+        "steps": 1536000,
+        "eval_mean": 731.0,
+        "eval_valid": true,
+        "sps": 1536.6680564215285,
+        "loss": 0.2937810719013214,
+        "entropy": 1.2862346172332764,
+        "approx_kl": 0.0008802808588370681
+      },
+      {
+        "game": "Alien-v5",
+        "ctx": 0,
+        "update": 400,
+        "steps": 1638400,
+        "eval_mean": 579.0,
+        "eval_valid": true,
+        "sps": 1539.4737536360394,
+        "loss": 0.3120368719100952,
+        "entropy": 1.2860569953918457,
+        "approx_kl": 0.0007844306528568268
+      },
+      {
+        "game": "Alien-v5",
+        "ctx": 0,
+        "update": 425,
+        "steps": 1740800,
+        "eval_mean": 767.5,
+        "eval_valid": true,
+        "sps": 1543.2477692603168,
+        "loss": 0.29942238330841064,
+        "entropy": 1.466139316558838,
+        "approx_kl": 0.002341881161555648
+      },
+      {
+        "game": "Alien-v5",
+        "ctx": 0,
+        "update": 450,
+        "steps": 1843200,
+        "eval_mean": 656.5,
+        "eval_valid": true,
+        "sps": 1545.7806428555286,
+        "loss": 0.3032025992870331,
+        "entropy": 1.3634326457977295,
+        "approx_kl": 0.0003997439634986222
+      },
+      {
+        "game": "Alien-v5",
+        "ctx": 0,
+        "update": 475,
+        "steps": 1945600,
+        "eval_mean": 764.5,
+        "eval_valid": true,
+        "sps": 1549.095268828693,
+        "loss": 0.3054668605327606,
+        "entropy": 1.4934362173080444,
+        "approx_kl": 0.0002123402082361281
+      },
+      {
+        "game": "Alien-v5",
+        "ctx": 0,
+        "update": 488,
+        "steps": 1998848,
+        "eval_mean": 821.0,
+        "eval_valid": true,
+        "sps": 1543.4622887866578,
+        "loss": 0.28079983592033386,
+        "entropy": 1.4298365116119385,
+        "approx_kl": 4.230846116115572e-06
+      }
+    ],
+    "Defender-v5": [
+      {
+        "game": "Defender-v5",
+        "ctx": 1,
+        "update": 1,
+        "steps": 4096,
+        "eval_mean": 4667.5,
+        "eval_valid": true,
+        "sps": 82.19721307828766,
+        "loss": 0.19134190678596497,
+        "entropy": 1.7067965269088745,
+        "approx_kl": 0.0011292672716081142
+      },
+      {
+        "game": "Defender-v5",
+        "ctx": 1,
+        "update": 25,
+        "steps": 102400,
+        "eval_mean": 4767.5,
+        "eval_valid": true,
+        "sps": 876.5196340228795,
+        "loss": 0.10274770855903625,
+        "entropy": 1.8846579790115356,
+        "approx_kl": 0.0013551837764680386
+      },
+      {
+        "game": "Defender-v5",
+        "ctx": 1,
+        "update": 50,
+        "steps": 204800,
+        "eval_mean": 4802.5,
+        "eval_valid": true,
+        "sps": 1099.4701129602374,
+        "loss": 0.02810664288699627,
+        "entropy": 1.833425760269165,
+        "approx_kl": 0.001203723601065576
+      },
+      {
+        "game": "Defender-v5",
+        "ctx": 1,
+        "update": 75,
+        "steps": 307200,
+        "eval_mean": 5365.0,
+        "eval_valid": true,
+        "sps": 1192.5283844326718,
+        "loss": 0.042173612862825394,
+        "entropy": 1.8482729196548462,
+        "approx_kl": 0.0016645391006022692
+      },
+      {
+        "game": "Defender-v5",
+        "ctx": 1,
+        "update": 100,
+        "steps": 409600,
+        "eval_mean": 5450.0,
+        "eval_valid": true,
+        "sps": 1246.388685898067,
+        "loss": 0.07621452957391739,
+        "entropy": 1.8991972208023071,
+        "approx_kl": 0.002380963182076812
+      },
+      {
+        "game": "Defender-v5",
+        "ctx": 1,
+        "update": 125,
+        "steps": 512000,
+        "eval_mean": 6757.5,
+        "eval_valid": true,
+        "sps": 1265.8773093142897,
+        "loss": 0.09760545194149017,
+        "entropy": 1.9710471630096436,
+        "approx_kl": 0.0017822508234530687
+      },
+      {
+        "game": "Defender-v5",
+        "ctx": 1,
+        "update": 150,
+        "steps": 614400,
+        "eval_mean": 5230.0,
+        "eval_valid": true,
+        "sps": 1308.9376134191634,
+        "loss": 0.12808577716350555,
+        "entropy": 2.0438873767852783,
+        "approx_kl": 0.0008154787356033921
+      },
+      {
+        "game": "Defender-v5",
+        "ctx": 1,
+        "update": 175,
+        "steps": 716800,
+        "eval_mean": 4530.0,
+        "eval_valid": true,
+        "sps": 1334.2576938525906,
+        "loss": 0.08229891955852509,
+        "entropy": 2.1358754634857178,
+        "approx_kl": 0.000840554537717253
+      },
+      {
+        "game": "Defender-v5",
+        "ctx": 1,
+        "update": 200,
+        "steps": 819200,
+        "eval_mean": 5667.5,
+        "eval_valid": true,
+        "sps": 1346.8331496545973,
+        "loss": 0.08844022452831268,
+        "entropy": 2.0452425479888916,
+        "approx_kl": 0.0007913812296465039
+      },
+      {
+        "game": "Defender-v5",
+        "ctx": 1,
+        "update": 225,
+        "steps": 921600,
+        "eval_mean": 4907.5,
+        "eval_valid": true,
+        "sps": 1371.5291231554827,
+        "loss": 0.2142220437526703,
+        "entropy": 1.929919958114624,
+        "approx_kl": 0.0015847390750423074
+      },
+      {
+        "game": "Defender-v5",
+        "ctx": 1,
+        "update": 250,
+        "steps": 1024000,
+        "eval_mean": 8595.0,
+        "eval_valid": true,
+        "sps": 1370.453374709287,
+        "loss": 0.0840284451842308,
+        "entropy": 2.0033392906188965,
+        "approx_kl": 0.0011710651451721787
+      },
+      {
+        "game": "Defender-v5",
+        "ctx": 1,
+        "update": 275,
+        "steps": 1126400,
+        "eval_mean": 7175.0,
+        "eval_valid": true,
+        "sps": 1368.15999180179,
+        "loss": 0.0713939368724823,
+        "entropy": 2.033149242401123,
+        "approx_kl": 0.0017312816344201565
+      },
+      {
+        "game": "Defender-v5",
+        "ctx": 1,
+        "update": 300,
+        "steps": 1228800,
+        "eval_mean": 11000.0,
+        "eval_valid": true,
+        "sps": 1357.5663575478225,
+        "loss": 0.05344688519835472,
+        "entropy": 2.00783634185791,
+        "approx_kl": 0.0015936617273837328
+      },
+      {
+        "game": "Defender-v5",
+        "ctx": 1,
+        "update": 325,
+        "steps": 1331200,
+        "eval_mean": 9437.5,
+        "eval_valid": true,
+        "sps": 1349.345693047115,
+        "loss": 0.1792152225971222,
+        "entropy": 1.826448917388916,
+        "approx_kl": 0.0015889846254140139
+      },
+      {
+        "game": "Defender-v5",
+        "ctx": 1,
+        "update": 350,
+        "steps": 1433600,
+        "eval_mean": 7975.0,
+        "eval_valid": true,
+        "sps": 1350.7420537060882,
+        "loss": 0.15252350270748138,
+        "entropy": 1.8009473085403442,
+        "approx_kl": 0.0017785364761948586
+      },
+      {
+        "game": "Defender-v5",
+        "ctx": 1,
+        "update": 375,
+        "steps": 1536000,
+        "eval_mean": 11425.0,
+        "eval_valid": true,
+        "sps": 1345.5893545668853,
+        "loss": 0.10882877558469772,
+        "entropy": 1.7936806678771973,
+        "approx_kl": 0.0018735646735876799
+      },
+      {
+        "game": "Defender-v5",
+        "ctx": 1,
+        "update": 400,
+        "steps": 1638400,
+        "eval_mean": 11852.5,
+        "eval_valid": true,
+        "sps": 1342.1613041993446,
+        "loss": 0.10747627913951874,
+        "entropy": 1.7112714052200317,
+        "approx_kl": 0.0013239694526419044
+      },
+      {
+        "game": "Defender-v5",
+        "ctx": 1,
+        "update": 425,
+        "steps": 1740800,
+        "eval_mean": 10330.0,
+        "eval_valid": true,
+        "sps": 1341.8006083904547,
+        "loss": 0.22346016764640808,
+        "entropy": 1.688218355178833,
+        "approx_kl": 0.0008646859787404537
+      },
+      {
+        "game": "Defender-v5",
+        "ctx": 1,
+        "update": 450,
+        "steps": 1843200,
+        "eval_mean": 10927.5,
+        "eval_valid": true,
+        "sps": 1341.514858544232,
+        "loss": 0.14725033938884735,
+        "entropy": 1.7705552577972412,
+        "approx_kl": 0.0005652853287756443
+      },
+      {
+        "game": "Defender-v5",
+        "ctx": 1,
+        "update": 475,
+        "steps": 1945600,
+        "eval_mean": 11045.0,
+        "eval_valid": true,
+        "sps": 1343.1083564719745,
+        "loss": 0.12870855629444122,
+        "entropy": 1.6714556217193604,
+        "approx_kl": 0.000283324858173728
+      },
+      {
+        "game": "Defender-v5",
+        "ctx": 1,
+        "update": 488,
+        "steps": 1998848,
+        "eval_mean": 12457.5,
+        "eval_valid": true,
+        "sps": 1326.3702906101648,
+        "loss": 0.1659339964389801,
+        "entropy": 1.7090449333190918,
+        "approx_kl": 1.0290163118042983e-05
+      }
+    ]
+  },
+  "inferred": {
+    "routing_accuracy": {
+      "per_game": {
+        "Alien-v5": 1.0,
+        "Defender-v5": 1.0
+      },
+      "overall": 1.0,
+      "confusion": {
+        "Alien-v5": {
+          "0": 2048,
+          "1": 0
+        },
+        "Defender-v5": {
+          "0": 0,
+          "1": 2048
+        }
+      }
+    },
+    "scores": {
+      "Alien-v5": {
+        "mean": 780.0,
+        "n": 20,
+        "valid": true,
+        "route_acc": 0.9749283667621776
+      },
+      "Defender-v5": {
+        "mean": 10420.0,
+        "n": 20,
+        "valid": true,
+        "route_acc": 1.0
+      }
+    }
+  }
+}

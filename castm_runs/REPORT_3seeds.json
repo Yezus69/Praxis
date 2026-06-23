@@ -1,0 +1,245 @@
+{
+  "refs": {
+    "Alien-v5": {
+      "single": 561.5,
+      "final": 517.0
+    },
+    "Asterix-v5": {
+      "single": 975.0,
+      "final": 882.5
+    },
+    "Defender-v5": {
+      "single": 7855.0,
+      "final": 5450.0
+    },
+    "Phoenix-v5": {
+      "single": 3149.0,
+      "final": 3149.0
+    },
+    "Tennis-v5": {
+      "single": -4.349999904632568,
+      "final": -8.5
+    }
+  },
+  "analyses": {
+    "castm_runs/oracle/seed1": {
+      "games": [
+        "Alien-v5",
+        "Defender-v5"
+      ],
+      "per_game": {
+        "Alien-v5": {
+          "S_random": 173.0,
+          "S_single": 561.5,
+          "S_best_after_learn": 564.5,
+          "S_final": 564.5,
+          "progress_final": 1.007722007696069,
+          "retention_final": 0.9999999999744572,
+          "forgetting": 0.0,
+          "score_history": [
+            564.5,
+            564.5
+          ]
+        },
+        "Defender-v5": {
+          "S_random": 2927.5,
+          "S_single": 7855.0,
+          "S_best_after_learn": 7090.0,
+          "S_final": 7090.0,
+          "progress_final": 0.8447488584457743,
+          "retention_final": 0.9999999999975976,
+          "forgetting": 0.0,
+          "score_history": [
+            7090.0
+          ]
+        }
+      },
+      "min_progress": 0.8447488584457743,
+      "min_retention": 0.9999999999744572,
+      "current_progress": 0.8447488584457743,
+      "gate_21_2_oracle": {
+        "P2>=0.90": false,
+        "R1>=0.90": true,
+        "P2": 0.8447488584457743,
+        "R1": 0.9999999999744572
+      },
+      "gate_21_4_five": {
+        "min_P>=0.90": false,
+        "min_R>=0.90 & P_cur>=0.90": false,
+        "min_P": 0.8447488584457743,
+        "min_R": 0.9999999999744572,
+        "P_current": 0.8447488584457743
+      }
+    },
+    "castm_runs/oracle/seed2": {
+      "games": [
+        "Alien-v5",
+        "Defender-v5"
+      ],
+      "per_game": {
+        "Alien-v5": {
+          "S_random": 182.5,
+          "S_single": 561.5,
+          "S_best_after_learn": 755.0,
+          "S_final": 755.0,
+          "progress_final": 1.5105540896699061,
+          "retention_final": 0.9999999999825328,
+          "forgetting": 0.0,
+          "score_history": [
+            755.0,
+            755.0
+          ]
+        },
+        "Defender-v5": {
+          "S_random": 3277.5,
+          "S_single": 7855.0,
+          "S_best_after_learn": 10732.5,
+          "S_final": 10732.5,
+          "progress_final": 1.6286182413945853,
+          "retention_final": 0.9999999999986586,
+          "forgetting": 0.0,
+          "score_history": [
+            10732.5
+          ]
+        }
+      },
+      "min_progress": 1.5105540896699061,
+      "min_retention": 0.9999999999825328,
+      "current_progress": 1.6286182413945853,
+      "routing_accuracy": {
+        "per_game": {
+          "Alien-v5": 1.0,
+          "Defender-v5": 1.0
+        },
+        "overall": 1.0,
+        "confusion": {
+          "Alien-v5": {
+            "0": 2048,
+            "1": 0
+          },
+          "Defender-v5": {
+            "0": 0,
+            "1": 2048
+          }
+        }
+      },
+      "inferred": {
+        "Alien-v5": {
+          "inferred_mean": 780.0,
+          "route_acc": 0.9749283667621776,
+          "inferred_progress": 1.5765171503541815,
+          "oracle_mean": 755.0
+        },
+        "Defender-v5": {
+          "inferred_mean": 10420.0,
+          "route_acc": 1.0,
+          "inferred_progress": 1.560349535769393,
+          "oracle_mean": 10732.5
+        }
+      },
+      "gate_21_2_oracle": {
+        "P2>=0.90": true,
+        "R1>=0.90": true,
+        "P2": 1.6286182413945853,
+        "R1": 0.9999999999825328
+      },
+      "gate_21_3_inferred": {
+        "P2>=0.90": true,
+        "R1(routing)>=0.99": true,
+        "routing_overall": 1.0
+      },
+      "gate_21_4_five": {
+        "min_P>=0.90": true,
+        "min_R>=0.90 & P_cur>=0.90": true,
+        "min_P": 1.5105540896699061,
+        "min_R": 0.9999999999825328,
+        "P_current": 1.6286182413945853
+      }
+    },
+    "castm_runs/oracle/seed3": {
+      "games": [
+        "Alien-v5",
+        "Defender-v5"
+      ],
+      "per_game": {
+        "Alien-v5": {
+          "S_random": 180.6666717529297,
+          "S_single": 561.5,
+          "S_best_after_learn": 435.0,
+          "S_final": 435.0,
+          "progress_final": 0.6678336935768134,
+          "retention_final": 0.9999999999606815,
+          "forgetting": 0.0,
+          "score_history": [
+            435.0,
+            435.0
+          ]
+        },
+        "Defender-v5": {
+          "S_random": 3090.0,
+          "S_single": 7855.0,
+          "S_best_after_learn": 7186.66650390625,
+          "S_final": 7186.66650390625,
+          "progress_final": 0.8597411340813542,
+          "retention_final": 0.9999999999975591,
+          "forgetting": 0.0,
+          "score_history": [
+            7186.66650390625
+          ]
+        }
+      },
+      "min_progress": 0.6678336935768134,
+      "min_retention": 0.9999999999606815,
+      "current_progress": 0.8597411340813542,
+      "routing_accuracy": {
+        "per_game": {
+          "Alien-v5": 1.0,
+          "Defender-v5": 1.0
+        },
+        "overall": 1.0,
+        "confusion": {
+          "Alien-v5": {
+            "0": 2048,
+            "1": 0
+          },
+          "Defender-v5": {
+            "0": 0,
+            "1": 2048
+          }
+        }
+      },
+      "inferred": {
+        "Alien-v5": {
+          "inferred_mean": 360.6666564941406,
+          "route_acc": 0.8890951276102088,
+          "inferred_progress": 0.472647668640249,
+          "oracle_mean": 435.0
+        },
+        "Defender-v5": {
+          "inferred_mean": 7946.66650390625,
+          "route_acc": 1.0,
+          "inferred_progress": 1.0192374614682178,
+          "oracle_mean": 7186.66650390625
+        }
+      },
+      "gate_21_2_oracle": {
+        "P2>=0.90": false,
+        "R1>=0.90": true,
+        "P2": 0.8597411340813542,
+        "R1": 0.9999999999606815
+      },
+      "gate_21_3_inferred": {
+        "P2>=0.90": true,
+        "R1(routing)>=0.99": true,
+        "routing_overall": 1.0
+      },
+      "gate_21_4_five": {
+        "min_P>=0.90": false,
+        "min_R>=0.90 & P_cur>=0.90": false,
+        "min_P": 0.6678336935768134,
+        "min_R": 0.9999999999606815,
+        "P_current": 0.8597411340813542
+      }
+    }
+  }
+}

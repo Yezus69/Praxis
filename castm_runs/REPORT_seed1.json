@@ -1,0 +1,67 @@
+{
+  "refs": {
+    "Alien-v5": {
+      "single": 561.5,
+      "final": 517.0
+    },
+    "Asterix-v5": {
+      "single": 975.0,
+      "final": 882.5
+    },
+    "Defender-v5": {
+      "single": 7855.0,
+      "final": 5450.0
+    }
+  },
+  "analyses": {
+    "castm_runs/oracle/seed1": {
+      "games": [
+        "Alien-v5",
+        "Defender-v5"
+      ],
+      "per_game": {
+        "Alien-v5": {
+          "S_random": 173.0,
+          "S_single": 561.5,
+          "S_best_after_learn": 564.5,
+          "S_final": 564.5,
+          "progress_final": 1.007722007696069,
+          "retention_final": 0.9999999999744572,
+          "forgetting": 0.0,
+          "score_history": [
+            564.5,
+            564.5
+          ]
+        },
+        "Defender-v5": {
+          "S_random": 2927.5,
+          "S_single": 7855.0,
+          "S_best_after_learn": 7090.0,
+          "S_final": 7090.0,
+          "progress_final": 0.8447488584457743,
+          "retention_final": 0.9999999999975976,
+          "forgetting": 0.0,
+          "score_history": [
+            7090.0
+          ]
+        }
+      },
+      "min_progress": 0.8447488584457743,
+      "min_retention": 0.9999999999744572,
+      "current_progress": 0.8447488584457743,
+      "gate_21_2_oracle": {
+        "P2>=0.90": false,
+        "R1>=0.90": true,
+        "P2": 0.8447488584457743,
+        "R1": 0.9999999999744572
+      },
+      "gate_21_4_five": {
+        "min_P>=0.90": false,
+        "min_R>=0.90 & P_cur>=0.90": false,
+        "min_P": 0.8447488584457743,
+        "min_R": 0.9999999999744572,
+        "P_current": 0.8447488584457743
+      }
+    }
+  }
+}
