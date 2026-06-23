@@ -134,6 +134,14 @@ def greedy_policy(params, obs, force_fire):
 
 
 @jax.jit
+def sample_policy(params, obs, force_fire, rng):
+    rng, key = jax.random.split(rng)
+    logits, _ = NatureActorCritic().apply({"params": params}, obs)
+    sampled = jax.random.categorical(key, logits, axis=-1).astype(jnp.int32)
+    return jnp.where(force_fire, jnp.full_like(sampled, FIRE_ACTION), sampled), rng
+
+
+@jax.jit
 def value_only(params, obs):
     return NatureActorCritic().apply({"params": params}, obs)[1]
 
@@ -214,6 +222,8 @@ def update_ppo(params, opt_state, batch, rng, lr, epochs, minibatches, minibatch
 
 
 def evaluate(params, cfg: PPOConfig, seed: int) -> dict[str, Any]:
+    # Stochastic-policy evaluation is the primary score (spec section 19); greedy
+    # evaluation of a deterministic env collapses to a constant and is misleading.
     n = min(int(cfg.num_envs), int(cfg.eval_episodes))
     env = make_env(cfg.game, n, seed, training=False)
     obs, _ = reset_result(env.reset())
@@ -221,9 +231,10 @@ def evaluate(params, cfg: PPOConfig, seed: int) -> dict[str, Any]:
     running = np.zeros((n,), dtype=np.float32)
     fire = np.full((n,), bool(cfg.fire_reset), dtype=np.bool_)
     completed: list[float] = []
+    rng = jax.random.PRNGKey(int(seed) + 7)
 
     while len(completed) < int(cfg.eval_episodes):
-        actions = greedy_policy(params, obs, jnp.asarray(fire))
+        actions, rng = sample_policy(params, obs, jnp.asarray(fire), rng)
         obs, reward, terminated, truncated, _ = env.step(np.asarray(jax.device_get(actions), np.int32))
         obs = nhwc_uint8(obs)
         done = np.logical_or(vec(terminated, np.bool_, n, "terminated"), vec(truncated, np.bool_, n, "truncated"))
