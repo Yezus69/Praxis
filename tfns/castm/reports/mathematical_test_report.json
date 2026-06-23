@@ -1,0 +1,70 @@
+{
+  "spec": "README_CONTEXT_ADDRESSED_SYNAPTIC_MEMORY.md",
+  "precision": "float32",
+  "eps_write": 1e-06,
+  "address_invariants": {
+    "norm_error": 5.960464477539063e-08,
+    "orthogonality_error": 3.5762786865234375e-07,
+    "duality_error": 2.384185791015625e-07,
+    "rank": 64,
+    "num_used": 64,
+    "condition_number": 1.0000004768371582
+  },
+  "address_invariants_pass": true,
+  "layers": {
+    "dense_encoder": {
+      "n_contexts": 32,
+      "rank": 16,
+      "max_noninterference": 3.552799174938353e-08,
+      "max_intended_write_error": 1.2904070728533937e-07,
+      "max_decoded_drift": 1.430511474609375e-06,
+      "bytes_per_context": 233472.0
+    },
+    "gru_gate": {
+      "n_contexts": 32,
+      "rank": 16,
+      "max_noninterference": 3.000066865967066e-08,
+      "max_intended_write_error": 1.4499905521621313e-07,
+      "max_decoded_drift": 1.430511474609375e-06,
+      "bytes_per_context": 100480.0
+    },
+    "policy_head": {
+      "n_contexts": 32,
+      "rank": 8,
+      "max_noninterference": 4.010987931782672e-08,
+      "max_intended_write_error": 1.5332115817135807e-07,
+      "max_decoded_drift": 4.76837158203125e-07,
+      "bytes_per_context": 16960.0
+    },
+    "value_head": {
+      "n_contexts": 32,
+      "rank": 8,
+      "max_noninterference": 5.267642321725599e-07,
+      "max_intended_write_error": 1.572665173019394e-07,
+      "max_decoded_drift": 4.76837158203125e-07,
+      "bytes_per_context": 16416.0
+    },
+    "conv2_flat": {
+      "n_contexts": 32,
+      "rank": 8,
+      "max_noninterference": 3.2997539294346177e-08,
+      "max_intended_write_error": 1.226129249054222e-07,
+      "max_decoded_drift": 7.152557373046875e-07,
+      "bytes_per_context": 18432.0
+    },
+    "conv3_flat": {
+      "n_contexts": 32,
+      "rank": 8,
+      "max_noninterference": 2.3623558495625356e-08,
+      "max_intended_write_error": 1.2296904311384347e-07,
+      "max_decoded_drift": 9.5367431640625e-07,
+      "bytes_per_context": 20480.0
+    }
+  },
+  "mathematical_memory_gate_21_1": {
+    "min_contexts_required": 32,
+    "contexts_tested": 32,
+    "exact_noninterference_eps_write": 1e-06,
+    "passed": true
+  }
+}
