@@ -72,7 +72,12 @@ def analyze_run(results: dict, refs: dict[str, dict]) -> dict:
     for gi, g in enumerate(games):
         s_rand = float(random_scores.get(g, 0.0))
         s_single = float(refs.get(g, {}).get("single", best_after.get(g, float("nan"))))
-        s_best = float(best_after.get(g, float("nan")))  # best right after learning g
+        # Retention baseline (spec 20): best score observed AFTER learning game g,
+        # i.e., the max over the retention-matrix rows from game g onward (the
+        # certified-policy score), NOT the transient training-curve peak.
+        post = [float(matrix[r]["scores"][g]["mean"]) for r in range(gi, len(matrix))
+                if g in matrix[r]["scores"]]
+        s_best = max(post) if post else float(best_after.get(g, float("nan")))
         s_final = float(final_row.get(g, {}).get("mean", float("nan")))
         P_final = progress(s_final, s_rand, s_single)
         R_final = retention(s_final, s_rand, s_best)
