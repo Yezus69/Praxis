@@ -23,6 +23,7 @@ from tfns.config import (
     ReplayConfig,
     TFNSConfig,
 )
+from tfns.consolidate.plasticity import activate_adapter, should_activate_adapter
 from tfns.consolidate.state import ContinualState, ema_update
 from tfns.credit import (
     ReturnPredictor,
@@ -62,9 +63,10 @@ from tfns.ppo import (
 from tfns.model.encoder import Encoder
 from tfns.ppo.rollout import categorical_entropy
 from tfns.protect.optimizer import optimizer_safe_step
+from tfns.utils import tree_add_scaled, tree_global_norm
 from tfns.protect.projection import build_protected_modules
 from tfns.protect.sentinel import make_sentinel_acceptor
-from tfns.protect.constraints import make_constraint_fn
+from tfns.protect.constraints import ConstraintSolverError, make_constraint_fn
 
 _EPS = 1.0e-8
 _MISSING = object()
@@ -296,6 +298,177 @@ def _current_obs(env_step: Any) -> Any:
     raise ValueError("env_step must expose current observation.")
 
 
+def _is_adapter_path(path: Any) -> bool:
+    for part in path:
+        key = getattr(part, "key", None)
+        if key is not None and "adapter" in str(key):
+            return True
+    return False
+
+
+def _mask_to_adapter(tree: Any) -> Any:
+    """Zero every leaf except residual-adapter params (V, U, router)."""
+
+    return jax.tree_util.tree_map_with_path(
+        lambda path, x: x if _is_adapter_path(path) else jnp.zeros_like(x), tree
+    )
+
+
+def _adapter_only_step(
+    params: Any,
+    opt_state: Any,
+    grad: Any,
+    tx: Any,
+    accept_fn: Any,
+    backtrack_scales: tuple[float, ...],
+    max_update_norm: Any,
+    update_scale: Any,
+) -> tuple[Any, Any, dict[str, Any]]:
+    """Apply an adapter-only update when the full protected update is rejected.
+
+    Adapters are free capacity outside every protected subspace. Restricting the
+    update to adapter params (gradient AND the post-Adam update are both masked,
+    so protected/shared params and their momentum never move them) lets a new
+    task learn through routing that the sentinel still accepts — the escape hatch
+    from a 100%-reject frozen regime. The sentinel acceptor vets every candidate,
+    so old-task behavior is never violated.
+    """
+
+    masked_grad = _mask_to_adapter(grad)
+    updates, new_opt = tx.update(masked_grad, opt_state, params)
+    scale = jnp.asarray(update_scale, dtype=jnp.float32)
+    updates = jax.tree_util.tree_map(lambda u: u * scale, updates)
+    updates = _mask_to_adapter(updates)
+    if max_update_norm is not None:
+        norm = tree_global_norm(updates)
+        bound = jnp.minimum(jnp.asarray(1.0, jnp.float32), float(max_update_norm) / (norm + 1.0e-8))
+        updates = jax.tree_util.tree_map(lambda u: u * bound, updates)
+    for index, alpha in enumerate(backtrack_scales):
+        cand = tree_add_scaled(params, updates, float(alpha))
+        if accept_fn is None or bool(accept_fn(cand)):
+            applied = tree_global_norm(jax.tree_util.tree_map(lambda u: u * float(alpha), updates))
+            return cand, new_opt, {
+                "accepted": True,
+                "applied_scale": float(alpha),
+                "applied_norm": applied,
+                "n_backtracks": index,
+                "adapter_only": True,
+            }
+    return params, opt_state, {
+        "accepted": False,
+        "applied_scale": 0.0,
+        "applied_norm": jnp.asarray(0.0, jnp.float32),
+        "n_backtracks": len(backtrack_scales),
+        "adapter_only": True,
+    }
+
+
+def _loosen_behavior(behavior_cfg: Any, factor: float) -> dict[str, float]:
+    """Return sentinel tolerances scaled by ``factor`` for the adapter-only path."""
+
+    def g(name: str, default: float) -> float:
+        return float(_cfg_value(behavior_cfg, name, default))
+
+    return {
+        "kl_tol": g("kl_tol", 0.01) * factor,
+        "value_tol": g("value_tol", 0.1) * factor,
+        "key_cos_tol": g("key_cos_tol", 0.02) * factor,
+        "router_tol": g("router_tol", 0.02) * factor,
+        "lambda_v": g("lambda_v", 1.0),
+        "lambda_q": g("lambda_q", 1.0),
+        "tail_frac": g("tail_frac", 0.10),
+        "teacher_temp": g("teacher_temp", 1.0),
+        "burn_in": g("burn_in", 0.0),
+    }
+
+
+def _recent_score(env_step: Any) -> float | None:
+    score = getattr(env_step, "recent_score", None)
+    if score is None:
+        return None
+    value = score() if callable(score) else score
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _maybe_activate_adapter(
+    state: ContinualState,
+    telemetry: Mapping[str, Any],
+    cfg: Any,
+    *,
+    score: float | None,
+    detector_changed: bool,
+    reject_rate: float | None = None,
+) -> int | None:
+    """Activate a dormant adapter when protection is obstructing new learning.
+
+    Two complementary triggers, either of which fires (free adapter capacity
+    lives outside every protected subspace, so activation is safe):
+
+    1. Section-17 score-stagnation: across ``patience_blocks`` the applied update
+       is heavily projected away, replay and conservation are active, gradients
+       are non-trivial, yet the task score has stopped improving.
+    2. Update-rejection: the sentinel rejects (almost) every update for
+       ``patience_blocks`` while real gradients exist. This is the *reliable*
+       obstruction signal — a 100%-reject regime means the protected network is
+       frozen and the new task cannot learn at all, regardless of the noisy
+       training-return score.
+    """
+
+    if state.bases is None or not state.bases:
+        return None
+    dormant = np.asarray(state.adapter_dormant, dtype=np.bool_)
+    if not bool(np.any(dormant)):
+        return None
+
+    stats = state.robust_stats
+    if stats is None:
+        stats = state.robust_stats = {}
+    history = stats.setdefault("plasticity_history", [])
+    if detector_changed:
+        # A regime change resets stagnation tracking so a score drop across the
+        # boundary is not mistaken for protection-induced obstruction.
+        history.clear()
+
+    cand = float(telemetry.get("candidate_delta_norm", 0.0))
+    proj = float(telemetry.get("projected_delta_norm", 0.0))
+    rho = proj / (cand + _EPS) if cand > 0.0 else 1.0
+    entry = {
+        "median_rho": float(rho),
+        "score": None if score is None else float(score),
+        "replay_loss": float(telemetry.get("replay_tube_total", 0.0)),
+        "conservation_loss": float(max(0.0, cand - proj)),
+        "raw_grad_norm": float(telemetry.get("raw_grad_norm", 0.0)),
+        "candidate_delta_norm": cand,
+        "projected_delta_norm": proj,
+        "reject_rate": None if reject_rate is None else float(reject_rate),
+    }
+    history.append(entry)
+    adapter_cfg = _cfg_section(cfg, "adapter", None)
+    patience = int(_cfg_value(adapter_cfg, "patience_blocks", 3))
+    if len(history) > max(1, 4 * patience):
+        del history[: len(history) - 4 * patience]
+
+    fire = should_activate_adapter(history, cfg)
+    if not fire and len(history) >= patience:
+        recent = history[-patience:]
+        reject_thresh = float(_cfg_value(adapter_cfg, "reject_rate_thresh", 0.9))
+        fire = all(
+            (e.get("reject_rate") is not None and float(e["reject_rate"]) >= reject_thresh
+             and float(e.get("raw_grad_norm", 0.0)) > 0.0)
+            for e in recent
+        )
+
+    if not fire:
+        return None
+    state, idx = activate_adapter(state)
+    if idx is not None:
+        history.clear()
+    return idx
+
+
 def _init_rollout_carry(agent: Any, env_step: Any) -> RolloutCarry:
     obs = jnp.asarray(_current_obs(env_step))
     if obs.ndim != 4:
@@ -485,8 +658,8 @@ def _record_inputs(rec: EpisodeSequence, total: int) -> tuple[jnp.ndarray, jnp.n
     obs = reconstruct_record_obs(rec, total)
     return (
         obs[:, None, ...],
-        jnp.asarray(np.asarray(rec.actions[:total], dtype=np.int32))[:, None],
-        jnp.asarray(np.asarray(rec.rewards_clipped[:total], dtype=np.float32))[:, None],
+        jnp.asarray(np.asarray(rec.prev_action[:total], dtype=np.int32))[:, None],
+        jnp.asarray(np.asarray(rec.prev_reward_clipped[:total], dtype=np.float32))[:, None],
         jnp.asarray(np.asarray(rec.reset_mask[:total], dtype=np.bool_))[:, None],
     )
 
@@ -655,9 +828,9 @@ def stack_replay_batch(
 
         rec_obs = np.asarray(jax.device_get(reconstruct_record_obs(rec, total)), dtype=np.uint8)
         obs[row, :total] = rec_obs
-        prev_action[row, :total] = np.asarray(rec.actions[:total], dtype=np.int32)
+        prev_action[row, :total] = np.asarray(rec.prev_action[:total], dtype=np.int32)
         actions[row, :total] = np.asarray(rec.actions[:total], dtype=np.int32)
-        prev_reward[row, :total] = np.asarray(rec.rewards_clipped[:total], dtype=np.float32)
+        prev_reward[row, :total] = np.asarray(rec.prev_reward_clipped[:total], dtype=np.float32)
         reset[row, :total] = np.asarray(rec.reset_mask[:total], dtype=np.bool_)
         teacher_logits[row, :total] = np.asarray(rec.teacher_logits[:total], dtype=np.float32)
         teacher_value[row, :total] = np.asarray(rec.teacher_value[:total], dtype=np.float32)
@@ -905,7 +1078,13 @@ def _admit_rollout_memories(
 
     obs_np = np.asarray(jax.device_get(rollout.obs), dtype=np.uint8)
     action_np = np.asarray(jax.device_get(rollout.action), dtype=np.int32)
+    prev_action_np = np.asarray(jax.device_get(rollout.prev_action), dtype=np.int32)
     reward_np = np.asarray(jax.device_get(rollout.reward), dtype=np.float32)
+    prev_reward_np = np.asarray(jax.device_get(rollout.prev_reward_clipped), dtype=np.float32)
+    if rollout.reward_raw is None:
+        reward_raw_np = reward_np
+    else:
+        reward_raw_np = np.asarray(jax.device_get(rollout.reward_raw), dtype=np.float32)
     ppo_np = np.asarray(jax.device_get(rollout.ppo_mask), dtype=np.bool_)
     reset_np = np.asarray(jax.device_get(rollout.reset_mask), dtype=np.bool_)
     logits_np = _pad_logits(current_outputs.logits)
@@ -930,7 +1109,11 @@ def _admit_rollout_memories(
             if bool(reset_np[t, env_index])
         ]
         for end in boundaries + [int(action_np.shape[0])]:
-            if end > start:
+            # Only fragments that begin at a true episode reset have a recurrent
+            # context reconstructible from a zero hidden state (the reset zeroes
+            # it in both the live unroll and replay). Block-leading fragments
+            # that start mid-episode cannot be reproduced, so they are dropped.
+            if end > start and bool(reset_np[start, env_index]):
                 obs_seq = obs_np[start:end, env_index]
                 init_stack, new_frames = frames_from_obs(obs_seq)
                 sl = slice(start, end)
@@ -938,8 +1121,10 @@ def _admit_rollout_memories(
                     init_stack=init_stack,
                     new_frames=new_frames,
                     actions=action_np[sl, env_index],
+                    prev_action=prev_action_np[sl, env_index],
+                    prev_reward_clipped=prev_reward_np[sl, env_index],
                     rewards_clipped=reward_np[sl, env_index],
-                    rewards_raw=reward_np[sl, env_index],
+                    rewards_raw=reward_raw_np[sl, env_index],
                     ppo_mask=ppo_np[sl, env_index],
                     reset_mask=reset_np[sl, env_index],
                     teacher_logits=logits_np[sl, env_index],
@@ -1119,7 +1304,33 @@ def train_block(
 
     modules = build_protected_modules(state.params, agent.model_config)
     sentinels = list(sentinel_clusters) if sentinel_clusters is not None else list(state.protected_clusters)
-    accept_fn = make_sentinel_acceptor(agent, sentinels, _cfg_section(cfg, "behavior", None)) if sentinels else None
+    behavior_cfg_section = _cfg_section(cfg, "behavior", None)
+    # Adam-NSCL mode: rely on the nullspace projection alone (no hard sentinel
+    # gate). The projection already bounds first-order interference with old-task
+    # features; the hard sentinel is what froze the network at 100% reject.
+    use_sentinel = bool(_cfg_value(protect_cfg, "use_sentinel", True))
+    # PackNet/Progressive mode: when prior tasks are protected, freeze the shared
+    # net entirely and learn the new task ONLY through residual-gated adapters
+    # (fresh capacity, silent on old inputs). Old tasks are then exactly preserved
+    # and the new task is unconstrained by projection/replay/sentinel.
+    freeze_shared = bool(_cfg_value(protect_cfg, "freeze_shared", False)) and bool(sentinels)
+    accept_fn = (
+        None if freeze_shared
+        else make_sentinel_acceptor(agent, sentinels, behavior_cfg_section)
+        if sentinels and use_sentinel
+        else None
+    )
+    # The adapter-only escape path may tolerate a *bounded* old-task drift: its
+    # updates touch only low-rank, zero-initialised adapters, so the sentinel is
+    # the hard cap on cumulative drift. A looser adapter-path acceptor lets a new
+    # task learn through adapters while old-task retention stays within the
+    # widened tube (the cumulative behavior distance still cannot exceed it).
+    adapter_accept_factor = float(_cfg_value(protect_cfg, "adapter_accept_factor", 8.0))
+    adapter_accept_fn = (
+        make_sentinel_acceptor(agent, sentinels, _loosen_behavior(behavior_cfg_section, adapter_accept_factor))
+        if sentinels and use_sentinel and adapter_accept_factor > 1.0
+        else accept_fn
+    )
     constraints = list(constraint_clusters) if constraint_clusters is not None else []
     constraint_cadence = max(1, int(_cfg_value(protect_cfg, "constraint_cadence", 1)))
     max_update_norm = _cfg_value(
@@ -1238,19 +1449,90 @@ def train_block(
                     max_clusters=int(_cfg_value(protect_cfg, "constraint_max_clusters", 8)),
                 )
 
-            new_params, new_opt, info = optimizer_safe_step(
-                state.params,
-                state.opt_state,
-                grad,
-                tx,
-                state.bases,
-                modules,
-                accept_fn=accept_fn,
-                constraint_fn=constraint_fn,
-                max_update_norm=max_update_norm,
-                backtrack_scales=backtrack_scales,
-                update_scale=update_scale,
-            )
+            if freeze_shared:
+                # Shared net frozen: apply an adapter-only update unconditionally.
+                new_params, new_opt, info = _adapter_only_step(
+                    state.params, state.opt_state, grad, tx, None,
+                    backtrack_scales, max_update_norm, update_scale,
+                )
+                info = {
+                    "raw_grad_norm": tree_global_norm(grad),
+                    "candidate_delta_norm": info["applied_norm"],
+                    "projected_delta_norm": info["applied_norm"],
+                    **info,
+                }
+                if bool(info["accepted"]):
+                    state.params = new_params
+                    state.opt_state = new_opt
+                    state.ema_params = ema_update(
+                        state.ema_params, state.params,
+                        float(_cfg_value(_cfg_section(cfg, "model", None), "ema_decay", 0.995)),
+                    )
+                    accept_count += 1
+                else:
+                    reject_count += 1
+                telemetry_lists["loss"].append(_as_float(loss_value))
+                for name in ("pg_loss", "v_loss", "entropy", "approx_kl", "aux_loss"):
+                    telemetry_lists[name].append(_as_float(aux.get(name, 0.0)))
+                telemetry_lists["replay_tube_mean"].append(_as_float(aux["replay_tube_mean"]))
+                telemetry_lists["replay_tube_tail"].append(_as_float(aux["replay_tube_tail"]))
+                telemetry_lists["replay_tube_total"].append(_as_float(aux["replay_tube_total"]))
+                for name in ("raw_grad_norm", "candidate_delta_norm", "projected_delta_norm", "applied_norm"):
+                    telemetry_lists[name].append(_as_float(info[name]))
+                telemetry_lists["backtrack_scales"].append(float(info["applied_scale"]))
+                update_index += 1
+                continue
+            try:
+                new_params, new_opt, info = optimizer_safe_step(
+                    state.params,
+                    state.opt_state,
+                    grad,
+                    tx,
+                    state.bases,
+                    modules,
+                    accept_fn=accept_fn,
+                    constraint_fn=constraint_fn,
+                    max_update_norm=max_update_norm,
+                    backtrack_scales=backtrack_scales,
+                    update_scale=update_scale,
+                )
+            except ConstraintSolverError:
+                # A behavior-constraint QP failure must never crash a long run:
+                # skip (reject) this minibatch update and keep the old params.
+                new_params, new_opt = state.params, state.opt_state
+                zero = jnp.asarray(0.0, dtype=jnp.float32)
+                info = {
+                    "raw_grad_norm": zero,
+                    "candidate_delta_norm": zero,
+                    "projected_delta_norm": zero,
+                    "applied_norm": zero,
+                    "applied_scale": 0.0,
+                    "accepted": False,
+                    "n_backtracks": len(backtrack_scales),
+                }
+
+            # Escape hatch: if the full protected update was rejected but free
+            # adapters are active, try an adapter-only update so the new task can
+            # still learn through capacity the sentinel accepts.
+            if (
+                not bool(info["accepted"])
+                and accept_fn is not None
+                and bool(np.any(~np.asarray(state.adapter_dormant, dtype=np.bool_)))
+            ):
+                ao_params, ao_opt, ao_info = _adapter_only_step(
+                    state.params,
+                    state.opt_state,
+                    grad,
+                    tx,
+                    adapter_accept_fn,
+                    backtrack_scales,
+                    max_update_norm,
+                    update_scale,
+                )
+                if bool(ao_info["accepted"]):
+                    new_params, new_opt = ao_params, ao_opt
+                    info = {**info, **ao_info}
+
             if bool(info["accepted"]):
                 state.params = new_params
                 state.opt_state = new_opt
@@ -1303,10 +1585,22 @@ def train_block(
     state.block_index += 1
 
     telemetry = {name: _mean(values) for name, values in telemetry_lists.items()}
+    total_updates = int(accept_count) + int(reject_count)
+    reject_rate = (float(reject_count) / total_updates) if total_updates > 0 else 0.0
+    activated_adapter = _maybe_activate_adapter(
+        state,
+        telemetry,
+        cfg,
+        score=_recent_score(env_step),
+        detector_changed=bool(changed),
+        reject_rate=reject_rate,
+    )
     telemetry.update(
         {
             "accept_count": int(accept_count),
             "reject_count": int(reject_count),
+            "adapter_activated": activated_adapter,
+            "active_adapter_count": int(np.sum(~np.asarray(state.adapter_dormant, dtype=np.bool_))),
             "predictor_loss": _as_float(predictor_loss_value),
             "predictor_val_error": predictive_error,
             "predictor_var_G": _as_float(var_g),

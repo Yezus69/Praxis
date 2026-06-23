@@ -40,6 +40,7 @@ class AdapterConfig:
     top_k: int = 2
     plasticity_ratio_thresh: float = 0.1
     patience_blocks: int = 3
+    residual_rank: int = 0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -69,11 +70,13 @@ class ReplayConfig:
     protected_region: int = 48
     replay_frac_start: float = 0.25
     batch_size: int | None = None
+    replay_coef: float = 1.0
 
 
 @dataclasses.dataclass(frozen=True)
 class MemoryConfig:
     byte_budget: int = 1 << 30
+    compress_frames: bool = False
     w_adv: float = 1.0
     w_td: float = 1.0
     w_causal: float = 2.0
@@ -123,6 +126,10 @@ class ProtectConfig:
     max_rank_frac: float = 0.95
     constraint_max_clusters: int = 8
     constraint_ridge: float = 1e-3
+    constraint_cadence: int = 1
+    adapter_accept_factor: float = 8.0
+    use_sentinel: bool = True
+    freeze_shared: bool = False
     backtrack_scales: tuple[float, ...] = (1.0, 0.5, 0.25, 0.125, 0.0625, 0.03125)
     float32_basis: bool = True
 

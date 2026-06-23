@@ -139,6 +139,7 @@ class RecurrentAgent(nn.Module):
             num_adapters=int(self.adapter_config.num_adapters),
             rank=int(self.adapter_config.rank),
             top_k=int(self.adapter_config.top_k),
+            residual_rank=int(getattr(self.adapter_config, "residual_rank", 0)),
             name="visual_adapter",
         )(e_t, visual_router_input, adapter_dormant)
 
@@ -155,6 +156,7 @@ class RecurrentAgent(nn.Module):
             num_adapters=int(self.adapter_config.num_adapters),
             rank=int(self.adapter_config.rank),
             top_k=int(self.adapter_config.top_k),
+            residual_rank=int(getattr(self.adapter_config, "residual_rank", 0)),
             name="post_adapter",
         )(h_t, h_t, adapter_dormant)
 

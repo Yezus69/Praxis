@@ -23,6 +23,7 @@ class ResidualAdapterBank(nn.Module):
     num_adapters: int = 8
     rank: int = 32
     top_k: int = 2
+    residual_rank: int = 0
 
     @nn.compact
     def __call__(
@@ -50,6 +51,21 @@ class ResidualAdapterBank(nn.Module):
             (num_adapters, rank, input_dim),
         )
 
+        # Nullspace-residual gating. ``U_res`` is a stop-gradient buffer holding an
+        # orthonormal basis of OLD-task activations (written at consolidation; zero
+        # at init). The adapter sees only the residual orthogonal to that basis, so
+        # old-task inputs (which lie in the basis) drive the adapter to ~0 and old
+        # behavior is preserved regardless of adapter/router weights — while novel
+        # inputs (orthogonal to old tasks) pass through and the adapter learns them.
+        res_rank = int(self.residual_rank)
+        if res_rank > 0:
+            U_res = jax.lax.stop_gradient(
+                self.param("U_res", nn.initializers.zeros, (input_dim, res_rank))
+            )
+            x_adapter = x - (x @ U_res) @ U_res.T
+        else:
+            x_adapter = x
+
         logits = nn.Dense(
             features=num_adapters,
             kernel_init=_orthogonal(0.01),
@@ -70,7 +86,7 @@ class ResidualAdapterBank(nn.Module):
             jnp.arange(x.shape[0])[:, None], top_indices
         ].add(top_weights)
 
-        down = jnp.einsum("bd,kdr->bkr", x, V)
+        down = jnp.einsum("bd,kdr->bkr", x_adapter, V)
         adapter_hidden = nn.relu(down)
         adapter_delta = jnp.einsum("bkr,kro->bko", adapter_hidden, U)
         delta = jnp.sum(router_weights[..., None] * adapter_delta, axis=1)

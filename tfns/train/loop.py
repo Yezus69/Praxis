@@ -80,7 +80,10 @@ def init_state(agent: Any, agent_params: Any, cfg: Any, rng: Any, num_envs: int)
         opt_state=tx.init(agent_params),
         ema_params=agent_params,
         bases=bases,
-        memory=SequenceMemoryBank(_cfg_section(cfg, "memory", None)),
+        memory=SequenceMemoryBank(
+            _cfg_section(cfg, "memory", None),
+            compress_frames=bool(getattr(_cfg_section(cfg, "memory", None), "compress_frames", False)),
+        ),
         predictor_params=predictor_params,
         predictor_opt_state=predictor_tx.init(predictor_params),
         detector_state=PageHinkleyDetector(_cfg_section(cfg, "detect", None)).init(),

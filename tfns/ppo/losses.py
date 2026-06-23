@@ -82,18 +82,27 @@ def _ppo_terms(
     ret = _time_major(mb.ret).astype(jnp.float32)
     valid = _time_major(mb.valid_mask).astype(jnp.float32)
 
+    # Forced environment actions (e.g. FIRE-on-reset) were not sampled from the
+    # policy, so their behavior probability is 1, not pi_theta(a). Exclude them
+    # from the importance-ratio objective; value/entropy/aux still learn there.
+    forced = mb.forced_mask
+    if forced is None:
+        policy_valid = valid
+    else:
+        policy_valid = valid * (1.0 - _time_major(forced).astype(jnp.float32))
+
     new_logprob = categorical_log_prob(outputs.logits, action)
     entropy = categorical_entropy(outputs.logits)
     logratio = new_logprob - old_logprob
     ratio = jnp.exp(logratio)
 
-    adv_mean = _mask_mean(adv, valid)
-    adv_var = _mask_mean(jnp.square(adv - adv_mean), valid)
+    adv_mean = _mask_mean(adv, policy_valid)
+    adv_var = _mask_mean(jnp.square(adv - adv_mean), policy_valid)
     adv_norm = (adv - adv_mean) / jnp.sqrt(adv_var + EPS)
 
     pg_loss_unclipped = -adv_norm * ratio
     pg_loss_clipped = -adv_norm * jnp.clip(ratio, 1.0 - clip_coef, 1.0 + clip_coef)
-    pg_loss = _mask_mean(jnp.maximum(pg_loss_unclipped, pg_loss_clipped), valid)
+    pg_loss = _mask_mean(jnp.maximum(pg_loss_unclipped, pg_loss_clipped), policy_valid)
 
     value_pred = jnp.asarray(outputs.value, dtype=jnp.float32)
     v_unclipped = jnp.square(value_pred - ret)
@@ -102,8 +111,8 @@ def _ppo_terms(
     v_loss = 0.5 * _mask_mean(jnp.maximum(v_unclipped, v_clipped), valid)
 
     entropy_loss = _mask_mean(entropy, valid)
-    approx_kl = _mask_mean((ratio - 1.0) - logratio, valid)
-    clipfrac = _mask_mean((jnp.abs(ratio - 1.0) > clip_coef).astype(jnp.float32), valid)
+    approx_kl = _mask_mean((ratio - 1.0) - logratio, policy_valid)
+    clipfrac = _mask_mean((jnp.abs(ratio - 1.0) > clip_coef).astype(jnp.float32), policy_valid)
     loss = pg_loss + vf_coef * v_loss - ent_coef_value * entropy_loss
     aux = {
         "pg_loss": pg_loss,

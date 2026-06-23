@@ -63,6 +63,50 @@ def test_should_activate_adapter_requires_low_rho_stagnation_losses_and_protecti
     assert should_activate_adapter(broken_optimizer, cfg) is False
 
 
+def test_maybe_activate_adapter_fires_on_sustained_protection_obstruction():
+    from tfns.train.block import _maybe_activate_adapter
+
+    cfg = TFNSConfig(adapter=AdapterConfig(patience_blocks=3, plasticity_ratio_thresh=0.1))
+    obstructed = {
+        "candidate_delta_norm": 10.0,
+        "projected_delta_norm": 0.2,
+        "replay_tube_total": 0.2,
+        "raw_grad_norm": 1.0,
+    }
+
+    def fresh_state():
+        return SimpleNamespace(
+            bases={"encoder_conv1": empty_basis(4)},
+            adapter_dormant=np.array([True, True], dtype=np.bool_),
+            robust_stats={},
+        )
+
+    # Stagnating score across the patience window -> activate on the third block.
+    state = fresh_state()
+    scores = [1.0, 1.0, 0.99]
+    idx = None
+    for score in scores:
+        idx = _maybe_activate_adapter(
+            state, obstructed, cfg, score=score, detector_changed=False
+        )
+    assert idx == 0
+    assert int(np.sum(~state.adapter_dormant)) == 1
+
+    # Improving score never triggers activation.
+    state = fresh_state()
+    for score in [1.0, 1.05, 1.10]:
+        idx = _maybe_activate_adapter(
+            state, obstructed, cfg, score=score, detector_changed=False
+        )
+    assert idx is None
+    assert bool(np.all(state.adapter_dormant))
+
+    # With no protected bases (plain regime) activation never fires.
+    plain = SimpleNamespace(bases={}, adapter_dormant=np.array([True], dtype=np.bool_), robust_stats={})
+    for score in [1.0, 1.0, 0.99]:
+        assert _maybe_activate_adapter(plain, obstructed, cfg, score=score, detector_changed=False) is None
+
+
 def test_activate_adapter_flips_lowest_dormant_and_exhaustion_returns_none():
     state = SimpleNamespace(adapter_dormant=np.array([True, True], dtype=np.bool_))
 

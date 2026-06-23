@@ -38,9 +38,11 @@ def _get(obj: Any, name: str, default: Any = None) -> Any:
 
 
 def _time_batch(rec: EpisodeSequence) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    # Recurrent inputs at time t are the previous action/reward (a_{t-1}, r_{t-1})
+    # that generated the stored teacher output, not the action/reward at t.
     obs = jnp.asarray(reconstruct_obs(rec), dtype=jnp.float32)[:, None, ...]
-    act = jnp.asarray(np.asarray(rec.actions, dtype=np.int32))[:, None]
-    rew = jnp.asarray(np.asarray(rec.rewards_clipped, dtype=np.float32))[:, None]
+    act = jnp.asarray(np.asarray(rec.prev_action, dtype=np.int32))[:, None]
+    rew = jnp.asarray(np.asarray(rec.prev_reward_clipped, dtype=np.float32))[:, None]
     reset = jnp.asarray(np.asarray(rec.reset_mask, dtype=np.bool_))[:, None]
     return obs, act, rew, reset
 
@@ -119,6 +121,99 @@ def _weighted_conv_columns(x: Any, module: Any, weights: np.ndarray) -> jnp.ndar
     if repeated.size != int(cols.shape[1]):
         repeated = np.resize(repeated, int(cols.shape[1]))
     return cols * jnp.asarray(repeated, dtype=cols.dtype)[None, :]
+
+
+def _write_residual_bases(params: Any, bases: Mapping[str, np.ndarray]) -> Any:
+    """Return ``params`` with each adapter's ``U_res`` buffer set to its basis."""
+
+    try:
+        from flax.core import FrozenDict, freeze, unfreeze
+        was_frozen = isinstance(params, FrozenDict)
+        mutable = unfreeze(params) if was_frozen else dict(params)
+    except ImportError:  # pragma: no cover
+        was_frozen = False
+        mutable = dict(params)
+
+    root = mutable["params"] if "params" in mutable and isinstance(mutable["params"], dict) else mutable
+    for adapter_name, basis in bases.items():
+        if adapter_name in root and isinstance(root[adapter_name], dict) and "U_res" in root[adapter_name]:
+            target = np.asarray(root[adapter_name]["U_res"])
+            arr = np.asarray(basis, dtype=np.float32)
+            out = np.zeros(target.shape, dtype=np.float32)
+            r = min(int(target.shape[1]), int(arr.shape[1]))
+            d = min(int(target.shape[0]), int(arr.shape[0]))
+            out[:d, :r] = arr[:d, :r]
+            root[adapter_name]["U_res"] = jnp.asarray(out, dtype=jnp.float32)
+
+    if was_frozen:
+        from flax.core import freeze
+        return freeze(mutable)
+    return mutable
+
+
+def _orthobasis(activations: np.ndarray, rank: int) -> np.ndarray:
+    """Return the top-``rank`` orthonormal directions of activation energy.
+
+    Columns span the dominant (uncentred, through-origin) directions of the
+    old-task activation distribution. The adapter residual ``x - U Uᵀx`` removes
+    them, so old-task inputs (which live in this span) drive the adapter to ~0.
+    """
+
+    d = int(activations.shape[1])
+    rank = int(min(max(1, rank), d))
+    # Eigen-decompose the (small) d×d second-moment matrix.
+    gram = activations.T @ activations
+    evals, evecs = np.linalg.eigh(gram.astype(np.float64))
+    order = np.argsort(evals)[::-1]
+    U = evecs[:, order[:rank]].astype(np.float32)
+    captured = float(np.sum(evals[order[:rank]]) / (np.sum(evals) + 1e-8))
+    out = np.zeros((d, int(rank)), dtype=np.float32)
+    out[:, : U.shape[1]] = U
+    return out, captured
+
+
+def compute_residual_bases(
+    agent: Any,
+    params: Any,
+    records: Sequence[EpisodeSequence],
+    residual_rank: int,
+    *,
+    max_transitions: int = 20000,
+) -> tuple[dict[str, np.ndarray], dict[str, float]]:
+    """Return orthonormal bases of old-task adapter-input activations.
+
+    Keys are adapter module names (``visual_adapter`` on e_t, ``post_adapter`` on
+    h_t). These bases are written into the adapters' stop-gradient ``U_res``
+    buffers so the adapters become silent on old-task inputs.
+    """
+
+    e_cols: list[np.ndarray] = []
+    h_cols: list[np.ndarray] = []
+    total = 0
+    for rec in records:
+        obs_seq, act_seq, rew_seq, reset_seq = _time_batch(rec)
+        h0 = agent.init_hidden(1)
+        outputs, _ = agent.unroll(params, obs_seq, act_seq, rew_seq, reset_seq, h0, collect_presyn=True)
+        presyn = outputs.presyn or {}
+        if "visual_adapter_input" in presyn:
+            e = np.asarray(presyn["visual_adapter_input"], dtype=np.float32).reshape(-1, int(jnp.asarray(presyn["visual_adapter_input"]).shape[-1]))
+            e_cols.append(e)
+        if "post_adapter_input" in presyn:
+            hh = np.asarray(presyn["post_adapter_input"], dtype=np.float32).reshape(-1, int(jnp.asarray(presyn["post_adapter_input"]).shape[-1]))
+            h_cols.append(hh)
+        total += int(e_cols[-1].shape[0]) if e_cols else 0
+        if total >= max_transitions:
+            break
+
+    bases: dict[str, np.ndarray] = {}
+    captured: dict[str, float] = {}
+    if e_cols:
+        E = np.concatenate(e_cols, axis=0)
+        bases["visual_adapter"], captured["visual_adapter"] = _orthobasis(E, residual_rank)
+    if h_cols:
+        H = np.concatenate(h_cols, axis=0)
+        bases["post_adapter"], captured["post_adapter"] = _orthobasis(H, residual_rank)
+    return bases, captured
 
 
 def collect_protected_activations(
@@ -328,6 +423,7 @@ def _retention_from_eval(eval_result: Any, learned_game_keys: Any) -> tuple[dict
         current = eval_current
         return dict(eval_result["retention_by_game"]), None if current is None else float(current)
 
+    keys_explicit = isinstance(learned_game_keys, Mapping)
     if isinstance(learned_game_keys, Mapping):
         keys = list(learned_game_keys.keys())
         baselines = learned_game_keys
@@ -337,6 +433,13 @@ def _retention_from_eval(eval_result: Any, learned_game_keys: Any) -> tuple[dict
 
     if isinstance(eval_result, Mapping):
         if not keys:
+            if keys_explicit:
+                # An explicit empty mapping of prior learned games means there is
+                # nothing OLD to retain yet (e.g. the first protected game). The
+                # current game's quality is verified by ``current_progress``, not
+                # by a noisy self-retention of two independent evals, so return
+                # an empty retention set instead of folding the current game in.
+                return {}, eval_current
             return {
                 key: value
                 for key, value in eval_result.items()
@@ -428,11 +531,13 @@ def _replay_aux_minibatch(
 
         obs_np = reconstruct_obs(rec)
         obs = jnp.asarray(obs_np[:total], dtype=jnp.uint8)[:, None, ...]
-        actions = jnp.asarray(np.asarray(rec.actions[:total], dtype=np.int32))[:, None]
-        rewards = jnp.asarray(np.asarray(rec.rewards_clipped[:total], dtype=np.float32))[:, None]
+        prev_actions = jnp.asarray(np.asarray(rec.prev_action[:total], dtype=np.int32))[:, None]
+        prev_rewards = jnp.asarray(np.asarray(rec.prev_reward_clipped[:total], dtype=np.float32))[:, None]
         resets = jnp.asarray(np.asarray(rec.reset_mask[:total], dtype=np.bool_))[:, None]
         if burn_in > 0:
-            h0 = reconstruct_hidden(agent, params, obs[:burn_in], actions[:burn_in], rewards[:burn_in], resets[:burn_in])
+            h0 = reconstruct_hidden(
+                agent, params, obs[:burn_in], prev_actions[:burn_in], prev_rewards[:burn_in], resets[:burn_in]
+            )
         else:
             h0 = agent.init_hidden(1, dtype=jnp.float32)
 
@@ -451,14 +556,16 @@ def _replay_aux_minibatch(
         if length > shifted:
             terminal[shifted:] = np.asarray(rec.ppo_mask[burn_in + shifted : total], dtype=np.bool_)
 
+        prev_action_np = np.asarray(rec.prev_action[burn_in:total], dtype=np.int32)
+        prev_reward_np = np.asarray(rec.prev_reward_clipped[burn_in:total], dtype=np.float32)
         action_np = np.asarray(rec.actions[burn_in:total], dtype=np.int32)
         reward_np = np.asarray(rec.rewards_clipped[burn_in:total], dtype=np.float32)
         reset_cur = np.asarray(rec.reset_mask[burn_in:total], dtype=np.bool_)
         rows.append(
             {
                 "obs": obs_np[burn_in:total],
-                "prev_action": action_np,
-                "prev_reward_clipped": reward_np,
+                "prev_action": prev_action_np,
+                "prev_reward_clipped": prev_reward_np,
                 "action": action_np,
                 "reward": reward_np,
                 "ppo_mask": np.asarray(rec.ppo_mask[burn_in:total], dtype=np.bool_),
@@ -723,9 +830,18 @@ def consolidate(
             or _get(cluster, "obs_seq", None) is not None
             or _get(cluster, "obs", None) is not None
         ]
+        # Guard the current game's behavior during slow replay too. Otherwise the
+        # FIRST consolidation has no sentinel (no prior protected clusters), so the
+        # unconstrained slow-replay steps can degrade the just-learned game and the
+        # closed-loop gate then rejects it (a spurious self-regression).
+        burn_in_sr = int(_get(_get(cfg, "replay", cfg), "burn_in", 0))
+        candidate_clusters = build_sentinel_clusters(
+            records, agent, state.ema_params, burn_in=burn_in_sr
+        )
+        slow_replay_sentinels = list(sentinel_clusters) + list(candidate_clusters)
         accept_fn = (
-            make_sentinel_acceptor(agent, sentinel_clusters, _get(cfg, "behavior", cfg))
-            if sentinel_clusters
+            make_sentinel_acceptor(agent, slow_replay_sentinels, _get(cfg, "behavior", cfg))
+            if slow_replay_sentinels
             else None
         )
         slow_replay_report = slow_replay(state, agent, tx, records, modules, cfg, accept_fn)
@@ -762,6 +878,25 @@ def consolidate(
                 state.params,
                 float(_get(_get(cfg, "model", cfg), "ema_decay", 0.995)),
             )
+            # Nullspace-residual adapters: write the old-task activation basis into
+            # the adapters' stop-gradient U_res buffers, computed over ALL protected
+            # records so every prior task is silenced.
+            residual_rank = int(_get(_get(cfg, "adapter", cfg), "residual_rank", 0))
+            residual_report: dict[str, Any] = {}
+            if residual_rank > 0:
+                res_bases, captured = compute_residual_bases(
+                    agent, state.params, protected_records or records, residual_rank
+                )
+                state.params = _write_residual_bases(state.params, res_bases)
+                if state.ema_params is not None:
+                    state.ema_params = _write_residual_bases(state.ema_params, res_bases)
+                # Give the NEXT task fresh, residual-silenced adapter capacity now.
+                state, activated_idx = activate_adapter(state)
+                residual_report = {
+                    "captured_energy": captured,
+                    "rank": residual_rank,
+                    "activated_adapter": activated_idx,
+                }
             return (
                 state,
                 True,
@@ -773,6 +908,7 @@ def consolidate(
                     "gate": gate_info,
                     "current_progress_source": current_progress_source,
                     "sentinel_clusters": len(state.protected_clusters),
+                    "residual_bases": residual_report,
                     "deletion_certification": "not_run",
                 },
             )

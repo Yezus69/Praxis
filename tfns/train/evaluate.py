@@ -281,11 +281,19 @@ def make_closed_loop_eval_fn(
     n_episodes: int,
     seed: int,
     max_steps: int | None = None,
+    adapter_dormant: Any | None = None,
 ):
-    """Return a live-param evaluator for consolidation gates."""
+    """Return a live-param evaluator for consolidation gates.
+
+    ``adapter_dormant`` is the single current global adapter mask. It is used
+    for every learned game so routing is determined solely by current recurrent
+    content; no per-game adapter mask is selected from metadata (that would be a
+    future task-identity leak). All active adapters stay globally available.
+    """
 
     items = _learned_items(learned_games_meta)
     step_cap = _resolve_max_steps(max_steps)
+    global_dormant = None if adapter_dormant is None else jnp.asarray(adapter_dormant, dtype=bool)
 
     def eval_fn(params: Any) -> dict[Any, Any]:
         result: dict[Any, Any] = {}
@@ -303,7 +311,7 @@ def make_closed_loop_eval_fn(
                 n_episodes=int(n_episodes),
                 seed=eval_seed,
                 greedy=False,
-                adapter_dormant=_get_meta(meta, ("adapter_dormant",), None),
+                adapter_dormant=global_dormant,
                 max_steps=step_cap,
             )
             score = float(score_info["mean"])

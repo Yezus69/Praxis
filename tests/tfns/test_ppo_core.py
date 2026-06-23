@@ -348,6 +348,11 @@ def test_collect_rollout_records_forced_exec_action_and_logprob():
     np.testing.assert_array_equal(np.asarray(rollout.prev_action[1]), expected_actions[0])
     np.testing.assert_array_equal(np.asarray(new_carry.prev_action), expected_actions[-1])
 
+    # Forced FIRE transitions must be flagged so the PPO importance-ratio loss
+    # can exclude them: their behavior probability is 1, not pi_theta(FIRE).
+    expected_forced = np.stack(fired_script, axis=0)
+    np.testing.assert_array_equal(np.asarray(rollout.forced_mask), expected_forced)
+
     outputs, _ = agent.unroll(
         params,
         rollout.obs,

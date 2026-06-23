@@ -54,6 +54,9 @@ _PROGRESS_KEYS = (
     "predictor_val_error",
     "detector_changed",
     "memory_admitted",
+    "eta",
+    "active_adapter_count",
+    "adapter_activated",
 )
 
 
@@ -234,6 +237,27 @@ def _base_cfg(args: argparse.Namespace) -> TFNSConfig:
     return dataclasses.replace(
         base,
         model=dataclasses.replace(base.model, act_dim=int(ACT_DIM)),
+        adapter=dataclasses.replace(
+            base.adapter,
+            residual_rank=int(getattr(args, "residual_rank", 0)),
+            rank=int(getattr(args, "adapter_rank", 0) or base.adapter.rank),
+            top_k=int(getattr(args, "adapter_top_k", 0) or base.adapter.top_k),
+        ),
+        memory=dataclasses.replace(base.memory, compress_frames=True),
+        protect=dataclasses.replace(
+            base.protect,
+            residual_energy=float(getattr(args, "protect_energy", 0.0) or base.protect.residual_energy),
+            constraint_cadence=8,
+            adapter_accept_factor=float(getattr(args, "adapter_accept_factor", base.protect.adapter_accept_factor)),
+            use_sentinel=bool(getattr(args, "use_sentinel", True)),
+            freeze_shared=bool(getattr(args, "freeze_shared", False)),
+        ),
+        behavior=dataclasses.replace(
+            base.behavior,
+            kl_tol=float(getattr(args, "kl_tol", base.behavior.kl_tol)),
+            value_tol=float(getattr(args, "value_tol", base.behavior.value_tol)),
+            key_cos_tol=float(getattr(args, "key_cos_tol", base.behavior.key_cos_tol)),
+        ),
         ppo=dataclasses.replace(
             base.ppo,
             num_envs=int(args.num_envs),
@@ -250,6 +274,7 @@ def _base_cfg(args: argparse.Namespace) -> TFNSConfig:
             seq_len=replay_len,
             burn_in=burn_in,
             protected_region=max(1, replay_len - burn_in),
+            replay_coef=float(getattr(args, "replay_coef", base.replay.replay_coef)),
         ),
     )
 
@@ -335,7 +360,7 @@ def _active_adapter_count(state: Any) -> int:
 def _clear_plain_state(state: Any, cfg: TFNSConfig) -> Any:
     state.bases = {}
     state.protected_clusters = []
-    state.memory = SequenceMemoryBank(cfg.memory)
+    state.memory = SequenceMemoryBank(cfg.memory, compress_frames=bool(cfg.memory.compress_frames))
     state.robust_stats = {}
     return state
 
@@ -410,8 +435,17 @@ def train_one_game(
     protect: bool,
     learned_meta: Mapping[str, Any] | None,
     out_dir: str | Path,
+    enable_shaping: bool = True,
+    enable_constraints: bool = False,
 ) -> tuple[Any, dict[str, Any]]:
-    """Train one Atari game for a bounded step budget and append JSONL progress."""
+    """Train one Atari game for a bounded step budget and append JSONL progress.
+
+    ``enable_shaping`` turns on potential-based delayed-credit reward shaping
+    (it self-gates on a learned return predictor). In ``protect`` mode the
+    current protected sentinel clusters are also fed as non-cancelling QP
+    behavior constraints so candidate updates stay inside the behavior tube
+    instead of relying on the nullspace projection alone.
+    """
 
     steps_per_game = int(steps_per_game)
     if steps_per_game <= 0:
@@ -442,6 +476,11 @@ def train_one_game(
 
             progress_frac = min(1.0, max(0.0, float(steps_done) / float(steps_per_game)))
             tracked_env.begin_block()
+            if protect and enable_constraints:
+                protected_clusters = list(getattr(state, "protected_clusters", []) or [])
+                constraint_clusters = protected_clusters if protected_clusters else []
+            else:
+                constraint_clusters = []
             start = time.perf_counter()
             state, telemetry = loop.run_blocks(
                 state,
@@ -451,7 +490,8 @@ def train_one_game(
                 block_cfg,
                 1,
                 sentinel_clusters=None if protect else [],
-                constraint_clusters=None if protect else [],
+                constraint_clusters=constraint_clusters,
+                enable_shaping=bool(enable_shaping),
                 progress_frac=progress_frac,
                 steps_done=steps_done,
                 steps_per_game=steps_per_game,
@@ -485,6 +525,7 @@ def train_one_game(
                 "consolidation_status": "not_run",
                 "protected_cluster_count": int(len(getattr(state, "protected_clusters", []) or [])),
                 "learned_game_count": int(len(learned_meta or {})),
+                "active_adapter_count": int(_active_adapter_count(state)),
                 "block_index": int(block_info.get("block_index", getattr(state, "block_index", 0))),
             }
             _append_progress(out_path, progress)
@@ -785,13 +826,14 @@ def _learned_meta_row(
     *,
     current: bool = False,
 ) -> dict[str, Any]:
+    # Deliberately no per-game adapter mask: routing is task-free and uses the
+    # single current global adapter_dormant, so historical masks never leak.
     return {
         "game": str(game),
         "S_random": float(S_random),
         "S_single": float(S_single),
         "S_best": float(S_best),
         "current": bool(current),
-        "adapter_dormant": getattr(state, "adapter_dormant", None),
     }
 
 
@@ -843,6 +885,7 @@ def _run_curriculum(
             protect=True,
             learned_meta=protected_meta,
             out_dir=out_dir,
+            enable_constraints=bool(getattr(args, "enable_constraints", False)),
         )
         eval_windows = _eval_windows(
             agent,
@@ -900,6 +943,7 @@ def _run_curriculum(
                 n_episodes=int(args.eval_episodes),
                 seed=int(args.eval_seed) + 120_011 * index,
                 max_steps=int(args.eval_max_steps),
+                adapter_dormant=getattr(state, "adapter_dormant", None),
             )
             state, accepted, report = loop.consolidate_skill(
                 state,
@@ -1079,6 +1123,29 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval-max-steps", type=int, default=evaluate.DEFAULT_EVAL_MAX_STEPS)
     parser.add_argument("--learned-threshold", type=float, default=0.9)
     parser.add_argument("--retention-accept", type=float, default=0.9)
+    # Sentinel behavior-tube tolerances: the stability/plasticity knob. The
+    # defaults (0.01/0.1/0.02) reject ~100% of new-task updates once a task is
+    # protected (frozen network, zero plasticity). Looser values admit bounded
+    # drift so a new task can learn while old-task retention stays high.
+    parser.add_argument("--kl-tol", type=float, default=0.01)
+    parser.add_argument("--value-tol", type=float, default=0.1)
+    parser.add_argument("--key-cos-tol", type=float, default=0.02)
+    parser.add_argument("--enable-constraints", action="store_true",
+                        help="wire protected clusters as non-cancelling QP constraints (extra cost)")
+    parser.add_argument("--adapter-accept-factor", type=float, default=8.0,
+                        help="looseness of the adapter-only path sentinel vs the shared-net path")
+    parser.add_argument("--no-sentinel", dest="use_sentinel", action="store_false",
+                        help="Adam-NSCL mode: disable the hard sentinel gate, rely on nullspace projection")
+    parser.add_argument("--residual-rank", type=int, default=0,
+                        help="nullspace-residual adapter rank; 0 disables residual gating")
+    parser.add_argument("--replay-coef", type=float, default=1.0,
+                        help="weight on the behavior-tube replay distillation loss")
+    parser.add_argument("--protect-energy", type=float, default=0.0,
+                        help="nullspace protect residual energy (0=keep default 0.995); higher=less forgetting")
+    parser.add_argument("--freeze-shared", dest="freeze_shared", action="store_true",
+                        help="PackNet mode: freeze shared net when protected; learn new tasks via adapters only")
+    parser.add_argument("--adapter-rank", type=int, default=0, help="override adapter low-rank (0=keep default)")
+    parser.add_argument("--adapter-top-k", type=int, default=0, help="override adapter top-k routing (0=keep default)")
     parser.add_argument("--out-dir", default="tfns_runs/curriculum")
     parser.add_argument("--refs-json", default=None)
     parser.add_argument("--smoke", action="store_true")

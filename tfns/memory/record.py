@@ -38,6 +38,8 @@ class EpisodeSequence:
     init_stack: np.ndarray | bytes
     new_frames: np.ndarray | bytes
     actions: np.ndarray
+    prev_action: np.ndarray
+    prev_reward_clipped: np.ndarray
     rewards_clipped: np.ndarray
     rewards_raw: np.ndarray
     ppo_mask: np.ndarray
@@ -101,13 +103,24 @@ def make_record(
     teacher_entropy: Any,
     episode_id: int,
     chunk_index: int,
+    prev_action: Any | None = None,
+    prev_reward_clipped: Any | None = None,
     rewards_raw: Any | None = None,
     seq_importance: float = 0.0,
     cluster_id: int = -1,
     status: str = "transient",
     is_sentinel: bool = False,
 ) -> EpisodeSequence:
-    """Build a validated CPU numpy sequence record."""
+    """Build a validated CPU numpy sequence record.
+
+    ``prev_action[t]`` and ``prev_reward_clipped[t]`` are the recurrent inputs
+    that accompanied ``obs[t]`` when the teacher output at ``t`` was generated,
+    i.e. the action/clipped-reward from transition ``t-1``. They are stored
+    explicitly because at an episode start (``reset_mask[0]`` true) the previous
+    action/reward are not derivable from this fragment's own ``actions`` array.
+    When omitted they default to a within-episode right shift, which is only
+    exact for fragments that contain their own predecessor.
+    """
 
     init_arr = _as_array("init_stack", init_stack, np.uint8, (FRAME_STACK, OBS_HW, OBS_HW))
     frames_arr = _as_array("new_frames", new_frames, np.uint8, (None, OBS_HW, OBS_HW))
@@ -118,11 +131,22 @@ def make_record(
     if rewards_raw is None:
         rewards_raw = np.zeros((t,), dtype=np.float32)
 
+    actions_arr = _as_array("actions", actions, np.int32, (t,))
+    rewards_clipped_arr = _as_array("rewards_clipped", rewards_clipped, np.float32, (t,))
+    if prev_action is None:
+        prev_action = np.concatenate([np.zeros((1,), dtype=np.int32), actions_arr[:-1]])
+    if prev_reward_clipped is None:
+        prev_reward_clipped = np.concatenate(
+            [np.zeros((1,), dtype=np.float32), rewards_clipped_arr[:-1]]
+        )
+
     rec = EpisodeSequence(
         init_stack=init_arr,
         new_frames=frames_arr,
-        actions=_as_array("actions", actions, np.int32, (t,)),
-        rewards_clipped=_as_array("rewards_clipped", rewards_clipped, np.float32, (t,)),
+        actions=actions_arr,
+        prev_action=_as_array("prev_action", prev_action, np.int32, (t,)),
+        prev_reward_clipped=_as_array("prev_reward_clipped", prev_reward_clipped, np.float32, (t,)),
+        rewards_clipped=rewards_clipped_arr,
         rewards_raw=_as_array("rewards_raw", rewards_raw, np.float32, (t,)),
         ppo_mask=_as_array("ppo_mask", ppo_mask, np.bool_, (t,)),
         reset_mask=_as_array("reset_mask", reset_mask, np.bool_, (t,)),
@@ -191,6 +215,8 @@ def nbytes(rec: EpisodeSequence) -> int:
 
     for value in (
         rec.actions,
+        rec.prev_action,
+        rec.prev_reward_clipped,
         rec.rewards_clipped,
         rec.rewards_raw,
         rec.ppo_mask,

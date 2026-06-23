@@ -49,6 +49,8 @@ class RolloutBatch:
     hidden_after: Any = None
     last_obs: Any = None
     last_reset: Any = None
+    reward_raw: Any = None
+    forced_mask: Any = None
 
 
 @struct.dataclass
@@ -89,6 +91,7 @@ class SequenceMinibatch:
     seq_id: Any = None
     chunk_start: Any = None
     env_index: Any = None
+    forced_mask: Any = None
 
 
 @struct.dataclass
@@ -114,6 +117,7 @@ class SequenceDataset:
     seq_id: Any = None
     chunk_start: Any = None
     env_index: Any = None
+    forced_mask: Any = None
 
 
 def categorical_log_prob(logits: Any, actions: Any) -> jnp.ndarray:
@@ -221,6 +225,8 @@ def collect_rollout(env_step, agent, params, carry: RolloutCarry, rollout_len: i
     logprob_rows = []
     value_rows = []
     reward_rows = []
+    reward_raw_rows = []
+    forced_rows = []
     ppo_mask_rows = []
     reset_mask_rows = []
     hidden_after_rows = []
@@ -252,6 +258,11 @@ def collect_rollout(env_step, agent, params, carry: RolloutCarry, rollout_len: i
             fired = np.zeros(tuple(action.shape), dtype=np.bool_)
         if exec_action is None:
             exec_action = np.asarray(jax.device_get(action), dtype=np.int32)
+        reward_raw = None
+        if isinstance(extra, dict):
+            reward_raw = extra.get("reward_raw", extra.get("reward_unclipped"))
+        if reward_raw is None:
+            reward_raw = reward_clipped
         action, logprob = _record_executed_action(
             logits,
             action,
@@ -267,6 +278,8 @@ def collect_rollout(env_step, agent, params, carry: RolloutCarry, rollout_len: i
         logprob_rows.append(logprob)
         value_rows.append(value)
         reward_rows.append(jnp.asarray(reward_clipped, dtype=jnp.float32))
+        reward_raw_rows.append(jnp.asarray(reward_raw, dtype=jnp.float32))
+        forced_rows.append(jnp.asarray(fired, dtype=bool))
         ppo_mask_rows.append(jnp.asarray(ppo_done, dtype=bool))
         reset_mask_rows.append(prev_reset)
         hidden_after_rows.append(h_next)
@@ -297,6 +310,8 @@ def collect_rollout(env_step, agent, params, carry: RolloutCarry, rollout_len: i
         hidden_after=jnp.stack(hidden_after_rows, axis=0).astype(jnp.float32),
         last_obs=obs.astype(jnp.uint8),
         last_reset=prev_reset.astype(bool),
+        reward_raw=jnp.stack(reward_raw_rows, axis=0).astype(jnp.float32),
+        forced_mask=jnp.stack(forced_rows, axis=0).astype(bool),
     )
     new_carry = RolloutCarry(
         hidden=hidden.astype(jnp.float32),
@@ -517,6 +532,10 @@ def build_sequence_dataset(
         "next_obs_mask": _time_chunks(next_obs_mask_time, num_chunks, seq_chunk),
         "true_terminal": _time_chunks(true_terminal_time, num_chunks, seq_chunk),
     }
+    forced_time = rollout.forced_mask
+    if forced_time is None:
+        forced_time = jnp.zeros((T, N), dtype=bool)
+    fields["forced_mask"] = _time_chunks(jnp.asarray(forced_time, dtype=bool), num_chunks, seq_chunk)
     valid_mask = jnp.ones((num_seq, seq_chunk), dtype=bool)
     chunk_start = jnp.repeat(jnp.arange(num_chunks, dtype=jnp.int32) * int(seq_chunk), N)
     env_index = jnp.tile(jnp.arange(N, dtype=jnp.int32), num_chunks)
@@ -542,6 +561,7 @@ def build_sequence_dataset(
         seq_id=seq_id,
         chunk_start=chunk_start,
         env_index=env_index,
+        forced_mask=fields["forced_mask"],
     )
 
 
@@ -589,6 +609,7 @@ def iter_minibatches(
             seq_id=jnp.where(row_valid[:, 0], _take(dataset.seq_id, idx), -1),
             chunk_start=jnp.where(row_valid[:, 0], _take(dataset.chunk_start, idx), -1),
             env_index=jnp.where(row_valid[:, 0], _take(dataset.env_index, idx), -1),
+            forced_mask=_take(dataset.forced_mask, idx),
         )
 
 
