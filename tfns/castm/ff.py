@@ -114,8 +114,8 @@ def _norm_obs(obs):
     return obs.astype(jnp.float32)
 
 
-def forward(banks, scratch, cfg: FFConfig, obs, k, ctx_id=None, sparse=False):
-    """Return ``(logits, value)`` for the addressed FF agent at address ``k``."""
+def encode(banks, scratch, cfg: FFConfig, obs, k, ctx_id=None, sparse=False):
+    """Return the post-dense encoder features ``e`` (relu, dense_dim)."""
 
     x = _norm_obs(obs)
     specs = cfg.layer_specs()
@@ -135,7 +135,25 @@ def forward(banks, scratch, cfg: FFConfig, obs, k, ctx_id=None, sparse=False):
         e = L.addressed_dense_forward_sparse(banks["enc_dense"], e, k, int(ctx_id), sd)
     else:
         e = L.addressed_dense_forward(banks["enc_dense"], e, k, sd)
-    e = jax.nn.relu(e)
+    return jax.nn.relu(e)
+
+
+def content_query(banks, cfg: FFConfig, obs, k):
+    """Return a normalized content query from the shared (W0-only) encoder.
+
+    Uses sparse gather with a non-existent context so no committed memory delta
+    contributes: a context-independent content signature for the router (spec 9.1).
+    No game/task identity is used.
+    """
+
+    e = encode(banks, None, cfg, obs, k, ctx_id=-999, sparse=True)
+    return e / (jnp.linalg.norm(e, axis=-1, keepdims=True) + 1e-6)
+
+
+def forward(banks, scratch, cfg: FFConfig, obs, k, ctx_id=None, sparse=False):
+    """Return ``(logits, value)`` for the addressed FF agent at address ``k``."""
+
+    e = encode(banks, scratch, cfg, obs, k, ctx_id=ctx_id, sparse=sparse)
     sp_ = scratch.get("policy") if scratch else None
     sv_ = scratch.get("value") if scratch else None
     if sparse and ctx_id is not None:
@@ -167,6 +185,8 @@ __all__ = [
     "FFConfig",
     "FF_LAYERS",
     "apply_shared_trainable",
+    "content_query",
+    "encode",
     "forward",
     "init_banks",
     "init_scratch",

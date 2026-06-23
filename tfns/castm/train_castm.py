@@ -70,6 +70,9 @@ class TrainConfig:
     lr_scratch: float = 1.0e-3
     out_dir: str = "castm_runs/oracle/run"
     fire_reset: bool = True
+    inferred_eval: bool = True
+    anchor_frames: int = 2048
+    proto_per_ctx: int = 8
 
 
 # --- PPO loss (feed-forward) ---------------------------------------------------
@@ -441,17 +444,46 @@ def run(cfg: TrainConfig):
         (out_dir / "results.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
         log(f"persisted results after {game}")
 
+    inferred = None
+    if cfg.inferred_eval:
+        log("=== STAGE D: inferred-address routing eval ===")
+        from tfns.castm import infer_eval as ie
+        ev_envs = min(cfg.num_envs, cfg.eval_episodes)
+        prototypes = {}
+        for gi, game in enumerate(cfg.games):
+            c = ctx_ids[gi]
+            q = ie.collect_anchor_queries(cfg_ff, banks, book, game, c, num_envs=cfg.num_envs,
+                                          n_frames=cfg.anchor_frames, seed=cfg.seed + 4000 + gi,
+                                          fire_reset=cfg.fire_reset)
+            prototypes[c] = ie.build_prototypes(q, m_p=cfg.proto_per_ctx)
+            log(f"  built {prototypes[c].shape[0]} prototypes for ctx{c} ({game})")
+        racc = ie.routing_accuracy(cfg_ff, banks, book, list(cfg.games), ctx_ids, prototypes,
+                                   num_envs=cfg.num_envs, n_frames=cfg.anchor_frames,
+                                   seed=cfg.seed + 6000, fire_reset=cfg.fire_reset)
+        log(f"  router top-1 accuracy overall={racc['overall']:.4f} per_game={racc['per_game']}")
+        inferred_scores = {}
+        for gi, game in enumerate(cfg.games):
+            ev = ie.inferred_eval_game(cfg_ff, banks, book, game, ctx_ids[gi], prototypes, ctx_ids,
+                                       num_envs=ev_envs, n_episodes=cfg.eval_episodes,
+                                       seed=cfg.seed + 8000 + gi, fire_reset=cfg.fire_reset)
+            inferred_scores[game] = ev
+            log(f"  inferred[{game}] mean={ev['mean']:.1f} route_acc={ev['route_acc']:.4f} valid={ev['valid']}")
+        inferred = {"routing_accuracy": racc, "scores": inferred_scores}
+
     log("DONE")
-    return _build_payload(cfg, random_scores, best_after_learn, retention_matrix, full_curves)
+    payload = _build_payload(cfg, random_scores, best_after_learn, retention_matrix, full_curves, inferred)
+    (out_dir / "results.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return payload
 
 
-def _build_payload(cfg, random_scores, best_after_learn, retention_matrix, full_curves):
+def _build_payload(cfg, random_scores, best_after_learn, retention_matrix, full_curves, inferred=None):
     return {
         "config": {k: (list(v) if isinstance(v, tuple) else v) for k, v in asdict(cfg).items()},
         "random_scores": random_scores,
         "best_after_learn": best_after_learn,
         "retention_matrix": retention_matrix,
         "learning_curves": full_curves,
+        "inferred": inferred,
     }
 
 
@@ -464,10 +496,12 @@ def parse_args() -> TrainConfig:
     p.add_argument("--eval-episodes", type=int, default=20)
     p.add_argument("--lr-scratch", type=float, default=1.0e-3)
     p.add_argument("--out-dir", type=str, default="castm_runs/oracle/run")
+    p.add_argument("--inferred-eval", action=argparse.BooleanOptionalAction, default=True)
     args = p.parse_args()
     return TrainConfig(
         games=tuple(args.games), steps_per_game=args.steps_per_game, num_envs=args.num_envs,
         seed=args.seed, eval_episodes=args.eval_episodes, lr_scratch=args.lr_scratch, out_dir=args.out_dir,
+        inferred_eval=args.inferred_eval,
     )
 
 
