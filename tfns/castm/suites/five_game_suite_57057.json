@@ -1,0 +1,39 @@
+{
+  "seed": 57057,
+  "size": 5,
+  "games": [
+    "Alien-v5",
+    "Defender-v5",
+    "Asterix-v5",
+    "Tennis-v5",
+    "Phoenix-v5"
+  ],
+  "diagnostic_pair": [
+    "Alien-v5",
+    "Defender-v5"
+  ],
+  "source": "canonical_atari57",
+  "curriculum_orders": [
+    [
+      "Alien-v5",
+      "Defender-v5",
+      "Asterix-v5",
+      "Tennis-v5",
+      "Phoenix-v5"
+    ],
+    [
+      "Asterix-v5",
+      "Phoenix-v5",
+      "Defender-v5",
+      "Alien-v5",
+      "Tennis-v5"
+    ],
+    [
+      "Alien-v5",
+      "Phoenix-v5",
+      "Asterix-v5",
+      "Defender-v5",
+      "Tennis-v5"
+    ]
+  ]
+}
