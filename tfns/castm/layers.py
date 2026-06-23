@@ -107,12 +107,17 @@ def addressed_conv_forward(
     strides: tuple[int, int],
     padding: str = "VALID",
     scratch: ScratchDelta | None = None,
+    ctx_id: int | None = None,
+    sparse: bool = False,
+    include_shared: bool = True,
 ) -> jnp.ndarray:
     """Effective convolution with an addressed low-rank kernel delta (spec 6.2).
 
     ``mem`` stores the flattened kernel (``out=c_out``, ``in=kh*kw*c_in``).
     Output is ``conv(x, W0) + sum_m (c_m.k) [conv1x1(conv_spatial(x, A_m), B_m)]``
-    plus the addressed bias, with no dense kernel materialization.
+    plus the addressed bias, with no dense kernel materialization. When ``sparse``
+    and ``ctx_id`` are given, only the selected context's components (and shared
+    compensation) contribute, giving exact top-1 gather (spec 11.2).
     """
 
     x = jnp.asarray(x, dtype=mem.W0.dtype)
@@ -122,7 +127,15 @@ def addressed_conv_forward(
     y = _conv(x, W0_kernel, strides, padding)  # (N,H',W',c_out)
     y = y + mem.b0  # broadcast bias over spatial dims
 
-    s = jnp.where(mem.active, mem.c @ jnp.asarray(k, dtype=mem.c.dtype), 0.0)  # (M,)
+    if sparse and ctx_id is not None:
+        from tfns.castm.synaptic import CTX_SHARED
+
+        select = mem.active & (mem.ctx == int(ctx_id))
+        if include_shared:
+            select = select | (mem.active & (mem.ctx == CTX_SHARED))
+        s = jnp.where(select, mem.c @ jnp.asarray(k, dtype=mem.c.dtype), 0.0)
+    else:
+        s = jnp.where(mem.active, mem.c @ jnp.asarray(k, dtype=mem.c.dtype), 0.0)  # (M,)
     y = y + _conv_memory_delta(mem, x, s, kh, kw, c_in, c_out, strides, padding)
     if scratch is not None:
         y = y + _conv_scratch_delta(scratch, x, kh, kw, c_in, c_out, strides, padding)
