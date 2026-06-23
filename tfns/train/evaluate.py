@@ -17,6 +17,13 @@ from tfns.train.atari_env import make_atari_env_step
 DEFAULT_EVAL_MAX_STEPS = 20_000
 
 
+def _std(values: Sequence[float]) -> float:
+    arr = np.asarray(values, dtype=np.float64)
+    if arr.size <= 1:
+        return 0.0
+    return float(np.std(arr, ddof=1))
+
+
 def _sem(values: Sequence[float]) -> float:
     arr = np.asarray(values, dtype=np.float64)
     if arr.size <= 1:
@@ -67,22 +74,38 @@ def _eval_result(
     *,
     n_episodes: int,
     capped: bool,
+    total_transitions: int = 0,
 ) -> dict[str, Any]:
+    """Build an evaluation report.
+
+    Per spec section 19, an evaluation is *valid* only when the requested number
+    of complete episodes finished. Partial in-progress returns are never
+    substituted into the scientific score: when invalid, ``mean`` is NaN so any
+    downstream gate fails loudly rather than silently passing on a partial
+    average. The in-progress mean is still surfaced as ``partial_mean`` for
+    diagnostics only.
+    """
+
     used = [float(value) for value in returns[: int(n_episodes)]]
     completed = np.asarray(used, dtype=np.float64)
-    if completed.size:
-        mean = float(np.mean(completed))
-    elif capped:
-        in_progress = np.asarray(running_returns, dtype=np.float64).reshape(-1)
-        mean = float(np.mean(in_progress)) if in_progress.size else 0.0
-    else:
-        mean = 0.0
+    valid = bool(completed.size >= int(n_episodes) and int(n_episodes) > 0)
+    mean = float(np.mean(completed)) if completed.size else float("nan")
+    if not valid:
+        # Do not let a partial average masquerade as a score in any gate.
+        mean = float("nan")
+    in_progress = np.asarray(running_returns, dtype=np.float64).reshape(-1)
+    partial_mean = float(np.mean(in_progress)) if in_progress.size else float("nan")
     return {
         "mean": mean,
+        "std": _std(used),
         "sem": _sem(used),
         "n": int(completed.size),
+        "n_requested": int(n_episodes),
         "returns": used,
         "capped": bool(capped),
+        "valid": valid,
+        "partial_mean": partial_mean,
+        "total_transitions": int(total_transitions),
     }
 
 
@@ -184,6 +207,7 @@ def evaluate_game(
             running_returns,
             n_episodes=target_episodes,
             capped=len(returns) < target_episodes,
+            total_transitions=steps,
         )
     finally:
         handle.close()
@@ -225,6 +249,7 @@ def random_score(
             running_returns,
             n_episodes=target_episodes,
             capped=len(returns) < target_episodes,
+            total_transitions=steps,
         )
     finally:
         handle.close()
@@ -299,6 +324,7 @@ def make_closed_loop_eval_fn(
         result: dict[Any, Any] = {}
         current_progress = None
         explicit_current = False
+        all_valid = True
 
         for index, (game_key, meta) in enumerate(items):
             game = _get_meta(meta, ("game", "env", "atari_game"), game_key)
@@ -332,14 +358,19 @@ def make_closed_loop_eval_fn(
 
             progress_value = float(normalized_progress(score, S_rand, S_single))
             retention_value = float(retention(score, S_rand, S_best))
+            entry_valid = bool(score_info.get("valid", score_info["n"] >= int(n_episodes)))
+            all_valid = all_valid and entry_valid
             result[game_key] = {
                 "score": score,
                 "progress": progress_value,
                 "retention": retention_value,
+                "std": float(score_info.get("std", 0.0)),
                 "sem": float(score_info["sem"]),
                 "n": int(score_info["n"]),
+                "valid": entry_valid,
                 "capped": bool(score_info.get("capped", False)),
                 "random_capped": bool(random_capped),
+                "total_transitions": int(score_info.get("total_transitions", 0)),
             }
 
             is_current = bool(_get_meta(meta, ("current", "is_current", "current_game"), False))
@@ -348,6 +379,7 @@ def make_closed_loop_eval_fn(
                 explicit_current = explicit_current or is_current
 
         result["current_progress"] = float(current_progress) if current_progress is not None else 0.0
+        result["all_valid"] = bool(all_valid)
         return result
 
     return eval_fn

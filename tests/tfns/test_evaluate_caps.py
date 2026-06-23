@@ -32,7 +32,9 @@ class _NeverDoneEnv:
         )
 
 
-def test_evaluate_game_caps_and_falls_back_to_running_returns(monkeypatch):
+def test_evaluate_game_caps_to_invalid_without_partial_substitution(monkeypatch):
+    # Spec section 19/26: a capped evaluation with no completed episodes must be
+    # invalid and must NOT substitute the in-progress (partial) mean as a score.
     env = _NeverDoneEnv(2, np.array([1.0, 2.0], dtype=np.float32))
 
     monkeypatch.setattr(
@@ -65,12 +67,15 @@ def test_evaluate_game_caps_and_falls_back_to_running_returns(monkeypatch):
 
     assert env.calls == 2
     assert result["capped"] is True
+    assert result["valid"] is False
     assert result["n"] == 0
     assert result["returns"] == []
-    assert result["mean"] == 3.0
+    assert np.isnan(result["mean"])  # never the partial 3.0
+    assert result["partial_mean"] == 3.0  # diagnostic only
+    assert result["total_transitions"] == 4
 
 
-def test_random_score_caps_and_falls_back_to_running_returns(monkeypatch):
+def test_random_score_caps_to_invalid_without_partial_substitution(monkeypatch):
     env = _NeverDoneEnv(3, np.array([1.0, 2.0, 3.0], dtype=np.float32))
 
     monkeypatch.setattr(
@@ -89,9 +94,26 @@ def test_random_score_caps_and_falls_back_to_running_returns(monkeypatch):
 
     assert env.calls == 2
     assert result["capped"] is True
+    assert result["valid"] is False
     assert result["n"] == 0
     assert result["returns"] == []
-    assert result["mean"] == 4.0
+    assert np.isnan(result["mean"])  # never the partial 4.0
+    assert result["partial_mean"] == 4.0  # diagnostic only
+
+
+def test_eval_result_valid_when_all_episodes_complete():
+    # When enough episodes complete, the score is the true completed mean.
+    result = evaluate._eval_result(
+        [10.0, 20.0, 30.0],
+        np.zeros((3,), dtype=np.float32),
+        n_episodes=2,
+        capped=False,
+        total_transitions=128,
+    )
+    assert result["valid"] is True
+    assert result["n"] == 2  # truncated to n_requested completed episodes
+    assert result["mean"] == 15.0  # mean of first n_requested=2 completed
+    assert result["total_transitions"] == 128
 
 
 def test_closed_loop_eval_threads_max_steps(monkeypatch):
