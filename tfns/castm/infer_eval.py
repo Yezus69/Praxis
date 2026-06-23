@@ -125,7 +125,7 @@ def routing_accuracy(cfg_ff, banks, book, games, ctx_ids, prototypes, *, num_env
 
 
 def inferred_eval_game(cfg_ff, banks, book, game, true_ctx, prototypes, ctx_ids, *,
-                       num_envs, n_episodes, seed, fire_reset, ema=0.8, max_steps=400_000):
+                       num_envs, n_episodes, seed, fire_reset, ema=0.8, max_steps=1_000_000):
     """Run one game with INFERRED addressing; return score + routing accuracy."""
 
     proto_stack = [prototypes[c] for c in ctx_ids]

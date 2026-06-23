@@ -168,7 +168,7 @@ def _make_act(cfg_ff):
 # --- evaluation ----------------------------------------------------------------
 
 
-def evaluate_game(sample_fn, banks, game, k, ctx_id, *, num_envs, n_episodes, seed, fire_reset, max_steps=400_000):
+def evaluate_game(sample_fn, banks, game, k, ctx_id, *, num_envs, n_episodes, seed, fire_reset, max_steps=1_000_000):
     env = bp.make_env(game, num_envs, seed, training=False)
     obs, _ = bp.reset_result(env.reset())
     obs = bp.nhwc_uint8(obs)
@@ -203,7 +203,7 @@ def evaluate_game(sample_fn, banks, game, k, ctx_id, *, num_envs, n_episodes, se
     }
 
 
-def random_score(game, *, num_envs, n_episodes, seed, fire_reset, max_steps=400_000):
+def random_score(game, *, num_envs, n_episodes, seed, fire_reset, max_steps=1_000_000):
     env = bp.make_env(game, num_envs, seed, training=False)
     obs, _ = bp.reset_result(env.reset())
     rng = np.random.default_rng(seed)
@@ -344,7 +344,7 @@ def train_one_game(cfg: TrainConfig, cfg_ff, banks, book, game, ctx_id, *, mode,
     return banks, float(best), curve, committed
 
 
-def _eval_live(cfg_ff, banks, scratch, game, k, *, num_envs, n_episodes, seed, fire_reset, max_steps=400_000):
+def _eval_live(cfg_ff, banks, scratch, game, k, *, num_envs, n_episodes, seed, fire_reset, max_steps=1_000_000):
     """Greedy eval of the *live* (possibly scratch-carrying) policy at address k."""
 
     @jax.jit
