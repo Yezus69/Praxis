@@ -108,12 +108,26 @@ Five-context routing top-1 (held-out): order1 = **0.9948**, order2 = **0.9856**.
   | Defender | 0.85–1.6 | 1.41 | 1.000 |
 
   **Higher scratch rank closes the Asterix plasticity gap entirely** (0.36 → 1.32,
-  above the reference 975), validating the spec's first remedy. **Tennis is not
-  fixed by rank** — it is intrinsically hard at this budget (its own single-task
-  reference reaches only −4.35) and most dissimilar from the Alien backbone,
-  pointing to the deeper remedies (contextualize earlier layers / per-context
-  backbone adaptation via exact compensated shared consolidation). Routing in the
-  ×4 probe is 1.000 across 3 contexts.
+  above the reference 975), validating the spec's first remedy. **Tennis** is the
+  hardest case (its own single-task reference reaches only −4.35) and most
+  dissimilar from the Alien backbone; rank helps but does not fully close it.
+
+  The **full five-game curriculum at scratch ×4** confirms this at scale:
+
+  | Game | progress ×1 | progress ×4 | retention ×4 |
+  |---|---|---|---|
+  | Alien (g0) | 0.83 | 0.90 | 1.000 |
+  | Defender | 1.38 | 1.41 | 1.000 |
+  | Asterix | **0.36** | **1.08** | 1.000 |
+  | Tennis | 0.65 | 0.76 | 1.000 |
+  | Phoenix | 1.02 | 0.90 | 1.000 |
+  | **min progress** | **0.36** | **0.76** | — |
+
+  At ×4, **min progress rises from 0.36 to 0.76** with 4/5 games at P ≥ 0.90,
+  retention still exact (min_R = 1.000, every commit ~6e-8–8e-8), and 5-context
+  routing 0.9932. **Gate 21.4 passes under criterion 2** (min_R = 1.000 and
+  current-game Phoenix P = 0.90). Only Tennis remains below the strict 0.90
+  progress bar — the residual plasticity frontier, never at the cost of retention.
 
 ## Interpretation
 

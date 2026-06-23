@@ -1,0 +1,196 @@
+{
+  "refs": {
+    "Alien-v5": {
+      "single": 561.5,
+      "final": 517.0
+    },
+    "Asterix-v5": {
+      "single": 975.0,
+      "final": 882.5
+    },
+    "Defender-v5": {
+      "single": 7855.0,
+      "final": 5450.0
+    },
+    "Phoenix-v5": {
+      "single": 3149.0,
+      "final": 3149.0
+    },
+    "Tennis-v5": {
+      "single": -4.349999904632568,
+      "final": -8.5
+    }
+  },
+  "analyses": {
+    "castm_runs/oracle/five_rank4": {
+      "games": [
+        "Alien-v5",
+        "Defender-v5",
+        "Asterix-v5",
+        "Tennis-v5",
+        "Phoenix-v5"
+      ],
+      "per_game": {
+        "Alien-v5": {
+          "S_random": 173.0,
+          "S_single": 561.5,
+          "S_best_after_learn": 523.0,
+          "S_final": 523.0,
+          "progress_final": 0.9009009008777117,
+          "retention_final": 0.9999999999714285,
+          "forgetting": 0.0,
+          "score_history": [
+            523.0,
+            523.0,
+            523.0,
+            523.0,
+            523.0
+          ]
+        },
+        "Defender-v5": {
+          "S_random": 2927.5,
+          "S_single": 7855.0,
+          "S_best_after_learn": 9877.5,
+          "S_final": 9877.5,
+          "progress_final": 1.4104515474349864,
+          "retention_final": 0.9999999999985612,
+          "forgetting": 0.0,
+          "score_history": [
+            9877.5,
+            9877.5,
+            9877.5,
+            9877.5
+          ]
+        },
+        "Asterix-v5": {
+          "S_random": 230.0,
+          "S_single": 975.0,
+          "S_best_after_learn": 1037.5,
+          "S_final": 1037.5,
+          "progress_final": 1.0838926174351156,
+          "retention_final": 0.9999999999876161,
+          "forgetting": 0.0,
+          "score_history": [
+            1037.5,
+            1037.5,
+            1037.5
+          ]
+        },
+        "Tennis-v5": {
+          "S_random": -23.850000381469727,
+          "S_single": -4.349999904632568,
+          "S_best_after_learn": -8.949999809265137,
+          "S_final": -8.949999809265137,
+          "progress_final": 0.7641025743697981,
+          "retention_final": 0.9999999993288591,
+          "forgetting": 0.0,
+          "score_history": [
+            -8.949999809265137,
+            -8.949999809265137
+          ]
+        },
+        "Phoenix-v5": {
+          "S_random": 988.5,
+          "S_single": 3149.0,
+          "S_best_after_learn": 2934.5,
+          "S_final": 2934.5,
+          "progress_final": 0.9007174265174696,
+          "retention_final": 0.9999999999948613,
+          "forgetting": 0.0,
+          "score_history": [
+            2934.5
+          ]
+        }
+      },
+      "min_progress": 0.7641025743697981,
+      "min_retention": 0.9999999993288591,
+      "current_progress": 0.9007174265174696,
+      "routing_accuracy": {
+        "per_game": {
+          "Alien-v5": 1.0,
+          "Defender-v5": 1.0,
+          "Asterix-v5": 1.0,
+          "Tennis-v5": 1.0,
+          "Phoenix-v5": 0.9658203125
+        },
+        "overall": 0.9931640625,
+        "confusion": {
+          "Alien-v5": {
+            "0": 2048,
+            "1": 0,
+            "2": 0,
+            "3": 0,
+            "4": 0
+          },
+          "Defender-v5": {
+            "0": 0,
+            "1": 2048,
+            "2": 0,
+            "3": 0,
+            "4": 0
+          },
+          "Asterix-v5": {
+            "0": 0,
+            "1": 0,
+            "2": 2048,
+            "3": 0,
+            "4": 0
+          },
+          "Tennis-v5": {
+            "0": 0,
+            "1": 0,
+            "2": 0,
+            "3": 2048,
+            "4": 0
+          },
+          "Phoenix-v5": {
+            "0": 0,
+            "1": 70,
+            "2": 0,
+            "3": 0,
+            "4": 1978
+          }
+        }
+      },
+      "inferred": {
+        "Alien-v5": {
+          "inferred_mean": 481.0,
+          "route_acc": 0.528052805280528,
+          "inferred_progress": 0.7927927927723862,
+          "oracle_mean": 523.0
+        },
+        "Defender-v5": {
+          "inferred_mean": 9255.0,
+          "route_acc": 0.9977321428571428,
+          "inferred_progress": 1.2841197361719248,
+          "oracle_mean": 9877.5
+        },
+        "Asterix-v5": {
+          "inferred_mean": 990.0,
+          "route_acc": 1.0,
+          "inferred_progress": 1.0201342281742263,
+          "oracle_mean": 1037.5
+        },
+        "Tennis-v5": {
+          "inferred_mean": -8.850000381469727,
+          "route_acc": 1.0,
+          "inferred_progress": 0.769230750026148,
+          "oracle_mean": -8.949999809265137
+        },
+        "Phoenix-v5": {
+          "inferred_mean": 2472.0,
+          "route_acc": 0.8698335644937587,
+          "inferred_progress": 0.6866466095779373,
+          "oracle_mean": 2934.5
+        }
+      },
+      "gate_21_4_five": {
+        "min_P>=0.90": false,
+        "min_R>=0.90 & P_cur>=0.90": true,
+        "min_P": 0.7641025743697981,
+        "min_R": 0.9999999993288591,
+        "P_current": 0.9007174265174696
+      }
+    }
+  }
+}
