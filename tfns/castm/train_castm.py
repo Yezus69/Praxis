@@ -73,6 +73,7 @@ class TrainConfig:
     inferred_eval: bool = True
     anchor_frames: int = 2048
     proto_per_ctx: int = 8
+    scratch_mult: float = 1.0
 
 
 # --- PPO loss (feed-forward) ---------------------------------------------------
@@ -393,7 +394,13 @@ def run(cfg: TrainConfig):
         with log_path.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
 
-    cfg_ff = ff.FFConfig()
+    m = float(getattr(cfg, "scratch_mult", 1.0))
+    base = ff.FFConfig()
+    cfg_ff = ff.FFConfig(
+        scratch_rank_conv=min(int(round(base.scratch_rank_conv * m)), base.comp_rank_conv),
+        scratch_rank_dense=min(int(round(base.scratch_rank_dense * m)), base.comp_rank_dense),
+        scratch_rank_head=min(int(round(base.scratch_rank_head * m)), base.comp_rank_head),
+    )
     rng = jax.random.PRNGKey(cfg.seed)
     rng, bkey = jax.random.split(rng)
     banks = ff.init_banks(bkey, cfg_ff)
@@ -497,11 +504,12 @@ def parse_args() -> TrainConfig:
     p.add_argument("--lr-scratch", type=float, default=1.0e-3)
     p.add_argument("--out-dir", type=str, default="castm_runs/oracle/run")
     p.add_argument("--inferred-eval", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--scratch-mult", type=float, default=1.0)
     args = p.parse_args()
     return TrainConfig(
         games=tuple(args.games), steps_per_game=args.steps_per_game, num_envs=args.num_envs,
         seed=args.seed, eval_episodes=args.eval_episodes, lr_scratch=args.lr_scratch, out_dir=args.out_dir,
-        inferred_eval=args.inferred_eval,
+        inferred_eval=args.inferred_eval, scratch_mult=args.scratch_mult,
     )
 
 
