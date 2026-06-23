@@ -57,7 +57,7 @@ class PlasticConfig:
     ent_coef: float = 0.01
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
-    lr: float = 2.5e-4
+    lr: float = 1.5e-4
     mem_rank: int = 64
     out_dir: str = "castm_runs/plastic/run"
     fire_reset: bool = True
@@ -73,7 +73,9 @@ def loss_plastic(trainable, banks_frozen, cfg_ff, k, ctx_id, batch, clip, vf, en
 def _make_plastic_update(cfg_ff, cfg: PlasticConfig):
     @partial(jax.jit, static_argnames=("minibatch_size", "ctx_id"))
     def update(params, frozen, k, ctx_id, batch, rng, lr, minibatch_size, opt_state):
-        opt = optax.chain(optax.clip_by_global_norm(cfg.max_grad_norm), optax.adam(lr))
+        # zero_nans guards against a single divergent minibatch destroying W0;
+        # adam eps=1e-5 is the standard Atari-PPO stabilizer for continued training.
+        opt = optax.chain(optax.zero_nans(), optax.clip_by_global_norm(cfg.max_grad_norm), optax.adam(lr, eps=1e-5))
         batch_size = cfg.num_minibatches * minibatch_size
 
         def epoch(carry, _):
@@ -196,7 +198,7 @@ def run(cfg: PlasticConfig):
         b0_snap = {name: np.asarray(banks[name].b0) for name in banks}
 
         params = ff.shared_trainable(banks)
-        opt = optax.chain(optax.clip_by_global_norm(cfg.max_grad_norm), optax.adam(cfg.lr))
+        opt = optax.chain(optax.zero_nans(), optax.clip_by_global_norm(cfg.max_grad_norm), optax.adam(cfg.lr, eps=1e-5))
         opt_state = opt.init(params)
         num_updates = max(1, cfg.steps_per_game // batch_size)
 

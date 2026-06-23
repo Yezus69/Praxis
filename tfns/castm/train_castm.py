@@ -112,7 +112,7 @@ def _make_update(loss_fn, cfg_ff, cfg: TrainConfig):
 
     @partial(jax.jit, static_argnames=("minibatch_size",))
     def update(params, frozen, k, batch, rng, lr, minibatch_size, opt_state):
-        opt = optax.chain(optax.clip_by_global_norm(cfg.max_grad_norm), optax.adam(lr))
+        opt = optax.chain(optax.zero_nans(), optax.clip_by_global_norm(cfg.max_grad_norm), optax.adam(lr, eps=1e-5))
         batch_size = cfg.num_minibatches * minibatch_size
 
         def epoch(carry, _):
@@ -259,7 +259,7 @@ def train_one_game(cfg: TrainConfig, cfg_ff, banks, book, game, ctx_id, *, mode,
         lr0 = cfg.lr_scratch
         scratch = params
     update = _make_update(loss_fn, cfg_ff, cfg)
-    opt = optax.chain(optax.clip_by_global_norm(cfg.max_grad_norm), optax.adam(lr0))
+    opt = optax.chain(optax.zero_nans(), optax.clip_by_global_norm(cfg.max_grad_norm), optax.adam(lr0, eps=1e-5))
     opt_state = opt.init(params)
 
     env = bp.make_env(game, num_envs, cfg.seed + ctx_id, training=True)
