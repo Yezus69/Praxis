@@ -61,6 +61,7 @@ class PlasticConfig:
     mem_rank: int = 64
     out_dir: str = "castm_runs/plastic/run"
     fire_reset: bool = True
+    resolve: bool = True  # False = naive control (no memory protection, identical training)
 
 
 def loss_plastic(trainable, banks_frozen, cfg_ff, k, ctx_id, batch, clip, vf, ent):
@@ -104,11 +105,22 @@ def _make_plastic_update(cfg_ff, cfg: PlasticConfig):
 
 
 def _svd_lowrank(residual, rank):
-    """Return (A (r,in), B (out,r)) with B@A ≈ residual, truncated to rank."""
+    """Return (A (r,in), B (out,r)) with B@A ≈ residual, truncated to rank.
 
-    res = np.asarray(residual, dtype=np.float64)
-    u, s, vt = np.linalg.svd(res, full_matrices=False)
-    r = int(min(int(rank), s.size))
+    Finite-safe: non-finite entries are zeroed and a non-converging SVD falls
+    back to a random low-rank/zero factor rather than crashing the whole run.
+    """
+
+    res = np.nan_to_num(np.asarray(residual, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0)
+    out_dim, in_dim = res.shape
+    r = int(min(int(rank), out_dim, in_dim))
+    try:
+        u, s, vt = np.linalg.svd(res, full_matrices=False)
+    except np.linalg.LinAlgError:
+        try:
+            u, s, vt = np.linalg.svd(res + 1e-6 * np.random.standard_normal(res.shape), full_matrices=False)
+        except np.linalg.LinAlgError:
+            return jnp.zeros((r, in_dim), jnp.float32), jnp.zeros((out_dim, r), jnp.float32)
     sq = np.sqrt(s[:r])
     B = (u[:, :r] * sq).astype(np.float32)
     A = (sq[:, None] * vt[:r]).astype(np.float32)
@@ -125,6 +137,12 @@ def resolve_memory(banks, book, dW0, db0, old_ctxs, mem_rank):
     new_banks = {}
     drift_err = {}
     for name, mem in banks.items():
+        # The value head is auxiliary (eval uses the policy only), so it is not
+        # protected — it freely tracks the current game.
+        if name == "value":
+            new_banks[name] = syn.empty_synaptic_memory(mem.W0, mem.b0, comp_rank=mem.comp_rank,
+                                                        n_slots=mem.n_slots, d_k=mem.d_k)
+            continue
         m2 = syn.empty_synaptic_memory(mem.W0, mem.b0, comp_rank=mem.comp_rank,
                                        n_slots=mem.n_slots, d_k=mem.d_k)
         layer_err = 0.0
@@ -193,9 +211,25 @@ def run(cfg: PlasticConfig):
     for gi, game in enumerate(cfg.games):
         ctx_id = ctx_ids[gi]
         k = addr.code(book, ctx_id)
-        # snapshot W0 before this game (to compute drift afterward)
+        # snapshot W0 before this game (to compute drift afterward, incl. head reset)
         W0_snap = {name: np.asarray(banks[name].W0) for name in banks}
         b0_snap = {name: np.asarray(banks[name].b0) for name in banks}
+
+        # Re-init policy/value heads each new game to restore exploration entropy
+        # (continued PPO otherwise enters a new game with a confident-but-wrong
+        # low-entropy policy and collapses). Conv/dense features carry over (full
+        # plasticity, nothing frozen); the old policy heads are restored exactly
+        # by the low-rank memory re-solve (small heads => rank<=64 is exact).
+        if gi > 0:
+            rng, kp, kv = jax.random.split(rng, 3)
+            pol, val = banks["policy"], banks["value"]
+            banks = dict(banks)
+            banks["policy"] = pol.replace(
+                W0=jax.nn.initializers.orthogonal(0.01)(kp, pol.W0.shape, jnp.float32),
+                b0=jnp.zeros_like(pol.b0))
+            banks["value"] = val.replace(
+                W0=jax.nn.initializers.orthogonal(1.0)(kv, val.W0.shape, jnp.float32),
+                b0=jnp.zeros_like(val.b0))
 
         params = ff.shared_trainable(banks)
         opt = optax.chain(optax.zero_nans(), optax.clip_by_global_norm(cfg.max_grad_norm), optax.adam(cfg.lr, eps=1e-5))
@@ -272,7 +306,7 @@ def run(cfg: PlasticConfig):
         dW0 = {name: (np.asarray(banks[name].W0) - W0_snap[name]) for name in banks}
         db0 = {name: (np.asarray(banks[name].b0) - b0_snap[name]) for name in banks}
         old_ctxs = ctx_ids[:gi]
-        if old_ctxs:
+        if old_ctxs and cfg.resolve:
             banks, drift_err = resolve_memory(banks, book, dW0, db0, old_ctxs, R)
             max_drift = max(np.max(np.abs(dW0[n])) for n in dW0)
             max_resid = max(drift_err.values())
@@ -314,9 +348,11 @@ def parse_args() -> PlasticConfig:
     p.add_argument("--eval-episodes", type=int, default=20)
     p.add_argument("--mem-rank", type=int, default=64)
     p.add_argument("--out-dir", type=str, default="castm_runs/plastic/run")
+    p.add_argument("--no-resolve", action="store_true", help="naive control: skip memory re-solve (no protection)")
     args = p.parse_args()
     return PlasticConfig(games=tuple(args.games), steps_per_game=args.steps_per_game, num_envs=args.num_envs,
-                         seed=args.seed, eval_episodes=args.eval_episodes, mem_rank=args.mem_rank, out_dir=args.out_dir)
+                         seed=args.seed, eval_episodes=args.eval_episodes, mem_rank=args.mem_rank, out_dir=args.out_dir,
+                         resolve=not args.no_resolve)
 
 
 if __name__ == "__main__":

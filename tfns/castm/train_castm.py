@@ -83,7 +83,9 @@ class TrainConfig:
 def _ppo_terms(logits, values, batch: Batch, clip, vf, ent):
     new_logprobs = bp.log_prob(logits, batch.actions)
     logratio = new_logprobs - batch.logprobs
-    ratio = jnp.exp(logratio)
+    # Clamp the log-ratio before exp so a transient policy blow-up cannot produce
+    # an Inf importance ratio (which zero_nans does not catch) and corrupt W0.
+    ratio = jnp.exp(jnp.clip(logratio, -10.0, 10.0))
     adv = (batch.advantages - batch.advantages.mean()) / (batch.advantages.std() + 1e-8)
     pg = jnp.maximum(-adv * ratio, -adv * jnp.clip(ratio, 1.0 - clip, 1.0 + clip)).mean()
     v_unclipped = jnp.square(values - batch.returns)
