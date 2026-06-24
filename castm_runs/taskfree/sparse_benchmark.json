@@ -1,0 +1,8 @@
+{
+  "description": "True-sparse (blocked gather) vs functional forward_sparse, RTX 4090, out=in=512, rank=64, slots_per_ctx=2, batch=256, 80 reps median",
+  "blocked_ms": {"1": 1.4147, "5": 1.4731, "20": 1.5572, "57": 1.5725},
+  "functional_ms": {"1": 1.4240, "5": 1.6579, "20": 1.5383, "57": 4.9734},
+  "blocked_overhead_5_to_57": 1.067,
+  "functional_overhead_5_to_57": 3.000,
+  "verdict": "blocked path 6.7% overhead 5->57 contexts (< 20% requirement); functional path 200% -> scales with context count"
+}

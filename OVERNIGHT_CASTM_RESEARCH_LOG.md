@@ -79,6 +79,37 @@ Local, fast, high-ROI fixes first (CPU-testable), then the online machinery, the
   inferred routing is the PRIMARY eval; serialization/resume (test 13).
 - Then GPU ladder Stage 1 → 2 → 3.
 
+## ~21:45 — KEY FINDING: the shared-encoder content query is non-discriminative
+Adversarial review (4 agents, 21 findings, 4 high) ran in parallel with the pilot and
+confirmed + extended my diagnosis: warm-up pollution, incomplete serialization, and
+two attribution bugs (alloc `prev_ctx` fallback; switch credit). All fixed.
+
+Then the routing root cause surfaced in the data. Instrumented smokes showed:
+- The W0-encoder content query gives **cosine ~0.99 between SpaceInvaders and
+  Seaquest frames** (and ~0.99 within each) — the games are *unseparable* in the
+  penultimate features. **Mean-centering** (ReLU features live in the positive
+  orthant) lifted within-game structure but Seaquest still scored **0.86–0.99**
+  against SI's centered prototypes. The encoder's penultimate features are genuinely
+  non-discriminative across these visually-distinct games (both collapse to the same
+  control-feature region).
+- Also fixed two prerequisite bugs the encoder path exposed: (i) **false split in
+  game0** from a one-way baseline ratchet + inflated seeding mean (k-means centroids
+  trivially fit their own seeding frames at ~1.0 while new frames score far lower) —
+  fixed by calibrating the baseline from real warm-up frames, not the seed; (ii)
+  **false merge in game1** from a dev-scaled band swallowing the cross-game sim —
+  fixed by capping the band. With these, game0 stays 1 context (no split) at every
+  scale, but game1 still merged because the *representation* can't separate them.
+
+### Decision: content signature = pooled raw observation (spec-allowed "observations")
+Since the shared encoder cannot separate the regimes, the content query uses a
+**pooled raw-observation signature** (8×8 spatial average-pool per stacked frame =
+256-d), which the spec explicitly permits ("observations or shared encoder
+features"). It separates SI/Seaquest trivially (sanity: within 1.0, cross 0.0), is
+**encoder-drift-free** (raw pixels don't drift — the §2 drift machinery still runs
+but is trivially stable), and is domain-general (any agent has sensory input). The
+encoder-feature path is retained as an ablation. This is the honest, working choice;
+the negative result (encoder features non-discriminative across games) is reported.
+
 ### Decision: decouple true-sparse-exec *claim* from the pilot training path
 The existing `forward_sparse` is functionally correct but contracts over all `M`
 slots (overhead ∝ stored contexts). At 2–5 contexts the overhead is a negligible
@@ -154,3 +185,39 @@ it coherent and runnable. I will use parallel agents (Workflow/Agent) for the ge
 parallel, independently-checkable sub-tasks: an adversarial multi-lens review of the
 new core modules before GPU commitment, and results analysis while runs execute.
 Recorded so the choice is auditable.
+
+## ~21:15 — Routing robustness: three bugs found and fixed via GPU smokes (SI→Seaquest)
+The hard part of task-free is ONLINE routing under a plastic encoder. Iterated on a
+60k-step smoke (worst case: least-trained encoder = smallest game separation):
+1. **False split within game0** (3 ctx for 2 games): fixed-threshold novelty + the
+   seeding baseline being over-tight (prototypes scored on their own frames). Fixes:
+   adaptive per-context running-similarity baseline (self-calibrating); cheap
+   per-rollout prototype refresh on KNOWN rollouts; warm-up grace (6 rollouts) so a
+   new context's baseline calibrates on real gameplay frames.
+2. **False merge of game1 into game0** (1 ctx for 2 games): the dev-scaled match band
+   widened enough to swallow the cross-game similarity, and KNOWN-rollout stat/proto
+   updates pulled ctx0 toward game1 (feedback loop). Fixes: **cap the match-band drop**
+   (`known_cap=0.12`) so a clear similarity drop always breaks the match; **anti-
+   pollution guard** (only fold frames into a context when sim ≥ its running mean).
+3. **Attribution at a latency-delayed switch**: detection took ~7 rollouts (thin margin
+   on the weak smoke encoder), so the most-frequent context over the segment was the
+   stale one; the end-of-segment resolve credited it. Fix: resolves attribute to the
+   context active **since the last resolve** (settled/current), not the segment mode.
+
+**Smoke5 (final) confirmed the mechanism end-to-end**: game0 stays 1 context (no
+split); at game1, Seaquest scores active_sim=0.804 vs ctx0 within-SI mean 0.930 →
+capped level 0.810 → **ALLOC ctx1** (2 contexts); held-out router top-1 = 1.0. The
+margin is thin on the weak 60k encoder (0.006) but widens with training. All 7 manager
+tests + full suite (72) still pass. Committed 11b1f17.
+
+Sparse-exec benchmark (RTX 4090): blocked path 1.41→1.57ms over 1→57 contexts
+(**6.7% overhead 5→57**, < 20% req); functional path 1.66→4.97ms (**200%**). Test 11 met.
+
+## ~21:18 — Stage 1 launched (both GPUs)
+- GPU1: task-free pilot SI→Seaquest, 500k/game, mem_rank 64, resolve_every 20,
+  intervention boost_reset, eval 12 completed eps. (`castm_runs/taskfree/stage1_pilot`)
+- GPU2 (sequential): matched 500k refs (SI, Seaquest) → naive control (--no-resolve).
+  (`refs/`, `stage1_naive`)
+At 500k the game0 encoder is strongly trained when game1 starts, so Seaquest
+separation (and detection margin) should be far cleaner than the 60k smoke.
+Parallel: adversarial review workflow on the new core modules; analyzer ready.

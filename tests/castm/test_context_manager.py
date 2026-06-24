@@ -51,7 +51,7 @@ def _cfg(**kw):
     # discovery (production uses warmup_rollouts=6 for ~122-rollout game segments).
     base = dict(d_q=D_Q, d_k=64, n_max=40, max_contexts=40, proto_per_ctx=8,
                 switch_margin=0.03, novel_persist=3, min_dwell=3, warmup_rollouts=2,
-                known_k=4.0, novel_k=6.0, anchor_cap=512, seed=0)
+                known_k=4.0, novel_k=6.0, anchor_cap=512, seed=0, center=False)
     base.update(kw)
     return cm.ManagerConfig(**base)
 
@@ -186,6 +186,13 @@ def test_state_dict_roundtrip():
     mgr2.load_state_dict(sd)
     assert mgr2.ctx_ids == mgr.ctx_ids
     assert mgr2.active_ctx == mgr.active_ctx
+    # Prototypes, running stats, and address book restore EXACTLY (test 13).
+    for c in mgr.ctx_ids:
+        assert np.array_equal(mgr.prototypes[c], mgr2.prototypes[c]), f"prototypes differ for ctx {c}"
+        assert abs(mgr.ctx_sim_mean[c] - mgr2.ctx_sim_mean[c]) < 1e-9
+        assert abs(mgr.ctx_sim_dev[c] - mgr2.ctx_sim_dev[c]) < 1e-9
+    assert np.array_equal(np.asarray(mgr.book.K), np.asarray(mgr2.book.K))
+    assert np.array_equal(np.asarray(mgr.book.used), np.asarray(mgr2.book.used))
     # Routing is identical after restore.
     frames = gen(1, 12, rng=rng)
     assert np.array_equal(mgr.per_stream_route(qfn(frames)), mgr2.per_stream_route(qfn(frames)))

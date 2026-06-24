@@ -138,15 +138,22 @@ def encode(banks, scratch, cfg: FFConfig, obs, k, ctx_id=None, sparse=False):
     return jax.nn.relu(e)
 
 
-def content_query(banks, cfg: FFConfig, obs, k):
-    """Return a normalized content query from the shared (W0-only) encoder.
+def content_features(banks, cfg: FFConfig, obs, k):
+    """Return RAW (un-normalized) content features from the shared (W0-only) encoder.
 
-    Uses sparse gather with a non-existent context so no committed memory delta
-    contributes: a context-independent content signature for the router (spec 9.1).
-    No game/task identity is used.
+    Context-independent: gathers a non-existent context (ctx_id=-999) so no committed
+    memory delta contributes (spec 9.1). The router mean-centers and normalizes these
+    itself — ReLU features live in the positive orthant, so centering before cosine is
+    what gives usable regime separation. No game/task identity is used.
     """
 
-    e = encode(banks, None, cfg, obs, k, ctx_id=-999, sparse=True)
+    return encode(banks, None, cfg, obs, k, ctx_id=-999, sparse=True)
+
+
+def content_query(banks, cfg: FFConfig, obs, k):
+    """Normalized content query (legacy; the router now centers raw features)."""
+
+    e = content_features(banks, cfg, obs, k)
     return e / (jnp.linalg.norm(e, axis=-1, keepdims=True) + 1e-6)
 
 

@@ -81,7 +81,7 @@ class TaskFreeConfig:
     resolve: bool = True               # False = naive control (no memory protection)
     include_value: bool = True         # protect the value head in the resolve (ablatable)
     # online context manager
-    proto_per_ctx: int = 8
+    proto_per_ctx: int = 12
     known_thresh: float = 0.55
     novel_thresh: float = 0.40
     novel_persist: int = 3
@@ -159,8 +159,10 @@ def run(cfg: TaskFreeConfig):
     rng, bkey = jax.random.split(rng)
     banks = ff.init_banks(bkey, cfg_ff)
 
+    content_grid = 8
+    content_dq = content_grid * content_grid * cfg_ff.frame_stack
     mgr_cfg = cm.ManagerConfig(
-        d_q=cfg_ff.dense_dim, d_k=cfg_ff.d_k, n_max=n_slots, max_contexts=cfg.max_contexts,
+        d_q=content_dq, d_k=cfg_ff.d_k, n_max=n_slots, max_contexts=cfg.max_contexts,
         proto_per_ctx=cfg.proto_per_ctx, known_thresh=cfg.known_thresh, novel_thresh=cfg.novel_thresh,
         novel_persist=cfg.novel_persist, min_dwell=cfg.min_dwell, anchor_cap=cfg.anchor_cap, seed=cfg.seed)
     mgr = cm.OnlineContextManager(mgr_cfg)
@@ -190,19 +192,18 @@ def run(cfg: TaskFreeConfig):
 
     @jax.jit
     def query_of(banks, obs, k):
-        return ff.content_query(banks, cfg_ff, obs, k)
+        return ff.content_features(banks, cfg_ff, obs, k)   # RAW features; manager centers them
 
-    def query_fn_factory(banks_ref):
-        """numpy frames -> normalized content queries under the current encoder."""
-        kq = jnp.asarray(addr.code(mgr.book, mgr.ctx_ids[0])) if mgr.ctx_ids else jnp.zeros((cfg_ff.d_k,))
+    def content_sig(obs):
+        """Raw-observation content signature (pooled pixels). Encoder-independent."""
+        return cm.pooled_signature(obs, content_grid)
 
+    def query_fn_factory(banks_ref=None):
+        """raw frames -> content signatures (pooled pixels; no GPU, drift-free)."""
         def qfn(frames):
-            out = []
-            B = cfg.num_envs
-            for i in range(0, len(frames), B):
-                chunk = jnp.asarray(frames[i:i + B])
-                out.append(np.asarray(query_of(banks_ref, chunk, kq)))
-            return np.concatenate(out, axis=0) if out else np.zeros((0, cfg_ff.dense_dim), np.float32)
+            if len(frames) == 0:
+                return np.zeros((0, content_dq), np.float32)
+            return content_sig(frames)
         return qfn
 
     @partial(jax.jit, static_argnames=("ctx_id",))
@@ -294,8 +295,8 @@ def run(cfg: TaskFreeConfig):
             global_update += 1
             banks_now = cur_banks()
             # --- routing decision at rollout start (content only) ---
-            kq = jnp.asarray(mgr.active_address())
-            queries = np.asarray(query_of(banks_now, jnp.asarray(next_obs), kq))
+            prev_active = int(mgr.active_ctx)        # outgoing context, captured BEFORE routing
+            queries = content_sig(next_obs)          # pooled-pixel content signature
             ev = mgr.update(queries, next_obs)
             active_ctx = mgr.active_ctx
             decision = ev["decision"]
@@ -304,16 +305,13 @@ def run(cfg: TaskFreeConfig):
             seg_ctx_counts[active_ctx] = seg_ctx_counts.get(active_ctx, 0) + 1
 
             # On a switch/alloc, resolve attributing the just-ended interval to the
-            # OUTGOING context (exact, since W0 was held during the ambiguous window).
-            if ev.get("switched") and "prev_ctx" in ev:
-                do_resolve(int(ev["prev_ctx"]), tag="switch")
-            elif ev.get("allocated") and mgr.num_contexts > 1:
-                # the context active just before this alloc is the outgoing one
-                prev_ctx = ev.get("prev_ctx", -1)
-                if prev_ctx is None or prev_ctx < 0:
-                    # outgoing = the previously-active context (now second-newest)
-                    prev_ctx = mgr.ctx_ids[-2]
-                do_resolve(int(prev_ctx), tag="alloc")
+            # OUTGOING context (the context active before this rollout). W0 was held
+            # during the ambiguous (non-KNOWN) tail, so this credits the right context.
+            outgoing = int(ev.get("prev_ctx", prev_active))
+            if ev.get("switched") and outgoing >= 0:
+                do_resolve(outgoing, tag="switch")
+            elif ev.get("allocated") and mgr.num_contexts > 1 and outgoing >= 0:
+                do_resolve(outgoing, tag="alloc")
             if ev.get("allocated"):
                 alloc_age = 0
                 if reset_on:
@@ -397,15 +395,20 @@ def run(cfg: TaskFreeConfig):
         if callable(env_close):
             env_close()
 
-        # dominant context during this game segment (evaluator label only)
+        # The context the stream SETTLED into for this game (evaluator label only).
+        # Use the current active context, not the most-frequent: detection latency at a
+        # switch can make a stale context most-frequent even though the segment ended in
+        # the correct (newly-discovered) context.
+        settled = int(mgr.active_ctx)
         dom = max(seg_ctx_counts, key=lambda c: seg_ctx_counts[c]) if seg_ctx_counts else -1
-        game_to_ctx[game] = int(dom)
+        game_to_ctx[game] = settled
         best_after_learn[game] = float(best)
 
-        # End-of-segment resolve so this segment's drift is absorbed before evaluating
-        # the others (active = the segment's dominant context).
+        # End-of-segment resolve: attribute the drift since the last resolve to the
+        # context that has been active since then (the settled context).
         if mgr.num_contexts >= 1 and updates_since_resolve > 0:
-            do_resolve(int(dom), tag="segment_end")
+            do_resolve(settled, tag="segment_end")
+        log(f"  [segment end] {game} settled_ctx={settled} dominant_ctx={dom} num_contexts={mgr.num_contexts}")
 
         # --- retention eval after each segment: ORACLE (diagnostic) + INFERRED (primary) ---
         row = {"after_game": game, "after_index": gi, "oracle": {}, "inferred": {}}
@@ -427,7 +430,8 @@ def run(cfg: TaskFreeConfig):
     # --- FINAL inferred-routing evaluation (PRIMARY result) ---
     log("=== FINAL INFERRED-ROUTING EVAL (task-free, primary) ===")
     mgr.refresh_prototypes(query_fn_factory(cur_banks()))
-    inferred = _final_inferred_eval(cfg, cfg_ff, banks, mgr, game_to_ctx, log)
+    inferred = _final_inferred_eval(cfg, cfg_ff, banks, mgr, game_to_ctx,
+                                    content_sig, sample_sparse, query_fn_factory(), log)
     payload = _persist(out_dir, cfg, random_scores, best_after_learn, retention_matrix,
                        routing_log, resolve_log, game_to_ctx, mgr, inferred=inferred)
     log("DONE")
@@ -475,26 +479,71 @@ def _calibrate_thresholds(cfg, cfg_ff, banks, query_of, mgr, log):
         f"novel_thresh={mgr.cfg.novel_thresh:.3f}")
 
 
-def _final_inferred_eval(cfg, cfg_ff, banks, mgr, game_to_ctx, log):
-    """Inferred (content-routed) eval of every game + routing accuracy (primary)."""
+def _final_inferred_eval(cfg, cfg_ff, banks, mgr, game_to_ctx, content_sig, sample_sparse, query_fn, log):
+    """Inferred (content-routed) eval through the MANAGER's centered prototypes.
 
-    from tfns.castm import infer_eval as ie
+    Two metrics, both task-free at inference (the address is chosen by the router from
+    content; game labels are used only to score):
+      * router top-1 accuracy on the manager's held-out raw-frame anchors (A_router);
+      * inferred score per game: roll the game out, route every step via the manager
+        (centered), act through the routed context's sparse address.
+    """
+
     ctx_ids = list(mgr.ctx_ids)
-    prototypes = {c: mgr.prototypes[c] for c in ctx_ids}
-    # routing accuracy: does a frame from game g route to the ctx the harness recorded for g?
-    games = [g for g in cfg.games if game_to_ctx.get(g, -1) >= 0]
-    label_ctx = [game_to_ctx[g] for g in games]
-    racc = ie.routing_accuracy(cfg_ff, banks, mgr.book, games, label_ctx, prototypes,
-                               num_envs=cfg.num_envs, n_frames=2048, seed=cfg.seed + 6000,
-                               fire_reset=cfg.fire_reset)
-    log(f"  router top-1 overall={racc['overall']:.4f} per_game={racc['per_game']}")
+    k_neutral = jnp.zeros((cfg_ff.d_k,), jnp.float32)  # placeholder address (acting uses routed addr)
+    # dedupe games (an alternation may repeat a game); evaluate each distinct game once
+    games, seen = [], set()
+    for g in cfg.games:
+        if g not in seen and game_to_ctx.get(g, -1) in ctx_ids:
+            games.append(g); seen.add(g)
+
+    # A_router: held-out routing accuracy from the manager's own raw anchors (centered).
+    audit = mgr.audit_routing(query_fn)
+    racc = {"overall": audit["overall"],
+            "per_ctx": {int(c): v for c, v in audit["per_ctx"].items()},
+            "max_inter_sim": audit["max_inter_sim"]}
+    log(f"  router top-1 (held-out anchors) overall={racc['overall']:.4f} per_ctx={racc['per_ctx']} "
+        f"max_inter_sim={racc['max_inter_sim']:.3f}")
+
     scores = {}
     for g in games:
-        ev = ie.inferred_eval_game(cfg_ff, banks, mgr.book, g, game_to_ctx[g], prototypes, ctx_ids,
-                                   num_envs=min(cfg.num_envs, cfg.eval_episodes), n_episodes=cfg.eval_episodes,
-                                   seed=cfg.seed + 8000, fire_reset=cfg.fire_reset)
+        true_ctx = game_to_ctx[g]
+        env = bp.make_env(g, min(cfg.num_envs, cfg.eval_episodes), cfg.seed + 8000, training=False)
+        obs, _ = bp.reset_result(env.reset())
+        obs = bp.nhwc_uint8(obs)
+        n = obs.shape[0]
+        running = np.zeros((n,), np.float32)
+        fire = np.full((n,), bool(cfg.fire_reset), np.bool_)
+        completed, steps = [], 0
+        rc = rt_ = 0
+        rng = jax.random.PRNGKey(cfg.seed + 8000)
+        while len(completed) < cfg.eval_episodes and steps < 1_000_000:
+            raw = content_sig(obs)                           # pooled-pixel signature
+            routed = mgr.per_stream_route(raw)               # centered routing
+            rc += int(np.sum(routed == true_ctx)); rt_ += n
+            vals, counts = np.unique(routed, return_counts=True)
+            cctx = int(vals[counts.argmax()])                # batch consensus (single game)
+            k_c = jnp.asarray(mgr.address_of(cctx)) if cctx >= 0 else k_neutral
+            cid = cctx if cctx >= 0 else -999
+            a, rng = sample_sparse(banks, jnp.asarray(obs), k_c, cid, jnp.asarray(fire), rng)
+            obs, reward, term, trunc, _ = env.step(np.asarray(jax.device_get(a), np.int32))
+            obs = bp.nhwc_uint8(obs)
+            done = np.logical_or(bp.vec(term, np.bool_, n, "t"), bp.vec(trunc, np.bool_, n, "tr"))
+            running += bp.vec(reward, np.float32, n, "r")
+            for idx in np.flatnonzero(done):
+                if len(completed) < cfg.eval_episodes:
+                    completed.append(float(running[idx]))
+                running[idx] = 0.0
+            fire = np.where(done, bool(cfg.fire_reset), False)
+            steps += n
+        close = getattr(env, "close", None)
+        if callable(close):
+            close()
+        arr = np.asarray(completed, np.float32)
+        ev = {"mean": float(arr.mean()) if arr.size else float("nan"), "n": int(arr.size),
+              "valid": bool(len(completed) >= cfg.eval_episodes), "route_acc": rc / max(rt_, 1)}
         scores[g] = ev
-        log(f"  inferred[{g}] mean={ev['mean']:.1f} route_acc={ev['route_acc']:.4f} valid={ev['valid']}")
+        log(f"  inferred[{g}] -> ctx{true_ctx} mean={ev['mean']:.1f} route_acc={ev['route_acc']:.4f} valid={ev['valid']}")
     return {"routing_accuracy": racc, "scores": scores, "num_contexts": mgr.num_contexts}
 
 
