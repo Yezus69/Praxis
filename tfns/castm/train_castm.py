@@ -80,20 +80,47 @@ class TrainConfig:
 # --- PPO loss (feed-forward) ---------------------------------------------------
 
 
-def _ppo_terms(logits, values, batch: Batch, clip, vf, ent):
+def _masked_mean(x, mask):
+    """Mean of ``x`` over entries where ``mask`` (float 0/1) is 1; safe if all 0."""
+
+    denom = jnp.maximum(mask.sum(), 1.0)
+    return (x * mask).sum() / denom
+
+
+def _ppo_terms(logits, values, batch: Batch, clip, vf, ent, free_mask=None):
+    """PPO surrogate terms.
+
+    ``free_mask`` (optional, shape ``(batch,)``, float 1.0 on policy-controlled
+    steps and 0.0 on environment-forced steps such as forced FIRE-on-reset). When
+    given, the policy-gradient, entropy, and KL terms are averaged over free steps
+    only — a forced transition's behaviour probability is 1, not ``pi(a)``, so its
+    importance ratio is meaningless and must not enter the policy objective
+    (architecture section 6). The value loss is always over all steps: forced
+    transitions still carry a valid return for value/representation learning.
+    """
+
     new_logprobs = bp.log_prob(logits, batch.actions)
     logratio = new_logprobs - batch.logprobs
     # Clamp the log-ratio before exp so a transient policy blow-up cannot produce
     # an Inf importance ratio (which zero_nans does not catch) and corrupt W0.
     ratio = jnp.exp(jnp.clip(logratio, -10.0, 10.0))
     adv = (batch.advantages - batch.advantages.mean()) / (batch.advantages.std() + 1e-8)
-    pg = jnp.maximum(-adv * ratio, -adv * jnp.clip(ratio, 1.0 - clip, 1.0 + clip)).mean()
+    pg_elem = jnp.maximum(-adv * ratio, -adv * jnp.clip(ratio, 1.0 - clip, 1.0 + clip))
     v_unclipped = jnp.square(values - batch.returns)
     v_clipped = batch.values + jnp.clip(values - batch.values, -clip, clip)
     v_loss = 0.5 * jnp.maximum(v_unclipped, jnp.square(v_clipped - batch.returns)).mean()
     logp = jax.nn.log_softmax(logits, axis=-1)
-    entropy = -(jnp.exp(logp) * logp).sum(axis=-1).mean()
-    approx_kl = ((ratio - 1.0) - logratio).mean()
+    ent_elem = -(jnp.exp(logp) * logp).sum(axis=-1)
+    kl_elem = (ratio - 1.0) - logratio
+    if free_mask is None:
+        pg = pg_elem.mean()
+        entropy = ent_elem.mean()
+        approx_kl = kl_elem.mean()
+    else:
+        free_mask = jnp.asarray(free_mask, dtype=logits.dtype).reshape(-1)
+        pg = _masked_mean(pg_elem, free_mask)
+        entropy = _masked_mean(ent_elem, free_mask)
+        approx_kl = _masked_mean(kl_elem, free_mask)
     loss = pg + vf * v_loss - ent * entropy
     return loss, jnp.asarray([loss, pg, v_loss, entropy, approx_kl])
 
