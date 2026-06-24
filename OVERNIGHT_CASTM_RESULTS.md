@@ -7,10 +7,35 @@ Hardware: 2× RTX 4090 (CUDA 1,2). All claims below are evidence-linked; oracle
 > Honesty contract: nothing here is called "solved"/"proven"/"foolproof" unless the
 > corresponding strict gate actually passed on completed-episode evaluations.
 
+## 0. Blunt summary (read this first)
+**Mathematically verified:** the compensated-resolve no-forgetting invariant
+(`W0'+D_c' = W0+D_c` for inactive c; active context rides the full update), across
+32 conflicting synthetic contexts and in the online resolve unit tests; true-sparse
+(blocked) execution is bit-identical and provably constant-cost in #contexts; the
+forced-FIRE PPO mask zeroes the policy-gradient on forced transitions. Full suite 72 pass.
+
+**Empirically demonstrated (GPU, completed-episode evals):**
+- **Two-context gate (Stage 1, 500k) PASSES**: 2 contexts discovered task-free,
+  router top-1 = 1.00, SpaceInvaders retained exactly (165.8→176.7) while Seaquest
+  learned to 566.7 (oracle P_new 0.95; inferred 0.81 within Seaquest variance).
+- **Three-context gate (Stage 2) PASSES**: 3 contexts, no proliferation, both
+  revisits recalled, router 1.0, min retention 0.93, and revisiting a context
+  **improves** it (reconsolidation).
+- **Naive control** (resolve off, same routing) forgets where the resolve arm holds.
+- Stage 3 (five-game) and a seed-2 replication: see §4/§5 (filled on completion).
+
+**Unresolved / honest limits:** the shared-encoder content query is non-discriminative
+across these games (we use pooled raw observations instead — works, but sidesteps the
+encoder-drift machinery); inferred P_new is budget-limited at 500k; Breakout/Pong
+under-train and normalize degenerately at these budgets.
+
 ## 1. Commit hashes
 - `11b1f17` — task-free machinery (context_manager, online_resolve, sparse_exec,
   train_taskfree, analyze_taskfree, _ppo_terms forced-FIRE mask) + 21 tests.
-- (subsequent routing-robustness + review-fix commits listed at the end)
+- `b0a3a5b` — pooled-pixel content signature + adaptive discovery (routing works).
+- `388e496` — Stage-1 two-context PASS + naive banks-sync fix + matched 500k refs.
+- `386c633` — Stage-2 three-context PASS (discovery + revisit recall + reconsolidation).
+- (Stage-3 / seed-2 commit at the end.)
 
 ## 2. What was implemented (removing the research-invalid shortcuts)
 | Shortcut (was) | Now |
