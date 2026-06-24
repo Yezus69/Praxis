@@ -1,0 +1,154 @@
+22:28:05 TASK-FREE CASTM games=('Breakout-v5', 'Pong-v5', 'SpaceInvaders-v5', 'Seaquest-v5', 'BeamRider-v5') mem_rank=64 seed=1 intervention=boost_reset resolve_every=20 include_value=True
+22:28:06 random[Breakout-v5] = 1.00
+22:28:09 random[Pong-v5] = -20.33
+22:28:10 random[SpaceInvaders-v5] = 138.75
+22:28:12 random[Seaquest-v5] = 75.00
+22:28:16 random[BeamRider-v5] = 388.67
+22:28:28   [route u1 g0] ALLOC ctx=0 nctx=1 active_sim=0.000 best_sim=0.000 level=0.000 mean=0.000 dev=0.000
+22:28:35 [Breakout-v5 g0] u=1/183 dec=ALLOC ctx=0 nctx=1 eval=0.7 best=0.7 sps=219 ent=nan
+22:29:49   [resolve periodic u21] active=0 inactive=0 max|dW0|=0.079 resid=0.0000 budget_ok=True route=1.0
+22:30:05 [Breakout-v5 g0] u=25/183 dec=KNOWN ctx=0 nctx=1 eval=1.5 best=1.5 sps=939 ent=2.873
+22:30:49   [resolve periodic u41] active=0 inactive=0 max|dW0|=0.066 resid=0.0000 budget_ok=True route=1.0
+22:31:21 [Breakout-v5 g0] u=50/183 dec=KNOWN ctx=0 nctx=1 eval=2.7 best=2.7 sps=1110 ent=2.744
+22:31:52   [resolve periodic u61] active=0 inactive=0 max|dW0|=0.060 resid=0.0000 budget_ok=True route=1.0
+22:32:35 [Breakout-v5 g0] u=75/183 dec=KNOWN ctx=0 nctx=1 eval=6.0 best=6.0 sps=1185 ent=2.674
+22:32:52   [resolve periodic u81] active=0 inactive=0 max|dW0|=0.057 resid=0.0000 budget_ok=True route=1.0
+22:32:57   [route u83 g0] UNCERTAIN ctx=0 nctx=1 active_sim=0.595 best_sim=0.595 level=0.598 mean=0.703 dev=0.026
+22:33:46 [Breakout-v5 g0] u=100/183 dec=KNOWN ctx=0 nctx=1 eval=7.6 best=7.6 sps=1240 ent=2.609
+22:33:54   [resolve periodic u102] active=0 inactive=0 max|dW0|=0.057 resid=0.0000 budget_ok=True route=1.0
+22:34:44   [resolve periodic u122] active=0 inactive=0 max|dW0|=0.037 resid=0.0000 budget_ok=True route=1.0
+22:35:02 [Breakout-v5 g0] u=125/183 dec=KNOWN ctx=0 nctx=1 eval=11.8 best=11.8 sps=1260 ent=2.523
+22:35:46   [resolve periodic u142] active=0 inactive=0 max|dW0|=0.032 resid=0.0000 budget_ok=True route=1.0
+22:36:14 [Breakout-v5 g0] u=150/183 dec=KNOWN ctx=0 nctx=1 eval=11.4 best=11.8 sps=1285 ent=2.491
+22:36:45   [resolve periodic u162] active=0 inactive=0 max|dW0|=0.032 resid=0.0000 budget_ok=True route=1.0
+22:37:25 [Breakout-v5 g0] u=175/183 dec=KNOWN ctx=0 nctx=1 eval=14.0 best=14.0 sps=1306 ent=2.431
+22:37:44   [resolve periodic u182] active=0 inactive=0 max|dW0|=0.031 resid=0.0000 budget_ok=True route=1.0
+22:37:56 [Breakout-v5 g0] u=183/183 dec=KNOWN ctx=0 nctx=1 eval=14.5 best=14.5 sps=1294 ent=2.391
+22:37:56   [resolve segment_end u183] active=0 inactive=0 max|dW0|=0.006 resid=0.0000 budget_ok=True route=1.0
+22:37:56   [segment end] Breakout-v5 settled_ctx=0 dominant_ctx=0 num_contexts=1
+22:38:07   oracle-after[Breakout-v5] Breakout-v5 ctx0: mean=12.0 valid=True
+22:38:07 persisted after Breakout-v5 (num_contexts=1)
+22:38:12   [route u184 g1] UNCERTAIN ctx=0 nctx=1 active_sim=0.101 best_sim=0.101 level=0.581 mean=0.643 dev=0.015
+22:38:26 [Pong-v5 g1] u=1/183 dec=UNCERTAIN ctx=0 nctx=1 eval=-20.8 best=-20.8 sps=1236 ent=nan
+22:38:29   [route u185 g1] UNCERTAIN ctx=0 nctx=1 active_sim=0.096 best_sim=0.096 level=0.581 mean=0.643 dev=0.015
+22:38:43   [resolve alloc u186] active=0 inactive=1 max|dW0|=0.000 resid=0.0000 budget_ok=True route=1.0
+22:38:53   [route u186 g1] ALLOC ctx=1 nctx=2 active_sim=0.098 best_sim=0.098 level=0.581 mean=0.643 dev=0.015
+22:39:54   [resolve periodic u206] active=1 inactive=1 max|dW0|=0.031 resid=0.0019 budget_ok=True route=1.0
+22:40:13 [Pong-v5 g1] u=25/183 dec=KNOWN ctx=1 nctx=2 eval=-20.8 best=-20.8 sps=1189 ent=2.752
+22:40:59   [resolve periodic u226] active=1 inactive=1 max|dW0|=0.044 resid=0.0039 budget_ok=False route=1.0
+22:41:27 [Pong-v5 g1] u=50/183 dec=KNOWN ctx=1 nctx=2 eval=-20.6 best=-20.6 sps=1207 ent=2.640
+22:42:01   [resolve periodic u246] active=1 inactive=1 max|dW0|=0.038 resid=0.0085 budget_ok=False route=1.0
+22:42:44 [Pong-v5 g1] u=75/183 dec=KNOWN ctx=1 nctx=2 eval=-20.5 best=-20.5 sps=1218 ent=2.663
+22:43:06   [resolve periodic u266] active=1 inactive=1 max|dW0|=0.043 resid=0.0070 budget_ok=False route=1.0
+22:44:02 [Pong-v5 g1] u=100/183 dec=KNOWN ctx=1 nctx=2 eval=-19.3 best=-19.3 sps=1226 ent=2.731
+22:44:14   [resolve periodic u286] active=1 inactive=1 max|dW0|=0.045 resid=0.0088 budget_ok=False route=1.0
+22:45:01   [resolve periodic u306] active=1 inactive=1 max|dW0|=0.034 resid=0.0095 budget_ok=False route=1.0
+22:45:29 [Pong-v5 g1] u=125/183 dec=KNOWN ctx=1 nctx=2 eval=-17.8 best=-17.8 sps=1221 ent=2.543
+22:46:14   [resolve periodic u326] active=1 inactive=1 max|dW0|=0.032 resid=0.0096 budget_ok=False route=1.0
+22:46:27   [route u332 g1] UNCERTAIN ctx=1 nctx=2 active_sim=0.991 best_sim=0.991 level=0.996 mean=0.998 dev=0.000
+22:47:03 [Pong-v5 g1] u=150/183 dec=KNOWN ctx=1 nctx=2 eval=-16.2 best=-16.2 sps=1211 ent=2.423
+22:47:38   [resolve periodic u347] active=1 inactive=1 max|dW0|=0.034 resid=0.0106 budget_ok=False route=1.0
+22:48:38 [Pong-v5 g1] u=175/183 dec=KNOWN ctx=1 nctx=2 eval=-11.6 best=-11.6 sps=1201 ent=2.420
+22:49:36 [Pong-v5 g1] u=183/183 dec=KNOWN ctx=1 nctx=2 eval=-10.5 best=-10.5 sps=1171 ent=2.349
+22:49:39   [resolve segment_end u366] active=1 inactive=1 max|dW0|=0.038 resid=0.0093 budget_ok=False route=1.0
+22:49:39   [segment end] Pong-v5 settled_ctx=1 dominant_ctx=1 num_contexts=2
+22:49:47   oracle-after[Pong-v5] Breakout-v5 ctx0: mean=12.8 valid=True
+22:50:22   oracle-after[Pong-v5] Pong-v5 ctx1: mean=-13.5 valid=True
+22:50:22 persisted after Pong-v5 (num_contexts=2)
+22:50:26   [route u367 g2] UNCERTAIN ctx=1 nctx=2 active_sim=-0.401 best_sim=0.827 level=0.993 mean=0.996 dev=0.001
+22:50:40 [SpaceInvaders-v5 g2] u=1/183 dec=UNCERTAIN ctx=1 nctx=2 eval=206.2 best=206.2 sps=1119 ent=nan
+22:50:43   [route u368 g2] UNCERTAIN ctx=1 nctx=2 active_sim=-0.403 best_sim=0.834 level=0.993 mean=0.996 dev=0.001
+22:50:46   [resolve switch u369] active=1 inactive=1 max|dW0|=0.000 resid=0.0000 budget_ok=True route=1.0
+22:50:50   [route u369 g2] SWITCH ctx=0 nctx=2 active_sim=-0.408 best_sim=0.832 level=0.993 mean=0.996 dev=0.001
+22:51:40   [resolve periodic u389] active=0 inactive=1 max|dW0|=0.035 resid=0.0040 budget_ok=False route=1.0
+22:51:58 [SpaceInvaders-v5 g2] u=25/183 dec=KNOWN ctx=0 nctx=2 eval=220.8 best=220.8 sps=1127 ent=1.620
+22:52:43   [resolve periodic u409] active=0 inactive=1 max|dW0|=0.039 resid=0.0083 budget_ok=False route=1.0
+22:53:13 [SpaceInvaders-v5 g2] u=50/183 dec=KNOWN ctx=0 nctx=2 eval=230.4 best=230.4 sps=1138 ent=1.804
+22:53:47   [resolve periodic u429] active=0 inactive=1 max|dW0|=0.025 resid=0.0076 budget_ok=False route=1.0
+22:54:25 [SpaceInvaders-v5 g2] u=75/183 dec=KNOWN ctx=0 nctx=2 eval=298.8 best=298.8 sps=1152 ent=1.751
+22:54:49   [resolve periodic u449] active=0 inactive=1 max|dW0|=0.029 resid=0.0096 budget_ok=False route=1.0
+22:55:43 [SpaceInvaders-v5 g2] u=100/183 dec=KNOWN ctx=0 nctx=2 eval=241.2 best=298.8 sps=1159 ent=1.956
+22:55:55   [resolve periodic u469] active=0 inactive=1 max|dW0|=0.021 resid=0.0074 budget_ok=False route=1.0
+22:56:47   [resolve periodic u489] active=0 inactive=1 max|dW0|=0.026 resid=0.0083 budget_ok=False route=1.0
+22:57:04 [SpaceInvaders-v5 g2] u=125/183 dec=KNOWN ctx=0 nctx=2 eval=242.1 best=298.8 sps=1164 ent=2.103
+22:57:53   [resolve periodic u509] active=0 inactive=1 max|dW0|=0.018 resid=0.0082 budget_ok=False route=1.0
+22:58:22 [SpaceInvaders-v5 g2] u=150/183 dec=KNOWN ctx=0 nctx=2 eval=250.4 best=298.8 sps=1170 ent=2.175
+22:58:58   [resolve periodic u529] active=0 inactive=1 max|dW0|=0.020 resid=0.0097 budget_ok=False route=1.0
+22:59:39 [SpaceInvaders-v5 g2] u=175/183 dec=KNOWN ctx=0 nctx=2 eval=249.6 best=298.8 sps=1177 ent=2.153
+23:00:04   [resolve periodic u549] active=0 inactive=1 max|dW0|=0.016 resid=0.0091 budget_ok=False route=1.0
+23:00:17 [SpaceInvaders-v5 g2] u=183/183 dec=KNOWN ctx=0 nctx=2 eval=243.3 best=298.8 sps=1171 ent=2.120
+23:00:17   [segment end] SpaceInvaders-v5 settled_ctx=0 dominant_ctx=0 num_contexts=2
+23:00:25   oracle-after[SpaceInvaders-v5] Breakout-v5 ctx0: mean=7.6 valid=True
+23:01:01   oracle-after[SpaceInvaders-v5] Pong-v5 ctx1: mean=-12.2 valid=True
+23:01:11   oracle-after[SpaceInvaders-v5] SpaceInvaders-v5 ctx0: mean=232.9 valid=True
+23:01:11 persisted after SpaceInvaders-v5 (num_contexts=2)
+23:01:15   [route u550 g3] UNCERTAIN ctx=0 nctx=2 active_sim=0.077 best_sim=0.849 level=0.973 mean=0.983 dev=0.002
+23:01:31 [Seaquest-v5 g3] u=1/183 dec=UNCERTAIN ctx=0 nctx=2 eval=80.0 best=80.0 sps=1129 ent=nan
+23:01:35   [route u551 g3] UNCERTAIN ctx=0 nctx=2 active_sim=0.054 best_sim=0.832 level=0.973 mean=0.983 dev=0.002
+23:01:39   [resolve alloc u552] active=0 inactive=2 max|dW0|=0.000 resid=0.0000 budget_ok=False route=1.0
+23:01:47   [route u552 g3] ALLOC ctx=2 nctx=3 active_sim=0.077 best_sim=0.844 level=0.973 mean=0.983 dev=0.002
+23:02:45   [resolve periodic u572] active=2 inactive=2 max|dW0|=0.014 resid=0.0064 budget_ok=True route=1.0
+23:05:01 [Seaquest-v5 g3] u=25/183 dec=KNOWN ctx=2 nctx=3 eval=0.0 best=80.0 sps=1066 ent=1.021
+23:05:47   [resolve periodic u592] active=2 inactive=2 max|dW0|=0.017 resid=0.0068 budget_ok=True route=1.0
+23:08:16 [Seaquest-v5 g3] u=50/183 dec=KNOWN ctx=2 nctx=3 eval=3.3 best=80.0 sps=1022 ent=0.962
+23:08:52   [resolve periodic u612] active=2 inactive=2 max|dW0|=0.016 resid=0.0073 budget_ok=True route=1.0
+23:08:59   [route u615 g3] UNCERTAIN ctx=2 nctx=3 active_sim=0.993 best_sim=0.993 level=0.993 mean=0.996 dev=0.001
+23:09:26 [Seaquest-v5 g3] u=75/183 dec=KNOWN ctx=2 nctx=3 eval=13.3 best=80.0 sps=1035 ent=1.684
+23:09:55   [resolve periodic u633] active=2 inactive=2 max|dW0|=0.021 resid=0.0105 budget_ok=True route=1.0
+23:10:43 [Seaquest-v5 g3] u=100/183 dec=KNOWN ctx=2 nctx=3 eval=150.0 best=150.0 sps=1044 ent=1.929
+23:10:59   [resolve periodic u653] active=2 inactive=2 max|dW0|=0.021 resid=0.0107 budget_ok=False route=1.0
+23:11:52   [resolve periodic u673] active=2 inactive=2 max|dW0|=0.024 resid=0.0128 budget_ok=False route=1.0
+23:12:12 [Seaquest-v5 g3] u=125/183 dec=KNOWN ctx=2 nctx=3 eval=190.0 best=190.0 sps=1047 ent=1.927
+23:13:11   [resolve periodic u693] active=2 inactive=2 max|dW0|=0.017 resid=0.0088 budget_ok=False route=1.0
+23:13:44 [Seaquest-v5 g3] u=150/183 dec=KNOWN ctx=2 nctx=3 eval=270.0 best=270.0 sps=1050 ent=2.140
+23:14:21   [resolve periodic u713] active=2 inactive=2 max|dW0|=0.018 resid=0.0066 budget_ok=False route=1.0
+23:15:04 [Seaquest-v5 g3] u=175/183 dec=KNOWN ctx=2 nctx=3 eval=326.7 best=326.7 sps=1056 ent=2.126
+23:15:40 [Seaquest-v5 g3] u=183/183 dec=KNOWN ctx=2 nctx=3 eval=248.3 best=326.7 sps=1054 ent=2.096
+23:15:45   [resolve segment_end u732] active=2 inactive=2 max|dW0|=0.012 resid=0.0075 budget_ok=True route=1.0
+23:15:45   [segment end] Seaquest-v5 settled_ctx=2 dominant_ctx=2 num_contexts=3
+23:15:52   oracle-after[Seaquest-v5] Breakout-v5 ctx0: mean=7.9 valid=True
+23:16:29   oracle-after[Seaquest-v5] Pong-v5 ctx1: mean=-13.1 valid=True
+23:16:38   oracle-after[Seaquest-v5] SpaceInvaders-v5 ctx0: mean=188.8 valid=True
+23:16:59   oracle-after[Seaquest-v5] Seaquest-v5 ctx2: mean=363.3 valid=True
+23:16:59 persisted after Seaquest-v5 (num_contexts=3)
+23:17:03   [route u733 g4] UNCERTAIN ctx=2 nctx=3 active_sim=-0.693 best_sim=0.966 level=0.857 mean=0.912 dev=0.014
+23:17:37 [BeamRider-v5 g4] u=1/183 dec=UNCERTAIN ctx=2 nctx=3 eval=528.7 best=528.7 sps=1014 ent=nan
+23:17:41   [route u734 g4] UNCERTAIN ctx=2 nctx=3 active_sim=-0.663 best_sim=0.959 level=0.857 mean=0.912 dev=0.014
+23:17:47   [resolve alloc u735] active=2 inactive=3 max|dW0|=0.000 resid=0.0000 budget_ok=True route=1.0
+23:17:55   [route u735 g4] ALLOC ctx=3 nctx=4 active_sim=-0.680 best_sim=0.962 level=0.857 mean=0.912 dev=0.014
+23:18:57   [resolve periodic u755] active=3 inactive=3 max|dW0|=0.010 resid=0.0066 budget_ok=False route=1.0
+23:19:39 [BeamRider-v5 g4] u=25/183 dec=KNOWN ctx=3 nctx=4 eval=637.0 best=637.0 sps=1006 ent=2.154
+23:20:27   [resolve periodic u775] active=3 inactive=3 max|dW0|=0.010 resid=0.0048 budget_ok=False route=1.0
+23:21:20 [BeamRider-v5 g4] u=50/183 dec=KNOWN ctx=3 nctx=4 eval=602.7 best=637.0 sps=1006 ent=2.359
+23:21:57   [resolve periodic u795] active=3 inactive=3 max|dW0|=0.008 resid=0.0059 budget_ok=False route=1.0
+23:23:07 [BeamRider-v5 g4] u=75/183 dec=KNOWN ctx=3 nctx=4 eval=675.3 best=675.3 sps=1004 ent=2.349
+23:23:34   [resolve periodic u815] active=3 inactive=3 max|dW0|=0.006 resid=0.0038 budget_ok=False route=1.0
+23:24:58 [BeamRider-v5 g4] u=100/183 dec=KNOWN ctx=3 nctx=4 eval=662.0 best=675.3 sps=1002 ent=2.302
+23:25:13   [resolve periodic u835] active=3 inactive=3 max|dW0|=0.006 resid=0.0037 budget_ok=False route=1.0
+23:26:07   [resolve periodic u855] active=3 inactive=3 max|dW0|=0.007 resid=0.0032 budget_ok=False route=0.99951171875
+23:26:57 [BeamRider-v5 g4] u=125/183 dec=KNOWN ctx=3 nctx=4 eval=610.3 best=675.3 sps=997 ent=2.345
+23:27:24   [route u868 g4] UNCERTAIN ctx=3 nctx=4 active_sim=0.955 best_sim=0.955 level=0.958 mean=0.969 dev=0.003
+23:27:31   [route u871 g4] UNCERTAIN ctx=3 nctx=4 active_sim=0.951 best_sim=0.951 level=0.956 mean=0.969 dev=0.003
+23:27:52   [resolve periodic u877] active=3 inactive=3 max|dW0|=0.007 resid=0.0035 budget_ok=False route=1.0
+23:28:43 [BeamRider-v5 g4] u=150/183 dec=KNOWN ctx=3 nctx=4 eval=656.0 best=675.3 sps=996 ent=2.339
+23:28:54   [route u886 g4] UNCERTAIN ctx=3 nctx=4 active_sim=0.914 best_sim=0.914 level=0.943 mean=0.963 dev=0.005
+23:29:27   [resolve periodic u898] active=3 inactive=3 max|dW0|=0.005 resid=0.0032 budget_ok=False route=1.0
+23:30:26 [BeamRider-v5 g4] u=175/183 dec=KNOWN ctx=3 nctx=4 eval=644.3 best=675.3 sps=996 ent=2.364
+23:30:36   [route u911 g4] UNCERTAIN ctx=3 nctx=4 active_sim=0.912 best_sim=0.912 level=0.923 mean=0.948 dev=0.006
+23:31:23 [BeamRider-v5 g4] u=183/183 dec=KNOWN ctx=3 nctx=4 eval=660.3 best=675.3 sps=990 ent=2.386
+23:31:30   [resolve segment_end u915] active=3 inactive=3 max|dW0|=0.006 resid=0.0036 budget_ok=True route=1.0
+23:31:30   [segment end] BeamRider-v5 settled_ctx=3 dominant_ctx=3 num_contexts=4
+23:31:37   oracle-after[BeamRider-v5] Breakout-v5 ctx0: mean=7.3 valid=True
+23:32:13   oracle-after[BeamRider-v5] Pong-v5 ctx1: mean=-13.2 valid=True
+23:32:24   oracle-after[BeamRider-v5] SpaceInvaders-v5 ctx0: mean=211.2 valid=True
+23:32:40   oracle-after[BeamRider-v5] Seaquest-v5 ctx2: mean=360.0 valid=True
+23:33:26   oracle-after[BeamRider-v5] BeamRider-v5 ctx3: mean=624.3 valid=True
+23:33:26 persisted after BeamRider-v5 (num_contexts=4)
+23:33:26 === FINAL INFERRED-ROUTING EVAL (task-free, primary) ===
+23:33:28   router top-1 (held-out anchors) overall=1.0000 per_ctx={0: 1.0, 1: 1.0, 2: 1.0, 3: 1.0} max_inter_sim=0.913
+23:33:39   inferred[Breakout-v5] -> ctx0 mean=6.1 route_acc=1.0000 valid=True
+23:34:37   inferred[Pong-v5] -> ctx1 mean=-10.6 route_acc=1.0000 valid=True
+23:34:51   inferred[SpaceInvaders-v5] -> ctx0 mean=255.8 route_acc=1.0000 valid=True
+23:35:26   inferred[Seaquest-v5] -> ctx2 mean=423.3 route_acc=1.0000 valid=True
+23:36:27   inferred[BeamRider-v5] -> ctx3 mean=682.0 route_acc=0.9991 valid=True
+23:36:27 DONE
