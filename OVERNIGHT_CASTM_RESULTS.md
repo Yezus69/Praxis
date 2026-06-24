@@ -71,8 +71,16 @@ Matched single-task references (500k, this budget):
 ### Stage 1 — two-context, task-free (SpaceInvaders → Seaquest, 500k/game, seed 1)
 | run | resolve | contexts | router top-1 | SI after-own → after-Seaquest (oracle) | Seaquest final (oracle) | sps |
 |---|---|---|---|---|---|---|
-| **PLASTIC (task-free)** | on | **2** (correct) | **1.00** | **165.8 → 176.7 (retained)** | **566.7** | ~1100 |
-| NAIVE control | off | 2 (re-running, banks-sync fix) | 1.00 | (forgetting — pending re-run) | — | ~1200 |
+| **PLASTIC seed 1** | on | **2** (correct) | **1.00** | **165.8 → 176.7 (retained)** | **566.7** (P_new 0.95) | ~1100 |
+| **PLASTIC seed 2** | on | **2** (correct) | **1.00** | **237.9 → 237.9 (retained EXACTLY)** | 413.3 (P_new 0.66) | ~1200 |
+| NAIVE control | off | 2 | 1.00 | 213.8 → 172.5 (**−19% forgetting**) | 540.0 | ~1200 |
+
+**Replication (2 seeds):** discovery (2 ctx), router top-1 (1.0), and **retention
+replicate robustly** — seed 2 preserves SpaceInvaders to the digit (237.9→237.9).
+**Plasticity is the variable dimension**: Seaquest reached 566.7 (seed 1) vs 413.3
+(seed 2) — so the inferred P_new gate (0.81 / 0.78) is below 0.90 at the 500k budget
+in both seeds, while oracle P_new is 0.95 / 0.66. Consistent with prior CASTM runs
+("retention replicates; plasticity varies").
 
 The task-free learner **discovered exactly two contexts online with no labels**, the
 held-out router top-1 was **1.00** (per-context 1.0/1.0; inter-context prototype
