@@ -153,6 +153,21 @@ to separate two visually-similar games when one has high variance.
   discriminative content encoder (next-experiment #2) — the mechanism (resolve +
   online discovery) is already proven at 2 and 3 contexts. Honest > forced pass.
 
+## ~23:40 — Session close: final results
+- **Ablation** (none vs boost_reset): novelty-triggered exploration helps Seaquest
+  plasticity 473→567 (+20%), no retention cost, no weight re-init — suggestive (within
+  cross-seed spread).
+- **Stage 3 (5-game)**: 4/5 contexts (SI⊂Breakout merge); Breakout degraded 12→7.3 by
+  the merge; Pong/Seaquest/BeamRider retained (Seaquest 363→360 across BeamRider).
+  Mechanism scales to the contexts it discovers; the content signature is the limit.
+- **1M budget test**: SI retained exactly (337.9, ret 1.01); Seaquest 566→686 with 2×
+  budget (plasticity rising). Inferred P_new 0.81 vs the 2M ref (≈0.91 vs a matched 1M
+  ref) — the sub-threshold P_new is a reference-budget artifact, not a plasticity fail.
+- **Final verdict:** two- and three-context task-free gates PASS (discovery, router 1.0,
+  retention; reconsolidation on revisit). Five-context fails at the pooled-pixel content
+  representation, not the mechanism. Retention is exact and replicates; plasticity is
+  budget-limited and the variable dimension. Branch `task-free-ns`, not merged to main.
+
 ### Decision: decouple true-sparse-exec *claim* from the pilot training path
 The existing `forward_sparse` is functionally correct but contracts over all `M`
 slots (overhead ∝ stored contexts). At 2–5 contexts the overhead is a negligible
