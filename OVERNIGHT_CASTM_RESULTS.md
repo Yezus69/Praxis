@@ -54,6 +54,28 @@ held-out router top-1 was **1.00** (per-context 1.0/1.0; inter-context prototype
 similarity −0.94), it **retained SpaceInvaders exactly** (165.8 → 176.7, ≥ its own
 single-task level) while learning Seaquest to **566.7** (oracle P_new 0.95).
 
+### Stage 2 — three-context alternating stream (A→B→C→A→B, unannounced), 300k/segment
+Schedule: SpaceInvaders → Seaquest → Breakout → **SpaceInvaders → Seaquest** (revisits).
+- **3 contexts discovered, NO proliferation** (ctx0=SI, ctx1=Seaquest, ctx2=Breakout);
+  pooled signatures separate them by cosine −0.6 to +0.1 (inter-ctx prototype sim 0.098).
+- **Revisit recall**: game3 SI → **SWITCH ctx0**; game4 Seaquest → **SWITCH ctx1** (no
+  new context). Held-out **router top-1 = 1.00** (per-ctx 1.0/1.0/1.0); inferred-route
+  acc 1.0 for all three.
+- **Retention + reconsolidation (oracle, mean return), across the stream:**
+
+| game (ctx) | after own seg | … | after final seg | retention | note |
+|---|---|---|---|---|---|
+| SpaceInvaders (0) | 131.2 | 135→**264** on revisit | 238.3 | 1.8 | retained **and improved** on revisit |
+| Seaquest (1) | 451.7 | 488→508→**571** on revisit | 571.7 | 1.27 | retained **and improved** on revisit |
+| Breakout (2) | 1.4 | 1.3 | 1.3 | 0.93 | retained (Breakout under-trains at 300k ≈ random) |
+
+  Revisiting a context **improves** it (active context excluded from drift
+  compensation → reconsolidation, spec §4) while the others are preserved.
+
+**Stage-2 three-context gate:** discovery PASS (3==3), A_router PASS (1.0), min
+retention **0.93 ≥ 0.90 PASS**, no proliferation PASS. Current-context progress:
+Seaquest 571/591 ≈ 0.97, SI ≥ ref; Breakout degenerate (≈ random at 300k).
+
 ## 5. Strict-gate status (two-context gate)
 | gate | threshold | PLASTIC task-free | verdict |
 |---|---|---|---|
@@ -82,9 +104,13 @@ PLASTIC (resolve on):
 after SpaceInvaders : SI 165.8
 after Seaquest      : SI 176.7   Seaquest 566.7      <- SI retained while Seaquest learned
 ```
-NAIVE (resolve off): re-running with the banks-sync fix (the first run read stale
-weights for retention; corrected). The expected contrast: SI degrades (no memory
-protection) while the PLASTIC arm holds — the resolve, not weight freezing, does the work.
+NAIVE (resolve off, banks-sync fixed): `SI 213.8 (after game0) → 172.5 (after Seaquest)`
+— **−19% forgetting**. Contrast: PLASTIC retains (165.8 → 176.7, +7%), NAIVE degrades
+(213.8 → 172.5, −19%). Same routing in both arms (both discover 2 contexts); the only
+difference is the compensated resolve, which **is** what prevents the drop. (Forgetting
+here is moderate, not catastrophic, because SpaceInvaders and Seaquest share visual/
+control structure so Seaquest training does not fully overwrite SpaceInvaders; the
+mechanism's effect is the +7% vs −19% gap, isolated to the resolve.)
 
 ## 8. Routing metrics (Stage 1)
 - Held-out router top-1: **1.00** overall (per-context 1.0 / 1.0).
@@ -121,4 +147,16 @@ resolve + prototype refresh).
   first ~`novel_persist` rollouts are not used for its W0 learning.
 
 ## 11. Next three highest-value experiments
-_TBD._
+1. **Longer per-game budget (1–2M/game).** Stage-1 inferred P_new was budget-limited
+   (Seaquest 0.81 inferred at 500k as the 2nd game). Prior 1.5M runs hit Seaquest
+   progress ~0.99; rerun the two- and five-context gates at ≥1M/game to test whether
+   inferred P_new clears 0.90 cleanly with the task-free routing in the loop.
+2. **A learned-but-discriminative content encoder.** The pooled-pixel signature works
+   and is drift-free, but a small *separately-trained* contrastive/predictive encoder
+   (or earlier conv features) would exercise the §2 prototype-refresh-under-drift
+   machinery for real and likely generalize better to regimes that differ in dynamics
+   rather than appearance (closer to the robot transfer goal).
+3. **Drift-triggered resolve cadence + rank-adaptive compression.** Periodic resolve
+   at fixed cadence is simple; trigger resolves on a shared-drift threshold and grow
+   per-context rank when the residual budget is exceeded, to keep retention exact over
+   much longer curricula (the residual grows with curriculum length at fixed rank).

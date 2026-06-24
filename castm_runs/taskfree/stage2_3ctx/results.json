@@ -1,0 +1,2623 @@
+{
+  "config": {
+    "games": [
+      "SpaceInvaders-v5",
+      "Seaquest-v5",
+      "Breakout-v5",
+      "SpaceInvaders-v5",
+      "Seaquest-v5"
+    ],
+    "steps_per_game": 300000,
+    "num_envs": 32,
+    "num_steps": 128,
+    "seed": 1,
+    "eval_episodes": 12,
+    "eval_every_updates": 25,
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "num_minibatches": 4,
+    "update_epochs": 4,
+    "clip_coef": 0.1,
+    "ent_coef": 0.01,
+    "vf_coef": 0.5,
+    "max_grad_norm": 0.5,
+    "lr": 0.00025,
+    "mem_rank": 64,
+    "resolve_every": 20,
+    "out_dir": "castm_runs/taskfree/stage2_3ctx",
+    "fire_reset": true,
+    "resolve": true,
+    "include_value": true,
+    "proto_per_ctx": 12,
+    "known_thresh": 0.55,
+    "novel_thresh": 0.4,
+    "novel_persist": 3,
+    "min_dwell": 3,
+    "anchor_cap": 2048,
+    "max_contexts": 16,
+    "ent_boost": 4.0,
+    "ent_boost_updates": 40,
+    "reset_opt_on_alloc": true,
+    "intervention": "boost_reset",
+    "calibrate": false
+  },
+  "method": "task_free_online_castm",
+  "random_scores": {
+    "SpaceInvaders-v5": 138.75,
+    "Seaquest-v5": 75.0,
+    "Breakout-v5": 1.0
+  },
+  "best_after_learn": {
+    "SpaceInvaders-v5": 227.0833282470703,
+    "Seaquest-v5": 576.6666870117188,
+    "Breakout-v5": 2.0833332538604736
+  },
+  "retention_matrix": [
+    {
+      "after_game": "SpaceInvaders-v5",
+      "after_index": 0,
+      "oracle": {
+        "SpaceInvaders-v5": {
+          "mean": 131.25,
+          "std": 40.831207275390625,
+          "n": 12,
+          "valid": true,
+          "returns": [
+            85.0,
+            55.0,
+            120.0,
+            105.0,
+            120.0,
+            155.0,
+            155.0,
+            120.0,
+            180.0,
+            210.0,
+            160.0,
+            110.0
+          ]
+        }
+      },
+      "inferred": {}
+    },
+    {
+      "after_game": "Seaquest-v5",
+      "after_index": 1,
+      "oracle": {
+        "SpaceInvaders-v5": {
+          "mean": 132.0833282470703,
+          "std": 41.50593948364258,
+          "n": 12,
+          "valid": true,
+          "returns": [
+            85.0,
+            55.0,
+            120.0,
+            105.0,
+            120.0,
+            155.0,
+            155.0,
+            120.0,
+            180.0,
+            210.0,
+            110.0,
+            170.0
+          ]
+        },
+        "Seaquest-v5": {
+          "mean": 451.6666564941406,
+          "std": 122.32698059082031,
+          "n": 12,
+          "valid": true,
+          "returns": [
+            260.0,
+            380.0,
+            380.0,
+            400.0,
+            420.0,
+            460.0,
+            500.0,
+            580.0,
+            580.0,
+            520.0,
+            680.0,
+            260.0
+          ]
+        }
+      },
+      "inferred": {}
+    },
+    {
+      "after_game": "Breakout-v5",
+      "after_index": 2,
+      "oracle": {
+        "SpaceInvaders-v5": {
+          "mean": 135.0,
+          "std": 41.783172607421875,
+          "n": 12,
+          "valid": true,
+          "returns": [
+            85.0,
+            55.0,
+            120.0,
+            105.0,
+            155.0,
+            155.0,
+            120.0,
+            155.0,
+            180.0,
+            210.0,
+            110.0,
+            170.0
+          ]
+        },
+        "Seaquest-v5": {
+          "mean": 488.3333435058594,
+          "std": 126.87482452392578,
+          "n": 12,
+          "valid": true,
+          "returns": [
+            260.0,
+            380.0,
+            380.0,
+            380.0,
+            420.0,
+            460.0,
+            500.0,
+            580.0,
+            520.0,
+            620.0,
+            680.0,
+            680.0
+          ]
+        },
+        "Breakout-v5": {
+          "mean": 1.4166666269302368,
+          "std": 0.9537936449050903,
+          "n": 12,
+          "valid": true,
+          "returns": [
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            0.0,
+            3.0
+          ]
+        }
+      },
+      "inferred": {}
+    },
+    {
+      "after_game": "SpaceInvaders-v5",
+      "after_index": 3,
+      "oracle": {
+        "SpaceInvaders-v5": {
+          "mean": 264.1666564941406,
+          "std": 178.72036743164062,
+          "n": 12,
+          "valid": true,
+          "returns": [
+            80.0,
+            200.0,
+            60.0,
+            205.0,
+            175.0,
+            165.0,
+            230.0,
+            255.0,
+            485.0,
+            295.0,
+            275.0,
+            745.0
+          ]
+        },
+        "Seaquest-v5": {
+          "mean": 508.3333435058594,
+          "std": 126.3482894897461,
+          "n": 12,
+          "valid": true,
+          "returns": [
+            280.0,
+            380.0,
+            380.0,
+            400.0,
+            460.0,
+            500.0,
+            520.0,
+            580.0,
+            580.0,
+            680.0,
+            680.0,
+            660.0
+          ]
+        },
+        "Breakout-v5": {
+          "mean": 1.3333333730697632,
+          "std": 0.849836528301239,
+          "n": 12,
+          "valid": true,
+          "returns": [
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            0.0
+          ]
+        }
+      },
+      "inferred": {}
+    },
+    {
+      "after_game": "Seaquest-v5",
+      "after_index": 4,
+      "oracle": {
+        "SpaceInvaders-v5": {
+          "mean": 238.3333282470703,
+          "std": 173.66555786132812,
+          "n": 12,
+          "valid": true,
+          "returns": [
+            80.0,
+            200.0,
+            130.0,
+            60.0,
+            205.0,
+            175.0,
+            165.0,
+            230.0,
+            255.0,
+            275.0,
+            325.0,
+            760.0
+          ]
+        },
+        "Seaquest-v5": {
+          "mean": 571.6666870117188,
+          "std": 76.35807037353516,
+          "n": 12,
+          "valid": true,
+          "returns": [
+            480.0,
+            480.0,
+            460.0,
+            520.0,
+            500.0,
+            600.0,
+            620.0,
+            600.0,
+            620.0,
+            620.0,
+            660.0,
+            700.0
+          ]
+        },
+        "Breakout-v5": {
+          "mean": 1.3333333730697632,
+          "std": 0.849836528301239,
+          "n": 12,
+          "valid": true,
+          "returns": [
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            2.0,
+            0.0
+          ]
+        }
+      },
+      "inferred": {}
+    }
+  ],
+  "resolve_log": [
+    {
+      "active_ctx": 0,
+      "n_inactive": 0,
+      "max_dW0": 0.039552840185933746,
+      "max_residual": 0.0,
+      "max_rel_fro": 0.0,
+      "budget_ok": true,
+      "tag": "periodic",
+      "update": 21
+    },
+    {
+      "active_ctx": 0,
+      "n_inactive": 0,
+      "max_dW0": 0.05190984904766083,
+      "max_residual": 0.0,
+      "max_rel_fro": 0.0,
+      "budget_ok": true,
+      "tag": "periodic",
+      "update": 41
+    },
+    {
+      "active_ctx": 0,
+      "n_inactive": 0,
+      "max_dW0": 0.047101284144446254,
+      "max_residual": 0.0,
+      "max_rel_fro": 0.0,
+      "budget_ok": true,
+      "tag": "periodic",
+      "update": 61
+    },
+    {
+      "active_ctx": 0,
+      "n_inactive": 0,
+      "max_dW0": 0.034416854148730636,
+      "max_residual": 0.0,
+      "max_rel_fro": 0.0,
+      "budget_ok": true,
+      "tag": "segment_end",
+      "update": 73
+    },
+    {
+      "active_ctx": 0,
+      "n_inactive": 1,
+      "max_dW0": 0.0,
+      "max_residual": 0.0,
+      "max_rel_fro": 0.0,
+      "budget_ok": true,
+      "tag": "alloc",
+      "update": 76
+    },
+    {
+      "active_ctx": 1,
+      "n_inactive": 1,
+      "max_dW0": 0.03442370146512985,
+      "max_residual": 0.0019490461563691497,
+      "max_rel_fro": 0.06332837285486913,
+      "budget_ok": true,
+      "tag": "periodic",
+      "update": 96
+    },
+    {
+      "active_ctx": 1,
+      "n_inactive": 1,
+      "max_dW0": 0.055860720574855804,
+      "max_residual": 0.00458630605135113,
+      "max_rel_fro": 0.11291740602940784,
+      "budget_ok": false,
+      "tag": "periodic",
+      "update": 116
+    },
+    {
+      "active_ctx": 1,
+      "n_inactive": 1,
+      "max_dW0": 0.05445285700261593,
+      "max_residual": 0.005780957522802055,
+      "max_rel_fro": 0.11917662802556542,
+      "budget_ok": false,
+      "tag": "periodic",
+      "update": 136
+    },
+    {
+      "active_ctx": 1,
+      "n_inactive": 1,
+      "max_dW0": 0.0256068198941648,
+      "max_residual": 0.005843184408604429,
+      "max_rel_fro": 0.09182360118590696,
+      "budget_ok": true,
+      "tag": "segment_end",
+      "update": 146
+    },
+    {
+      "active_ctx": 1,
+      "n_inactive": 2,
+      "max_dW0": 0.0,
+      "max_residual": 2.0101666450500488e-05,
+      "max_rel_fro": 0.0002817180640765062,
+      "budget_ok": true,
+      "tag": "alloc",
+      "update": 149
+    },
+    {
+      "active_ctx": 2,
+      "n_inactive": 2,
+      "max_dW0": 0.04388183727860451,
+      "max_residual": 0.0060348029946908355,
+      "max_rel_fro": 0.08678154487481014,
+      "budget_ok": true,
+      "tag": "periodic",
+      "update": 169
+    },
+    {
+      "active_ctx": 2,
+      "n_inactive": 2,
+      "max_dW0": 0.04503070190548897,
+      "max_residual": 0.008184010366676375,
+      "max_rel_fro": 0.07710240406566707,
+      "budget_ok": true,
+      "tag": "periodic",
+      "update": 189
+    },
+    {
+      "active_ctx": 2,
+      "n_inactive": 2,
+      "max_dW0": 0.03122561424970627,
+      "max_residual": 0.00772744813002646,
+      "max_rel_fro": 0.0773351693688839,
+      "budget_ok": true,
+      "tag": "periodic",
+      "update": 209
+    },
+    {
+      "active_ctx": 2,
+      "n_inactive": 2,
+      "max_dW0": 0.01585758663713932,
+      "max_residual": 0.0044037740444764495,
+      "max_rel_fro": 0.042510450895498667,
+      "budget_ok": true,
+      "tag": "segment_end",
+      "update": 219
+    },
+    {
+      "active_ctx": 2,
+      "n_inactive": 2,
+      "max_dW0": 0.0,
+      "max_residual": 4.597753286361694e-05,
+      "max_rel_fro": 0.00026558969702295844,
+      "budget_ok": true,
+      "tag": "switch",
+      "update": 222
+    },
+    {
+      "active_ctx": 0,
+      "n_inactive": 2,
+      "max_dW0": 0.035568125545978546,
+      "max_residual": 0.010355637408792973,
+      "max_rel_fro": 0.2510655641480263,
+      "budget_ok": false,
+      "tag": "periodic",
+      "update": 242
+    },
+    {
+      "active_ctx": 0,
+      "n_inactive": 2,
+      "max_dW0": 0.0230494886636734,
+      "max_residual": 0.006516974186524749,
+      "max_rel_fro": 0.1754710783238825,
+      "budget_ok": false,
+      "tag": "periodic",
+      "update": 262
+    },
+    {
+      "active_ctx": 0,
+      "n_inactive": 2,
+      "max_dW0": 0.022846654057502747,
+      "max_residual": 0.00627389462897554,
+      "max_rel_fro": 0.12855306020307564,
+      "budget_ok": false,
+      "tag": "periodic",
+      "update": 282
+    },
+    {
+      "active_ctx": 0,
+      "n_inactive": 2,
+      "max_dW0": 0.007886288076406345,
+      "max_residual": 0.0032345198560506105,
+      "max_rel_fro": 0.06275071144072701,
+      "budget_ok": true,
+      "tag": "segment_end",
+      "update": 292
+    },
+    {
+      "active_ctx": 0,
+      "n_inactive": 2,
+      "max_dW0": 0.0,
+      "max_residual": 3.802776336669922e-05,
+      "max_rel_fro": 0.0002674771974410303,
+      "budget_ok": true,
+      "tag": "switch",
+      "update": 295
+    },
+    {
+      "active_ctx": 1,
+      "n_inactive": 2,
+      "max_dW0": 0.014769427478313446,
+      "max_residual": 0.006566025491338223,
+      "max_rel_fro": 0.09704182517706768,
+      "budget_ok": true,
+      "tag": "periodic",
+      "update": 315
+    },
+    {
+      "active_ctx": 1,
+      "n_inactive": 2,
+      "max_dW0": 0.00796849001199007,
+      "max_residual": 0.004119565186556429,
+      "max_rel_fro": 0.05027436775159985,
+      "budget_ok": true,
+      "tag": "periodic",
+      "update": 335
+    },
+    {
+      "active_ctx": 1,
+      "n_inactive": 2,
+      "max_dW0": 0.004647960653528571,
+      "max_residual": 0.00307621993124485,
+      "max_rel_fro": 0.03992945864564679,
+      "budget_ok": true,
+      "tag": "periodic",
+      "update": 355
+    },
+    {
+      "active_ctx": 1,
+      "n_inactive": 2,
+      "max_dW0": 0.0034841567976400256,
+      "max_residual": 0.001668784341745777,
+      "max_rel_fro": 0.0262882256921577,
+      "budget_ok": true,
+      "tag": "segment_end",
+      "update": 365
+    }
+  ],
+  "routing_log_tail": [
+    {
+      "u": 166,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9992934465408325,
+      "best_sim": 0.9992934465408325,
+      "level": 0.9619836864652945
+    },
+    {
+      "u": 167,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9991359710693359,
+      "best_sim": 0.9991359710693359,
+      "level": 0.9657145138414372
+    },
+    {
+      "u": 168,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9993534684181213,
+      "best_sim": 0.9993534684181213,
+      "level": 0.9689938031438984
+    },
+    {
+      "u": 169,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9991490840911865,
+      "best_sim": 0.9991490840911865,
+      "level": 0.9719993415101025
+    },
+    {
+      "u": 170,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9994179010391235,
+      "best_sim": 0.9994179010391235,
+      "level": 0.9746599473825334
+    },
+    {
+      "u": 171,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9993772506713867,
+      "best_sim": 0.9993772506713867,
+      "level": 0.9770771475161273
+    },
+    {
+      "u": 172,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9994176626205444,
+      "best_sim": 0.9994176626205444,
+      "level": 0.9792706822698893
+    },
+    {
+      "u": 173,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.999174952507019,
+      "best_sim": 0.999174952507019,
+      "level": 0.9812363875197042
+    },
+    {
+      "u": 174,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9995287656784058,
+      "best_sim": 0.9995287656784058,
+      "level": 0.9829772534797511
+    },
+    {
+      "u": 175,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9993069767951965,
+      "best_sim": 0.9993069767951965,
+      "level": 0.984538570915878
+    },
+    {
+      "u": 176,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9993853569030762,
+      "best_sim": 0.9993853569030762,
+      "level": 0.9860111463558909
+    },
+    {
+      "u": 177,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9994810819625854,
+      "best_sim": 0.9994810819625854,
+      "level": 0.9873210540005848
+    },
+    {
+      "u": 178,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9995815753936768,
+      "best_sim": 0.9995815753936768,
+      "level": 0.988474004703959
+    },
+    {
+      "u": 179,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9994482398033142,
+      "best_sim": 0.9994482398033142,
+      "level": 0.9894878175169508
+    },
+    {
+      "u": 180,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9994685649871826,
+      "best_sim": 0.9994685649871826,
+      "level": 0.9904499441513503
+    },
+    {
+      "u": 181,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9994436502456665,
+      "best_sim": 0.9994436502456665,
+      "level": 0.9913131521265731
+    },
+    {
+      "u": 182,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9991445541381836,
+      "best_sim": 0.9991445541381836,
+      "level": 0.9921013791375645
+    },
+    {
+      "u": 183,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9993643760681152,
+      "best_sim": 0.9993643760681152,
+      "level": 0.9927083987154595
+    },
+    {
+      "u": 184,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9994717836380005,
+      "best_sim": 0.9994717836380005,
+      "level": 0.9933736358087026
+    },
+    {
+      "u": 185,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9991248846054077,
+      "best_sim": 0.9991248846054077,
+      "level": 0.9939401629858583
+    },
+    {
+      "u": 186,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9993867874145508,
+      "best_sim": 0.9993867874145508,
+      "level": 0.994358834379973
+    },
+    {
+      "u": 187,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9990215301513672,
+      "best_sim": 0.9990215301513672,
+      "level": 0.9948466892508299
+    },
+    {
+      "u": 188,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9993852376937866,
+      "best_sim": 0.9993852376937866,
+      "level": 0.9951315168249509
+    },
+    {
+      "u": 189,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9992656707763672,
+      "best_sim": 0.9992656707763672,
+      "level": 0.9955307967592061
+    },
+    {
+      "u": 190,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9992477893829346,
+      "best_sim": 0.9992477893829346,
+      "level": 0.99587994033132
+    },
+    {
+      "u": 191,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9993994235992432,
+      "best_sim": 0.9993994235992432,
+      "level": 0.9961876632324664
+    },
+    {
+      "u": 192,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9993926286697388,
+      "best_sim": 0.9993926286697388,
+      "level": 0.9964743413862341
+    },
+    {
+      "u": 193,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9991066455841064,
+      "best_sim": 0.9991066455841064,
+      "level": 0.9967378399917675
+    },
+    {
+      "u": 194,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9989790320396423,
+      "best_sim": 0.9989790320396423,
+      "level": 0.9968858244272838
+    },
+    {
+      "u": 195,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9989442825317383,
+      "best_sim": 0.9989442825317383,
+      "level": 0.9969640932593883
+    },
+    {
+      "u": 196,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9991774559020996,
+      "best_sim": 0.9991774559020996,
+      "level": 0.9970302656472436
+    },
+    {
+      "u": 197,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9990462064743042,
+      "best_sim": 0.9990462064743042,
+      "level": 0.9972195921354319
+    },
+    {
+      "u": 198,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9991440773010254,
+      "best_sim": 0.9991440773010254,
+      "level": 0.9973269005146334
+    },
+    {
+      "u": 199,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9992624521255493,
+      "best_sim": 0.9992624521255493,
+      "level": 0.9974799487747439
+    },
+    {
+      "u": 200,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9991973042488098,
+      "best_sim": 0.9991973042488098,
+      "level": 0.9976366516566907
+    },
+    {
+      "u": 201,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9993033409118652,
+      "best_sim": 0.9993033409118652,
+      "level": 0.9977860504730272
+    },
+    {
+      "u": 202,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9989362359046936,
+      "best_sim": 0.9989362359046936,
+      "level": 0.9979013646502767
+    },
+    {
+      "u": 203,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9988802671432495,
+      "best_sim": 0.9988802671432495,
+      "level": 0.9978907831528206
+    },
+    {
+      "u": 204,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9992492198944092,
+      "best_sim": 0.9992492198944092,
+      "level": 0.9978646822866779
+    },
+    {
+      "u": 205,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9986485242843628,
+      "best_sim": 0.9986485242843628,
+      "level": 0.9979680992856543
+    },
+    {
+      "u": 206,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9985063076019287,
+      "best_sim": 0.9985063076019287,
+      "level": 0.9978273966271237
+    },
+    {
+      "u": 207,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9988851547241211,
+      "best_sim": 0.9988851547241211,
+      "level": 0.9976505304090691
+    },
+    {
+      "u": 208,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.998871922492981,
+      "best_sim": 0.998871922492981,
+      "level": 0.9977052501054697
+    },
+    {
+      "u": 209,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.99908846616745,
+      "best_sim": 0.99908846616745,
+      "level": 0.9977547559901707
+    },
+    {
+      "u": 210,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9990617036819458,
+      "best_sim": 0.9990617036819458,
+      "level": 0.9978619547567561
+    },
+    {
+      "u": 211,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9990149140357971,
+      "best_sim": 0.9990149140357971,
+      "level": 0.9979690796174485
+    },
+    {
+      "u": 212,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9989435076713562,
+      "best_sim": 0.9989435076713562,
+      "level": 0.9980665122294679
+    },
+    {
+      "u": 213,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9989823698997498,
+      "best_sim": 0.9989823698997498,
+      "level": 0.9981192134810464
+    },
+    {
+      "u": 214,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9985361099243164,
+      "best_sim": 0.9985361099243164,
+      "level": 0.9981895755509248
+    },
+    {
+      "u": 215,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9990782141685486,
+      "best_sim": 0.9990782141685486,
+      "level": 0.9980313667832978
+    },
+    {
+      "u": 216,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9987785816192627,
+      "best_sim": 0.9987785816192627,
+      "level": 0.9980927858085994
+    },
+    {
+      "u": 217,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9988316893577576,
+      "best_sim": 0.9988316893577576,
+      "level": 0.9980804515118525
+    },
+    {
+      "u": 218,
+      "game_idx": 2,
+      "decision": "KNOWN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9985160827636719,
+      "best_sim": 0.9985160827636719,
+      "level": 0.9981039959018091
+    },
+    {
+      "u": 219,
+      "game_idx": 2,
+      "decision": "UNCERTAIN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": 0.9971277117729187,
+      "best_sim": 0.9971277117729187,
+      "level": 0.9979725404951905
+    },
+    {
+      "u": 220,
+      "game_idx": 3,
+      "decision": "UNCERTAIN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": -0.6263213157653809,
+      "best_sim": 0.9972347021102905,
+      "level": 0.9979725404951905
+    },
+    {
+      "u": 221,
+      "game_idx": 3,
+      "decision": "UNCERTAIN",
+      "active_ctx": 2,
+      "num_ctx": 3,
+      "active_sim": -0.6004742383956909,
+      "best_sim": 0.9964064359664917,
+      "level": 0.9979725404951905
+    },
+    {
+      "u": 222,
+      "game_idx": 3,
+      "decision": "SWITCH",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": -0.5826047658920288,
+      "best_sim": 0.9942242503166199,
+      "level": 0.9979725404951905
+    },
+    {
+      "u": 223,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9931848049163818,
+      "best_sim": 0.9931848049163818,
+      "level": 0.8255694764398843
+    },
+    {
+      "u": 224,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9930466413497925,
+      "best_sim": 0.9930466413497925,
+      "level": 0.7959961792289965
+    },
+    {
+      "u": 225,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9938887357711792,
+      "best_sim": 0.9938887357711792,
+      "level": 0.779342957691184
+    },
+    {
+      "u": 226,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9952865839004517,
+      "best_sim": 0.9952865839004517,
+      "level": 0.7887975354991835
+    },
+    {
+      "u": 227,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9956622123718262,
+      "best_sim": 0.9956622123718262,
+      "level": 0.7974464403393103
+    },
+    {
+      "u": 228,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9960592985153198,
+      "best_sim": 0.9960592985153198,
+      "level": 0.8052680175425619
+    },
+    {
+      "u": 229,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9949806928634644,
+      "best_sim": 0.9949806928634644,
+      "level": 0.8123471456398377
+    },
+    {
+      "u": 230,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9956461191177368,
+      "best_sim": 0.9956461191177368,
+      "level": 0.8186105003622003
+    },
+    {
+      "u": 231,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9949045181274414,
+      "best_sim": 0.9949045181274414,
+      "level": 0.8243140622377539
+    },
+    {
+      "u": 232,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9939649105072021,
+      "best_sim": 0.9939649105072021,
+      "level": 0.8293731078267227
+    },
+    {
+      "u": 233,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9956845045089722,
+      "best_sim": 0.9956845045089722,
+      "level": 0.8338322880947707
+    },
+    {
+      "u": 234,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9951497316360474,
+      "best_sim": 0.9951497316360474,
+      "level": 0.8380175097361909
+    },
+    {
+      "u": 235,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9957327246665955,
+      "best_sim": 0.9957327246665955,
+      "level": 0.8417307319261765
+    },
+    {
+      "u": 236,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9952638149261475,
+      "best_sim": 0.9952638149261475,
+      "level": 0.8451309312002184
+    },
+    {
+      "u": 237,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9955148696899414,
+      "best_sim": 0.9955148696899414,
+      "level": 0.8481442195728113
+    },
+    {
+      "u": 238,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.994918942451477,
+      "best_sim": 0.994918942451477,
+      "level": 0.8508812845845243
+    },
+    {
+      "u": 239,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9938210844993591,
+      "best_sim": 0.9938210844993591,
+      "level": 0.8532850503712196
+    },
+    {
+      "u": 240,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9951303005218506,
+      "best_sim": 0.9951303005218506,
+      "level": 0.8553386537840335
+    },
+    {
+      "u": 241,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9943131804466248,
+      "best_sim": 0.9943131804466248,
+      "level": 0.8573178184578152
+    },
+    {
+      "u": 242,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9953505396842957,
+      "best_sim": 0.9953505396842957,
+      "level": 0.8590173546566962
+    },
+    {
+      "u": 243,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9935377836227417,
+      "best_sim": 0.9935377836227417,
+      "level": 0.8606506731594561
+    },
+    {
+      "u": 244,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9925491213798523,
+      "best_sim": 0.9925491213798523,
+      "level": 0.8619393842057846
+    },
+    {
+      "u": 245,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9941513538360596,
+      "best_sim": 0.9941513538360596,
+      "level": 0.8660312403584617
+    },
+    {
+      "u": 246,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9935603141784668,
+      "best_sim": 0.9935603141784668,
+      "level": 0.8743828533410741
+    },
+    {
+      "u": 247,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9928854703903198,
+      "best_sim": 0.9928854703903198,
+      "level": 0.8825226567592179
+    },
+    {
+      "u": 248,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.99302077293396,
+      "best_sim": 0.99302077293396,
+      "level": 0.8904287272385509
+    },
+    {
+      "u": 249,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9925269484519958,
+      "best_sim": 0.9925269484519958,
+      "level": 0.8978166209952365
+    },
+    {
+      "u": 250,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9930088520050049,
+      "best_sim": 0.9930088520050049,
+      "level": 0.9049010038021282
+    },
+    {
+      "u": 251,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9929243326187134,
+      "best_sim": 0.9929243326187134,
+      "level": 0.9113710422563065
+    },
+    {
+      "u": 252,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9922229051589966,
+      "best_sim": 0.9922229051589966,
+      "level": 0.9174535073175654
+    },
+    {
+      "u": 253,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9928863048553467,
+      "best_sim": 0.9928863048553467,
+      "level": 0.9233454405081114
+    },
+    {
+      "u": 254,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9916156530380249,
+      "best_sim": 0.9916156530380249,
+      "level": 0.9286076611300577
+    },
+    {
+      "u": 255,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9917051196098328,
+      "best_sim": 0.9917051196098328,
+      "level": 0.9338940418162835
+    },
+    {
+      "u": 256,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9919069409370422,
+      "best_sim": 0.9919069409370422,
+      "level": 0.9387263863128016
+    },
+    {
+      "u": 257,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9917226433753967,
+      "best_sim": 0.9917226433753967,
+      "level": 0.9431098262897886
+    },
+    {
+      "u": 258,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9920238852500916,
+      "best_sim": 0.9920238852500916,
+      "level": 0.9472036730861143
+    },
+    {
+      "u": 259,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9906255006790161,
+      "best_sim": 0.9906255006790161,
+      "level": 0.9508745061316225
+    },
+    {
+      "u": 260,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9909864664077759,
+      "best_sim": 0.9909864664077759,
+      "level": 0.9546788900609915
+    },
+    {
+      "u": 261,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9896621704101562,
+      "best_sim": 0.9896621704101562,
+      "level": 0.9580116174313328
+    },
+    {
+      "u": 262,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9903944730758667,
+      "best_sim": 0.9903944730758667,
+      "level": 0.9609151815680708
+    },
+    {
+      "u": 263,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9890764951705933,
+      "best_sim": 0.9890764951705933,
+      "level": 0.9638055316975961
+    },
+    {
+      "u": 264,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9907499551773071,
+      "best_sim": 0.9907499551773071,
+      "level": 0.9658572580019152
+    },
+    {
+      "u": 265,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9887069463729858,
+      "best_sim": 0.9887069463729858,
+      "level": 0.9681049767554514
+    },
+    {
+      "u": 266,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9900060296058655,
+      "best_sim": 0.9900060296058655,
+      "level": 0.9695653660630792
+    },
+    {
+      "u": 267,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9890965223312378,
+      "best_sim": 0.9890965223312378,
+      "level": 0.9715892388217964
+    },
+    {
+      "u": 268,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9887918829917908,
+      "best_sim": 0.9887918829917908,
+      "level": 0.9729579900268842
+    },
+    {
+      "u": 269,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9873984456062317,
+      "best_sim": 0.9873984456062317,
+      "level": 0.9740757441563255
+    },
+    {
+      "u": 270,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9886065721511841,
+      "best_sim": 0.9886065721511841,
+      "level": 0.974431567696748
+    },
+    {
+      "u": 271,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9883644580841064,
+      "best_sim": 0.9883644580841064,
+      "level": 0.9754535168160612
+    },
+    {
+      "u": 272,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9892665147781372,
+      "best_sim": 0.9892665147781372,
+      "level": 0.9762917691225174
+    },
+    {
+      "u": 273,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9890979528427124,
+      "best_sim": 0.9890979528427124,
+      "level": 0.977542508727378
+    },
+    {
+      "u": 274,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.987753689289093,
+      "best_sim": 0.987753689289093,
+      "level": 0.9785885669001104
+    },
+    {
+      "u": 275,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9870496988296509,
+      "best_sim": 0.9870496988296509,
+      "level": 0.9788688361026399
+    },
+    {
+      "u": 276,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9889935851097107,
+      "best_sim": 0.9889935851097107,
+      "level": 0.9788327074588322
+    },
+    {
+      "u": 277,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9876419305801392,
+      "best_sim": 0.9876419305801392,
+      "level": 0.979840034136754
+    },
+    {
+      "u": 278,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9873582124710083,
+      "best_sim": 0.9873582124710083,
+      "level": 0.9800874469477133
+    },
+    {
+      "u": 279,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9857660531997681,
+      "best_sim": 0.9857660531997681,
+      "level": 0.9802215371063493
+    },
+    {
+      "u": 280,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9879559278488159,
+      "best_sim": 0.9879559278488159,
+      "level": 0.9796054372528709
+    },
+    {
+      "u": 281,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9860763549804688,
+      "best_sim": 0.9860763549804688,
+      "level": 0.9802629398555462
+    },
+    {
+      "u": 282,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9849100708961487,
+      "best_sim": 0.9849100708961487,
+      "level": 0.9799326604094724
+    },
+    {
+      "u": 283,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9843018054962158,
+      "best_sim": 0.9843018054962158,
+      "level": 0.9791434289617025
+    },
+    {
+      "u": 284,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9855022430419922,
+      "best_sim": 0.9855022430419922,
+      "level": 0.978257685208387
+    },
+    {
+      "u": 285,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9846017360687256,
+      "best_sim": 0.9846017360687256,
+      "level": 0.9782008927439678
+    },
+    {
+      "u": 286,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9846742153167725,
+      "best_sim": 0.9846742153167725,
+      "level": 0.9777776508641352
+    },
+    {
+      "u": 287,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9840713739395142,
+      "best_sim": 0.9840713739395142,
+      "level": 0.9775393054175402
+    },
+    {
+      "u": 288,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9834336042404175,
+      "best_sim": 0.9834336042404175,
+      "level": 0.9771161740161612
+    },
+    {
+      "u": 289,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9858466982841492,
+      "best_sim": 0.9858466982841492,
+      "level": 0.9765241047307296
+    },
+    {
+      "u": 290,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9828555583953857,
+      "best_sim": 0.9828555583953857,
+      "level": 0.9773201706264928
+    },
+    {
+      "u": 291,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9820951223373413,
+      "best_sim": 0.9820951223373413,
+      "level": 0.9765546793342558
+    },
+    {
+      "u": 292,
+      "game_idx": 3,
+      "decision": "KNOWN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": 0.9797275066375732,
+      "best_sim": 0.9797275066375732,
+      "level": 0.9756174221491329
+    },
+    {
+      "u": 293,
+      "game_idx": 4,
+      "decision": "UNCERTAIN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": -0.36466145515441895,
+      "best_sim": 0.9992303252220154,
+      "level": 0.9737392129811814
+    },
+    {
+      "u": 294,
+      "game_idx": 4,
+      "decision": "UNCERTAIN",
+      "active_ctx": 0,
+      "num_ctx": 3,
+      "active_sim": -0.3625902235507965,
+      "best_sim": 0.9957265853881836,
+      "level": 0.9737392129811814
+    },
+    {
+      "u": 295,
+      "game_idx": 4,
+      "decision": "SWITCH",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": -0.36639711260795593,
+      "best_sim": 0.9959208965301514,
+      "level": 0.9737392129811814
+    },
+    {
+      "u": 296,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9968634843826294,
+      "best_sim": 0.9968634843826294,
+      "level": 0.9871091781481002
+    },
+    {
+      "u": 297,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9956529140472412,
+      "best_sim": 0.9956529140472412,
+      "level": 0.9863266466997512
+    },
+    {
+      "u": 298,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9957718253135681,
+      "best_sim": 0.9957718253135681,
+      "level": 0.9861613357040337
+    },
+    {
+      "u": 299,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9956151247024536,
+      "best_sim": 0.9956151247024536,
+      "level": 0.9860866762010366
+    },
+    {
+      "u": 300,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.995879054069519,
+      "best_sim": 0.995879054069519,
+      "level": 0.9861700636780687
+    },
+    {
+      "u": 301,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9966574311256409,
+      "best_sim": 0.9966574311256409,
+      "level": 0.9862528793345887
+    },
+    {
+      "u": 302,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9962233901023865,
+      "best_sim": 0.9962233901023865,
+      "level": 0.9861827086468827
+    },
+    {
+      "u": 303,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9961488246917725,
+      "best_sim": 0.9961488246917725,
+      "level": 0.9863608299216048
+    },
+    {
+      "u": 304,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9965599179267883,
+      "best_sim": 0.9965599179267883,
+      "level": 0.9866261033791217
+    },
+    {
+      "u": 305,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9962092638015747,
+      "best_sim": 0.9962092638015747,
+      "level": 0.9868128741223322
+    },
+    {
+      "u": 306,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9955301284790039,
+      "best_sim": 0.9955301284790039,
+      "level": 0.9871668250999414
+    },
+    {
+      "u": 307,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9964069724082947,
+      "best_sim": 0.9964069724082947,
+      "level": 0.9877476903755923
+    },
+    {
+      "u": 308,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9962852001190186,
+      "best_sim": 0.9962852001190186,
+      "level": 0.9880329624511165
+    },
+    {
+      "u": 309,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9955978393554688,
+      "best_sim": 0.9955978393554688,
+      "level": 0.9883843046186457
+    },
+    {
+      "u": 310,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9953914284706116,
+      "best_sim": 0.9953914284706116,
+      "level": 0.9889541089584131
+    },
+    {
+      "u": 311,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.995029628276825,
+      "best_sim": 0.995029628276825,
+      "level": 0.9895440110430523
+    },
+    {
+      "u": 312,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9950562715530396,
+      "best_sim": 0.9950562715530396,
+      "level": 0.9899962995688374
+    },
+    {
+      "u": 313,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9952470660209656,
+      "best_sim": 0.9952470660209656,
+      "level": 0.9904263081999106
+    },
+    {
+      "u": 314,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9950923919677734,
+      "best_sim": 0.9950923919677734,
+      "level": 0.990900455905458
+    },
+    {
+      "u": 315,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9949522614479065,
+      "best_sim": 0.9949522614479065,
+      "level": 0.991264915159315
+    },
+    {
+      "u": 316,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9950125217437744,
+      "best_sim": 0.9950125217437744,
+      "level": 0.9915283366630903
+    },
+    {
+      "u": 317,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9944907426834106,
+      "best_sim": 0.9944907426834106,
+      "level": 0.9918060774769304
+    },
+    {
+      "u": 318,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9945168495178223,
+      "best_sim": 0.9945168495178223,
+      "level": 0.9918022224486273
+    },
+    {
+      "u": 319,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.995509147644043,
+      "best_sim": 0.995509147644043,
+      "level": 0.9918390384952556
+    },
+    {
+      "u": 320,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9943734407424927,
+      "best_sim": 0.9943734407424927,
+      "level": 0.9920203121539082
+    },
+    {
+      "u": 321,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9948729276657104,
+      "best_sim": 0.9948729276657104,
+      "level": 0.99196850578275
+    },
+    {
+      "u": 322,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9952160716056824,
+      "best_sim": 0.9952160716056824,
+      "level": 0.9922003354333181
+    },
+    {
+      "u": 323,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9943780899047852,
+      "best_sim": 0.9943780899047852,
+      "level": 0.9924174027585208
+    },
+    {
+      "u": 324,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9946117997169495,
+      "best_sim": 0.9946117997169495,
+      "level": 0.9923543344556187
+    },
+    {
+      "u": 325,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9935415387153625,
+      "best_sim": 0.9935415387153625,
+      "level": 0.9924403415908417
+    },
+    {
+      "u": 326,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9929162263870239,
+      "best_sim": 0.9929162263870239,
+      "level": 0.9919965914508402
+    },
+    {
+      "u": 327,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9935739040374756,
+      "best_sim": 0.9935739040374756,
+      "level": 0.9913399471459148
+    },
+    {
+      "u": 328,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9938608407974243,
+      "best_sim": 0.9938608407974243,
+      "level": 0.9911526668765621
+    },
+    {
+      "u": 329,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9934415817260742,
+      "best_sim": 0.9934415817260742,
+      "level": 0.99116865060997
+    },
+    {
+      "u": 330,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9925143122673035,
+      "best_sim": 0.9925143122673035,
+      "level": 0.9909988898002298
+    },
+    {
+      "u": 331,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9934667944908142,
+      "best_sim": 0.9934667944908142,
+      "level": 0.9904221757342133
+    },
+    {
+      "u": 332,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9927631616592407,
+      "best_sim": 0.9927631616592407,
+      "level": 0.9904521998178263
+    },
+    {
+      "u": 333,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9926460981369019,
+      "best_sim": 0.9926460981369019,
+      "level": 0.9901548488564959
+    },
+    {
+      "u": 334,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9935171008110046,
+      "best_sim": 0.9935171008110046,
+      "level": 0.9898815459446763
+    },
+    {
+      "u": 335,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.993490993976593,
+      "best_sim": 0.993490993976593,
+      "level": 0.9901233174450761
+    },
+    {
+      "u": 336,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.993404746055603,
+      "best_sim": 0.993404746055603,
+      "level": 0.9903400367768534
+    },
+    {
+      "u": 337,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9928510189056396,
+      "best_sim": 0.9928510189056396,
+      "level": 0.9905039650470955
+    },
+    {
+      "u": 338,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9921630620956421,
+      "best_sim": 0.9921630620956421,
+      "level": 0.990388891181095
+    },
+    {
+      "u": 339,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9918707013130188,
+      "best_sim": 0.9918707013130188,
+      "level": 0.9899763242218812
+    },
+    {
+      "u": 340,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9909946918487549,
+      "best_sim": 0.9909946918487549,
+      "level": 0.989517831972344
+    },
+    {
+      "u": 341,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9906632900238037,
+      "best_sim": 0.9906632900238037,
+      "level": 0.9887319772114936
+    },
+    {
+      "u": 342,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9922001361846924,
+      "best_sim": 0.9922001361846924,
+      "level": 0.9879523610891018
+    },
+    {
+      "u": 343,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9911172986030579,
+      "best_sim": 0.9911172986030579,
+      "level": 0.9881164043997558
+    },
+    {
+      "u": 344,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9902811646461487,
+      "best_sim": 0.9902811646461487,
+      "level": 0.9877486980084177
+    },
+    {
+      "u": 345,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9917749166488647,
+      "best_sim": 0.9917749166488647,
+      "level": 0.9870664748589256
+    },
+    {
+      "u": 346,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9915690422058105,
+      "best_sim": 0.9915690422058105,
+      "level": 0.9872928970070672
+    },
+    {
+      "u": 347,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9894958734512329,
+      "best_sim": 0.9894958734512329,
+      "level": 0.987418181921953
+    },
+    {
+      "u": 348,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.990472674369812,
+      "best_sim": 0.990472674369812,
+      "level": 0.98652458692856
+    },
+    {
+      "u": 349,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.991165280342102,
+      "best_sim": 0.991165280342102,
+      "level": 0.9863188883084283
+    },
+    {
+      "u": 350,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9901992082595825,
+      "best_sim": 0.9901992082595825,
+      "level": 0.9865401132728803
+    },
+    {
+      "u": 351,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.989658534526825,
+      "best_sim": 0.989658534526825,
+      "level": 0.9862825211235188
+    },
+    {
+      "u": 352,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9898951053619385,
+      "best_sim": 0.9898951053619385,
+      "level": 0.9858427014875178
+    },
+    {
+      "u": 353,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9906139969825745,
+      "best_sim": 0.9906139969825745,
+      "level": 0.9856428913303069
+    },
+    {
+      "u": 354,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9899016618728638,
+      "best_sim": 0.9899016618728638,
+      "level": 0.9858830130536003
+    },
+    {
+      "u": 355,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9889225959777832,
+      "best_sim": 0.9889225959777832,
+      "level": 0.9857686539339023
+    },
+    {
+      "u": 356,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9900654554367065,
+      "best_sim": 0.9900654554367065,
+      "level": 0.9852278201787964
+    },
+    {
+      "u": 357,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9888836145401001,
+      "best_sim": 0.9888836145401001,
+      "level": 0.985398122324612
+    },
+    {
+      "u": 358,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9884493350982666,
+      "best_sim": 0.9884493350982666,
+      "level": 0.9849918199455404
+    },
+    {
+      "u": 359,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9886677861213684,
+      "best_sim": 0.9886677861213684,
+      "level": 0.9844844932435213
+    },
+    {
+      "u": 360,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.987941563129425,
+      "best_sim": 0.987941563129425,
+      "level": 0.9842224325449841
+    },
+    {
+      "u": 361,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9880412817001343,
+      "best_sim": 0.9880412817001343,
+      "level": 0.9836915054189612
+    },
+    {
+      "u": 362,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9887135028839111,
+      "best_sim": 0.9887135028839111,
+      "level": 0.9833538143093419
+    },
+    {
+      "u": 363,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9867943525314331,
+      "best_sim": 0.9867943525314331,
+      "level": 0.9834632697763467
+    },
+    {
+      "u": 364,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9875870943069458,
+      "best_sim": 0.9875870943069458,
+      "level": 0.9826448558594572
+    },
+    {
+      "u": 365,
+      "game_idx": 4,
+      "decision": "KNOWN",
+      "active_ctx": 1,
+      "num_ctx": 3,
+      "active_sim": 0.9873037338256836,
+      "best_sim": 0.9873037338256836,
+      "level": 0.9824198064412527
+    }
+  ],
+  "game_to_ctx_LABEL_ONLY": {
+    "SpaceInvaders-v5": 0,
+    "Seaquest-v5": 1,
+    "Breakout-v5": 2
+  },
+  "num_contexts": 3,
+  "ctx_ids": [
+    0,
+    1,
+    2
+  ],
+  "manager_thresholds": {
+    "known": 0.55,
+    "novel": 0.4
+  },
+  "inferred": {
+    "routing_accuracy": {
+      "overall": 1.0,
+      "per_ctx": {
+        "0": 1.0,
+        "1": 1.0,
+        "2": 1.0
+      },
+      "max_inter_sim": 0.0982174202799797
+    },
+    "scores": {
+      "SpaceInvaders-v5": {
+        "mean": 224.1666717529297,
+        "n": 12,
+        "valid": true,
+        "route_acc": 1.0
+      },
+      "Seaquest-v5": {
+        "mean": 550.0,
+        "n": 12,
+        "valid": true,
+        "route_acc": 1.0
+      },
+      "Breakout-v5": {
+        "mean": 1.8333333730697632,
+        "n": 12,
+        "valid": true,
+        "route_acc": 1.0
+      }
+    },
+    "num_contexts": 3
+  }
+}

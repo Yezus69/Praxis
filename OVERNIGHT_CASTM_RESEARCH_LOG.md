@@ -129,6 +129,14 @@ SI→Seaquest→Breakout→SI→Seaquest, 300k/segment. Tests online discovery o
 revisit recall (SI & Seaquest revisited → recall their contexts, not allocate new),
 and correction transport across the alternation.
 
+## ~22:25 — Stage 2 (3-context) discovery + REVISIT RECALL works
+- 3 contexts discovered online (SI=ctx0, Seaquest=ctx1, Breakout=ctx2). Pooled
+  signatures separate them sharply: Breakout sim −0.08 to Seaquest, −0.6 to SI.
+- **Revisit recall**: at game3 (SI again), active_sim to the active Breakout ctx2 =
+  −0.63 but best_sim to ctx0 (SI) = 0.997 → **SWITCH to ctx0** (recalled), nctx stays
+  3 (NO 4th context). SI eval on recall = 213.8 (preserved). game4 (Seaquest revisit)
+  → recall ctx1 expected. This validates online discovery + recall + no proliferation.
+
 ### Decision: decouple true-sparse-exec *claim* from the pilot training path
 The existing `forward_sparse` is functionally correct but contracts over all `M`
 slots (overhead ∝ stored contexts). At 2–5 contexts the overhead is a negligible
