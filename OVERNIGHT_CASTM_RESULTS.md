@@ -109,6 +109,37 @@ Schedule: SpaceInvaders → Seaquest → Breakout → **SpaceInvaders → Seaque
 retention **0.93 ≥ 0.90 PASS**, no proliferation PASS. Current-context progress:
 Seaquest 571/591 ≈ 0.97, SI ≥ ref; Breakout degenerate (≈ random at 300k).
 
+### Ablation — novelty-triggered exploration (replaces head re-init), SI→Seaquest 500k seed 1
+| intervention | contexts | SI retained | Seaquest (plasticity) |
+|---|---|---|---|
+| `boost_reset` (entropy boost + Adam-moment reset) | 2 | 176.7 | **566.7** |
+| `none` (no intervention) | 2 | 170.0 | 473.3 |
+
+Directionally the intervention **helps new-game plasticity** (+20%) at no retention cost
+and **without re-initialising any weights** (test 7). Caveat: the gap is within the
+cross-seed Seaquest plasticity spread (413–566), so this single-seed result is
+suggestive, not conclusive — more seeds needed to separate it from run variance.
+
+### Stage 3 — five-game pilot (Breakout→Pong→SpaceInvaders→Seaquest→BeamRider, 750k/game)
+**Partial / negative (content-signature limited).** Discovered **4 contexts, not 5**:
+SpaceInvaders **merged into Breakout's ctx0** (pooled-pixel collision under the
+running-mean centering — see §10 + `content_signature_analysis.md`). Pong→ctx1,
+Seaquest→ctx2, BeamRider→ctx3 are distinct. Router top-1 = 1.0 (inter-ctx sim 0.913,
+elevated by the merge).
+
+Retention (oracle, across the full curriculum):
+| game (ctx) | after own | after final | note |
+|---|---|---|---|
+| Breakout (0) | 12.0 | **7.3** | **degraded** — SpaceInvaders shares ctx0 and overwrote it |
+| Pong (1) | −13.5 | −13.2 | retained (degenerate ref) |
+| SpaceInvaders (0) | 232.9 | 211.2 | retained (dominant occupant of the shared ctx0) |
+| Seaquest (2) | 363.3 | 360.0 | **retained across BeamRider training** |
+| BeamRider (3) | 624.3 | 624.3 | just learned |
+
+→ **The resolve mechanism scales to the 4 contexts it correctly discovers** (Seaquest
+held while BeamRider trained); the five-game gate fails **only** because the content
+signature cannot separate SpaceInvaders from Breakout. Mechanism ✓, representation ✗.
+
 ## 5. Strict-gate status (two-context gate)
 | gate | threshold | PLASTIC task-free | verdict |
 |---|---|---|---|
@@ -167,6 +198,14 @@ resolve + prototype refresh).
   "observations"), which separates regimes trivially and is encoder-drift-free. This
   is an honest, working choice but means the §2 encoder-drift machinery, while built
   and tested, is exercised only in its trivially-stable (raw-pixel) regime here.
+- **The pooled-pixel signature does NOT scale to the visually-overlapping 5-game set**
+  (`castm_runs/taskfree/content_signature_analysis.md`): no single centering separates
+  all five — RAW collides Pong↔Seaquest (0.93), oracle-centered collides
+  SpaceInvaders↔BeamRider (0.84, both vertical shooters), and the online running-mean
+  centering (dominated by the very-different Pong) collides SpaceInvaders↔Breakout —
+  which is the false merge **Stage 3** hit. This is a **content-representation** limit,
+  not a mechanism limit (the resolve + online discovery are proven at 2 and 3
+  contexts). A learned discriminative encoder is required to scale (next-experiment #2).
 - **SpaceInvaders normalizes weakly at the 500k budget**: its random baseline (~138)
   is close to the achievable score (500k ref ~148–170), so normalized progress and
   retention for SI have a small, noisy denominator. Seaquest is the clean target

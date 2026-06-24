@@ -137,6 +137,22 @@ and correction transport across the alternation.
   3 (NO 4th context). SI eval on recall = 213.8 (preserved). game4 (Seaquest revisit)
   → recall ctx1 expected. This validates online discovery + recall + no proliferation.
 
+## ~22:50 — Stage 3 (5-game) NEGATIVE finding: pooled signature merges SI into Breakout
+Order Breakout→Pong→SpaceInvaders→Seaquest→BeamRider. Breakout=ctx0, Pong=ctx1 (clean).
+At game2, **SpaceInvaders merged into Breakout's ctx0** (best_sim 0.832 ≥ Breakout's
+match level ~0.52 → SWITCH ctx0, no new context). Cause: Breakout has high within-game
+pooled-signature variance (ball motion, vanishing bricks) → low running mean (~0.64) →
+a WIDE match band, and SI's layout (action-bottom/targets-top) is genuinely ~0.83
+similar to Breakout's in pooled-pixel space. The pooled signature lacks the resolution
+to separate two visually-similar games when one has high variance.
+- Note the asymmetry: in Stage 2 (SI first, Breakout third) they did NOT merge
+  (Breakout-vs-SI 0.13); here (Breakout first) SI-vs-Breakout 0.83. Order + the
+  variance-driven band width matter.
+- **Decision:** let Stage-3 finish and report it as a PARTIAL/negative result rather
+  than burn ~50 min on an uncertain higher-resolution re-run. The fix is a learned
+  discriminative content encoder (next-experiment #2) — the mechanism (resolve +
+  online discovery) is already proven at 2 and 3 contexts. Honest > forced pass.
+
 ### Decision: decouple true-sparse-exec *claim* from the pilot training path
 The existing `forward_sparse` is functionally correct but contracts over all `M`
 slots (overhead ∝ stored contexts). At 2–5 contexts the overhead is a negligible
