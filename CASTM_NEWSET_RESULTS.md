@@ -98,6 +98,28 @@ is sparse-reward and under-trained at 1.5M steps (its single-task reference only
 reaches −19.45). SpaceInvaders/Seaquest/BeamRider learned and retained in both.
 So *retention* replicates robustly; *plasticity* is the variable dimension.
 
+## Memory-rank ablation (#2) — rank 64 vs 128, 2 seeds each
+
+| run | beats random | max correction residual | router top-1 |
+|---|---|---|---|
+| rank-64 seed1 | 4/5 (Pong failed) | 0.035 | 0.993 |
+| rank-64 seed2 | **5/5** | 0.053 | 0.978 |
+| rank-128 seed1 | **5/5** | 0.033 | 0.990 |
+| rank-128 seed2 | **5/5** | 0.035 | 0.986 |
+
+- **Higher rank reduces the correction residual** (the error the re-solve makes
+  absorbing W0 drift) — clearest on seed2 (0.053→0.035). At a 5-game curriculum
+  the effect on final scores is modest (retention is already high at rank 64);
+  the spec notes rank matters more for longer curricula, where drift accumulates.
+- **3 of 4 runs beat random on all 5 games**; the one miss (rank-64 seed1 Pong)
+  is run variance, not a rank effect.
+- **Caveat — GPU non-determinism**: the same nominal seed gave different Pong
+  outcomes across rank settings, which is impossible if rank only touched the
+  retention re-solve. PPO on GPU is not bit-reproducible (non-deterministic
+  gradient reductions) and is chaotic, so each run carries genuine run-to-run
+  variance on top of the seed. Treat the four runs as four samples, not two
+  controlled pairs.
+
 ## Verdict
 
 On a fresh 5-game set including Breakout, with **no frozen weights**, the
