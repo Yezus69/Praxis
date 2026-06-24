@@ -49,6 +49,11 @@ def analyze(results_path: str, refs_dir: str | None, ref_json: str | None) -> di
     rmat = data.get("retention_matrix", [])
     final_row = rmat[-1] if rmat else {"oracle": {}, "inferred": {}}
     oracle_final = final_row.get("oracle", {})
+    # oracle score for each game RIGHT AFTER its own segment (like-for-like retention base)
+    oracle_after_own = {}
+    for row in rmat:
+        for gname, ev in row.get("oracle", {}).items():
+            oracle_after_own.setdefault(gname, ev.get("mean", float("nan")))
     inferred = data.get("inferred") or {}
     inferred_scores = inferred.get("scores", {})
     routing = inferred.get("routing_accuracy", {})
@@ -60,19 +65,23 @@ def analyze(results_path: str, refs_dir: str | None, ref_json: str | None) -> di
         or_score = (oracle_final.get(g) or {}).get("mean", float("nan"))
         inf_score = (inferred_scores.get(g) or {}).get("mean", float("nan"))
         learned = best.get(g, float("nan"))
+        # retention baseline = oracle score right after this game's own segment (like-for-like)
+        base = oracle_after_own.get(g, learned)
         or_prog, degen = _norm(or_score, rnd, ref)
         inf_prog, _ = _norm(inf_score, rnd, ref)
-        # retention = current / learned, normalized over random
-        ret_denom = learned - rnd
+        ret_denom = base - rnd
         oracle_ret = ((or_score - rnd) / ret_denom) if abs(ret_denom) > 1e-6 else float("nan")
         inf_ret = ((inf_score - rnd) / ret_denom) if abs(ret_denom) > 1e-6 else float("nan")
+        # route_acc per game: prefer the inferred-eval closed-loop value, else routing dict
+        ra = (inferred_scores.get(g) or {}).get("route_acc")
+        if ra is None:
+            ra = routing.get("per_game", {}).get(g, float("nan"))
         rows.append({
             "game": g, "is_last": gi == len(games) - 1, "random": rnd, "ref": ref,
             "learned_peak": learned, "oracle_final": or_score, "inferred_final": inf_score,
             "oracle_progress": or_prog, "inferred_progress": inf_prog,
             "oracle_retention": oracle_ret, "inferred_retention": inf_ret,
-            "degenerate_ref": degen, "ctx": g2c.get(g, -1),
-            "route_acc": routing.get("per_game", {}).get(g, float("nan")),
+            "degenerate_ref": degen, "ctx": g2c.get(g, -1), "route_acc": ra,
         })
 
     # Gates: old games = all but the last; new game = the last learned.

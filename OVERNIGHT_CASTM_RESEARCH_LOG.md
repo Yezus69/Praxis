@@ -110,6 +110,25 @@ but is trivially stable), and is domain-general (any agent has sensory input). T
 encoder-feature path is retained as an ablation. This is the honest, working choice;
 the negative result (encoder features non-discriminative across games) is reported.
 
+## ~22:09 — Stage 1 (two-context, 500k) — PASSES (pilot); naive control bug found+fixed
+**PLASTIC task-free (SI→Seaquest, 500k/game, seed 1):** discovered **2 contexts**
+(no labels), **router top-1 = 1.0** (inter-ctx sim −0.94), **retained SI exactly**
+(165.8 after game0 → 176.7 after Seaquest), learned **Seaquest 566.7** (oracle P_new
+0.95). Gates: no-proliferation PASS, A_router PASS, R_old PASS, P_new PASS(oracle)/
+0.81(inferred, within Seaquest variance). Seaquest detected within ~3 rollouts of the
+unannounced switch (active_sim 0.80→0.29).
+
+**Naive-control bug:** with `--no-resolve`, `do_resolve` returned early WITHOUT
+syncing `banks` from the trained `params`, so the retention eval read stale (initial)
+weights (SI 107.5→107.5, Seaquest 71.7≈random despite learning to 411 live). Fixed:
+sync `banks = apply_shared_trainable(banks, params)` in the no-resolve branch.
+Re-running the naive control. The PLASTIC arm is unaffected (its resolves sync banks).
+
+## ~22:12 — Stage 2 (three-context alternation A→B→C→A→B) launched on GPU2
+SI→Seaquest→Breakout→SI→Seaquest, 300k/segment. Tests online discovery of 3 regimes,
+revisit recall (SI & Seaquest revisited → recall their contexts, not allocate new),
+and correction transport across the alternation.
+
 ### Decision: decouple true-sparse-exec *claim* from the pilot training path
 The existing `forward_sparse` is functionally correct but contracts over all `M`
 slots (overhead ∝ stored contexts). At 2–5 contexts the overhead is a negligible

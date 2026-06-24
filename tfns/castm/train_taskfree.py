@@ -252,9 +252,11 @@ def run(cfg: TaskFreeConfig):
     def do_resolve(active_ctx, tag):
         nonlocal banks, params, opt_state, snap_W0, snap_b0, updates_since_resolve
         if not cfg.resolve:
-            # Naive control: no memory protection. Re-snapshot so 'drift since' stays
-            # bounded, but never compensate inactive contexts -> catastrophic forgetting.
-            snap_W0, snap_b0 = orx.snapshot_shared(ff.apply_shared_trainable(banks, params))
+            # Naive control: no memory protection (never compensate inactive contexts ->
+            # catastrophic forgetting). Still SYNC banks' W0 from the trained params so
+            # evaluation reads the current weights (the memory components stay empty).
+            banks = ff.apply_shared_trainable(banks, params)
+            snap_W0, snap_b0 = orx.snapshot_shared(banks)
             updates_since_resolve = 0
             return {"budget_ok": True, "max_residual": 0.0, "tag": tag, "disabled": True}
         live = ff.apply_shared_trainable(banks, params)
